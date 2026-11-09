@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/zGenticAI/AgentVoice/security/advisories/new
+    about: Privately, as SECURITY.md says. Please don't open a public issue for one.

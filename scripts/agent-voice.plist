@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Keeps the voice service running on macOS. A template: scripts/install-service.sh fills in the label (SERVICE_LABEL,
+     local.agent-voice unless set), this folder and node's path, and installs it as ~/Library/LaunchAgents/<label>.plist. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>__LABEL__</string>
+  <key>WorkingDirectory</key><string>__DIR__</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE__</string>
+    <string>__DIR__/node_modules/tsx/dist/cli.mjs</string>
+    <string>src/server.ts</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__DIR__/data/agent-voice.log</string>
+  <key>StandardErrorPath</key><string>__DIR__/data/agent-voice.log</string>
+</dict>
+</plist>

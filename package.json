@@ -1,0 +1,33 @@
+{
+  "name": "agent-voice",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A self-hosted AI meeting assistant: a Claude voice agent that joins your Zoom, Google Meet and Teams meetings through Recall.ai",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "join": "tsx src/cli/join.ts",
+    "check": "tsx src/cli/check.ts",
+    "channel": "tsx src/channel/server.ts",
+    "check-name": "tsx src/cli/check-name.ts",
+    "record-name-corpus": "tsx src/cli/record-name-corpus.ts",
+    "test": "AGENT_NAME=Alex AGENT_NAME_VARIANTS= AGENT_NAME_MISHEARD= AGENT_BOT_NAME= ALEX_BOT_NAME= OWNER_NAME=Sam OWNER_FULL_NAME= COMPANY_NAME= PROFILE_FILE=test/fixtures/no-profile.md AGENT_PAGE_FILE= SERVICE_LABEL= RECALL_REGION=us-east-1 DEEPGRAM_KEYTERMS= ZOOM_JOIN_TELEGRAM_CHATS= ALEX_DATA_DIR=$(mktemp -d) node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "dotenv": "^18.0.8",
+    "tsx": "^4.23.15",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2"
+  }
+}

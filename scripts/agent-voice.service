@@ -1,0 +1,27 @@
+# Keeps the voice service running on Linux, as a systemd user service. A template: scripts/install-service.sh fills
+# in the label (SERVICE_LABEL, local.agent-voice unless set), this folder and node's path, and installs it as
+# ~/.config/systemd/user/<label>.service.
+[Unit]
+Description=__LABEL__: the meeting assistant's voice service
+# No After=/Wants=network-online.target: that is a system unit, which a user's service manager doesn't have, so
+# it would order nothing. The service needs no network to start: it reaches Recall when a bot joins, and a fixed
+# line it couldn't make at start-up streams live and is kept once said.
+
+[Service]
+Type=simple
+WorkingDirectory=__DIR__
+ExecStart="__NODE__" "__DIR__/node_modules/tsx/dist/cli.mjs" src/server.ts
+# Started again whenever it stops, as launchd's KeepAlive does on macOS: a crash exits with 1 once the bots are out.
+Restart=always
+RestartSec=5
+# The service stops in order on SIGTERM (each bot asked to leave its call, the minutes written if they take under
+# 10 s), so it gets the 20 s launchd gives it before SIGKILL. SIGTERM goes to the main process only, as with
+# launchd: tsx passes it on to the service, which must not be stopped twice over.
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=20
+StandardOutput=append:__DIR__/data/agent-voice.log
+StandardError=append:__DIR__/data/agent-voice.log
+
+[Install]
+WantedBy=default.target

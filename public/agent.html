@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-fallback="{{name}}, AI assistant">{{name}}, {{owner}}'s AI assistant</title>
+<style>
+  /* Shown as the assistant's camera in the meeting: Recall renders it at 1280x720, 15 fps, and the meeting
+     platform compresses it and often shows it small. So: big type, thick strokes, no hairlines. A plain dark
+     theme, with the system's own fonts: the bot's browser has few, so nothing is assumed beyond a sans-serif. */
+  :root {
+    --page: #0b0d12;
+    --rule-strong: #3a404c;
+    --rest: #545b69;        /* the wave at rest, light enough to survive compression */
+    --ink: #f6f7f9;
+    --muted: #cfd3da;
+    --voice: #5eb8ff;       /* the assistant's voice: the wave and the dot while it speaks */
+    --voice-mid: #9ad7ff;   /* the middle of the wave while it speaks */
+    --live: #ff6b81;        /* transcribing */
+  }
+  html, body { margin: 0; height: 100%; background: var(--page); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; overflow: hidden; }
+  main { box-sizing: border-box; height: 100%; padding: 48px 64px 44px; display: grid; grid-template-rows: auto 1fr auto; gap: 24px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 64px; }
+  /* The owner's company as plain text, when one is set; nothing at all when not. */
+  .company { font-size: 34px; font-weight: 700; letter-spacing: 0.02em; color: var(--muted); }
+  .company:empty { display: none; }
+  .live { display: flex; align-items: center; gap: 12px; margin-left: auto; padding: 12px 22px; border: 2px solid var(--rule-strong); border-radius: 999px; font-size: 24px; color: var(--muted); }
+  .live::before { content: ""; width: 16px; height: 16px; border-radius: 50%; background: var(--live); }
+
+  .presenter { align-self: center; display: grid; gap: 20px; }
+  h1 { margin: 0; font-size: 120px; font-weight: 700; letter-spacing: -0.02em; line-height: 0.95; }
+  /* The page says it is an AI, as the consent line, the chat notice and the participant list do (src/pages.ts). */
+  .role { margin: 6px 0 0; font-size: 40px; color: var(--muted); }
+  canvas { width: 100%; height: 180px; display: block; }
+
+  footer { display: flex; align-items: center; gap: 16px; font-size: 32px; color: var(--muted); }
+  footer::before { content: ""; width: 18px; height: 18px; border-radius: 50%; background: var(--rest); flex: none; }
+  .speaking footer { color: var(--ink); }
+  .speaking footer::before { background: var(--voice); }
+</style>
+</head>
+<body data-agent-name="{{name}}">
+<main>
+  <header>
+    <div class="company" data-fallback="">{{company}}</div>
+    <div class="live">Transcribing to answer questions</div>
+  </header>
+
+  <section class="presenter">
+    <div>
+      <h1 data-fallback="Assistant">{{name}}</h1>
+      <p class="role" data-fallback="AI assistant">{{owner}}'s AI assistant</p>
+    </div>
+    <canvas id="wave" aria-hidden="true"></canvas>
+  </section>
+
+  <footer id="state">Connecting…</footer>
+</main>
+<script data-fallbacks>
+  // The server fills in the assistant's name, the owner's and the company (src/pages.ts). A placeholder it didn't
+  // fill never shows: an element whose text still has one shows its data-fallback instead ("AI assistant" when that
+  // has one too), before the page is first drawn.
+  const unfilled = /\{\{\w+\}\}/
+  for (const el of document.querySelectorAll('[data-fallback]')) {
+    if (unfilled.test(el.textContent)) el.textContent = unfilled.test(el.dataset.fallback) ? 'AI assistant' : el.dataset.fallback
+  }
+  if (unfilled.test(document.body.dataset.agentName)) document.body.dataset.agentName = ''
+</script>
+<script type="module">
+  import { startAgent } from '/agent.js'
+  // The server puts the assistant's name in the page, with the owner's and the company (src/pages.ts); '' if it didn't.
+  const name = document.body.dataset.agentName
+  const label = {
+    listening: name ? 'Listening. Say "' + name + '" to ask a question.' : 'Listening.',
+    speaking: 'Speaking…',
+    disconnected: 'Disconnected',
+  }
+  const stateLine = document.getElementById('state')
+  let speaking = false
+  function show(s) {
+    speaking = s === 'speaking'
+    document.body.classList.toggle('speaking', speaking)
+    stateLine.textContent = label[s] || s
+  }
+
+  // The wave: bars mirrored about a centre line, the low voice frequencies in the middle.
+  // While the assistant speaks they follow its voice; at rest they breathe slowly and dimly.
+  // Its colours are the page's own (--voice, --voice-mid, --rest), so a restyled page restyles the wave too.
+  const colour = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim()
+  const COLOURS = { voice: colour('--voice'), mid: colour('--voice-mid'), rest: colour('--rest') }
+  const canvas = document.getElementById('wave')
+  const g = canvas.getContext('2d')
+  const BARS = 40
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches
+  let analyser = null
+  let bins = new Uint8Array(128)
+  const level = new Float32Array(BARS)
+
+  function size() {
+    const r = canvas.getBoundingClientRect()
+    canvas.width = Math.round(r.width * devicePixelRatio)
+    canvas.height = Math.round(r.height * devicePixelRatio)
+  }
+  size()
+  addEventListener('resize', size)
+
+  // The preview's stand-in for a voice: a few drifting formants.
+  function fakeVoice(t) {
+    for (let i = 0; i < bins.length; i++) {
+      const f = i / bins.length
+      const env = Math.exp(-f * 4.5)
+      const formants = 0.55 + 0.45 * Math.sin(t * 7.1 + i * 0.35) * Math.sin(t * 3.3 + i * 0.11)
+      bins[i] = Math.max(0, Math.min(255, 255 * env * formants * (0.75 + 0.25 * Math.sin(t * 11))))
+    }
+  }
+
+  let last = 0
+  function draw(now) {
+    requestAnimationFrame(draw)
+    if (now - last < 66) return // 15 frames a second: what Recall captures
+    last = now
+    const t = now / 1000
+    if (speaking) {
+      if (analyser) analyser.getByteFrequencyData(bins)
+      else fakeVoice(t)
+    }
+    const W = canvas.width, H = canvas.height, mid = H / 2
+    const step = W / BARS, bar = step * 0.62
+    g.clearRect(0, 0, W, H)
+    g.lineCap = 'round'
+    g.lineWidth = bar
+    if (speaking) {
+      // Lighter at the centre, where the voice is.
+      const voice = g.createLinearGradient(0, 0, W, 0)
+      voice.addColorStop(0, COLOURS.voice)
+      voice.addColorStop(0.5, COLOURS.mid)
+      voice.addColorStop(1, COLOURS.voice)
+      g.strokeStyle = voice
+    } else g.strokeStyle = COLOURS.rest
+    for (let i = 0; i < BARS; i++) {
+      const fromMiddle = Math.abs(i - (BARS - 1) / 2) / (BARS / 2) // 0 at the centre, 1 at the edges
+      let target
+      if (speaking) {
+        const v = bins[2 + Math.floor(fromMiddle * 58)] / 255 // bins of 62.5 Hz at 16 kHz: ~125 Hz to ~3.8 kHz
+        target = Math.pow(v, 1.4)
+      } else {
+        target = still ? 0.04 : 0.04 + 0.05 * (0.5 + 0.5 * Math.sin(t * 1.6 - fromMiddle * 5))
+      }
+      level[i] += (target - level[i]) * (target > level[i] ? 0.6 : 0.18)
+      const h = Math.max(bar, level[i] * (H - bar))
+      const x = step * (i + 0.5)
+      g.beginPath()
+      g.moveTo(x, mid - h / 2)
+      g.lineTo(x, mid + h / 2)
+      g.stroke()
+    }
+  }
+  requestAnimationFrame(draw)
+
+  // ?preview=listening or ?preview=speaking draws the page without starting any audio.
+  const preview = new URLSearchParams(location.search).get('preview')
+  if (preview) show(preview)
+  else
+    startAgent({ onState: show, onOutput: a => (analyser = a, bins = new Uint8Array(a.frequencyBinCount)) })
+      // Fixed words, as the service sends: the page is the assistant's camera, and an error can name this computer's
+      // devices or the page's address. The error itself goes to the browser's console.
+      .catch(err => {
+        console.error(err)
+        stateLine.textContent = "error: can't start"
+      })
+</script>
+</body>
+</html>

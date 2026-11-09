@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(//**/.env)",
+      "Read(//**/.env.local)",
+      "Read(//**/.env.*.local)",
+      "Read(//**/.env.production)",
+      "Read(//**/.env.prod)",
+      "Read(//**/.env.development)",
+      "Read(//**/.env.dev)",
+      "Read(//**/.env.staging)",
+      "Read(//**/.env.test)",
+      "Read(//**/.env.bak)",
+      "Read(//**/.env.backup)",
+      "Read(//**/.env.old)",
+      "Read(~/.ssh/**)",
+      "Read(~/.cloudflared/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.claude.json)",
+      "Read(~/.git-credentials)",
+      "Read(~/.netrc)",
+      "Read(~/.config/gh/**)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.kube/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(//**/*.pem)",
+      "Read(//**/*.key)",
+      "Read(//**/*.p12)",
+      "Read(//**/*.pfx)",
+      "Read(//**/local-token)"
+    ]
+  }
+}

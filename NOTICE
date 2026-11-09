@@ -1,0 +1,14 @@
+agent-voice
+Copyright 2026 zGentic Ltd
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It includes material derived from AMP (Agent Meeting Proxy),
+https://github.com/tokencanopy/amp, which is licensed under the Apache License,
+Version 2.0:
+- src/brain/attention.ts: the approach of its attention rules and many of their
+  word lists follow AMP's src/gateway/attention.ts. The code is a new
+  implementation, and the word lists were changed and extended.
+- test/attention.test.ts and test/fixtures/name-corpus.json: a few test sentences
+  come from AMP's test/attention.test.ts and test/asr.test.ts, with the name
+  changed.

@@ -1,0 +1,22 @@
+node_modules/
+# Your keys: .env and every other .env file, except the template.
+.env
+.env.*
+!.env.example
+# Keys and certificates, should one be made in this folder.
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+npm-debug.log*
+.DS_Store
+# Claude Code's own worktrees, if a session makes any here.
+.claude/worktrees/
+data/*
+!data/.gitkeep
+# Yours, never committed: the owner's profile (it may name private paths), and your own Claude Code permissions.
+profile.md
+.claude/settings.local.json
+# Your own list of private terms, which test/private-terms.test.ts checks the tree for (see test/private-terms.ts).
+private-terms.txt
