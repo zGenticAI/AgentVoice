@@ -125,10 +125,20 @@ export function findTerms(line: string, terms: readonly Term[], allowed: readonl
   })
 }
 
-/** An email address, unless it is at a domain kept for examples (example.com, .example, .invalid, .test, .localhost). */
-// The domain is in lower case, as addresses are written, and its last part is two or more letters, as every top-level
-// domain is, so a version ("v1.0.0") and random bytes in a font or an archive ("o@5.1", "kJ@gD.kJ") don't count.
-const EMAIL = /[\w.%+-]+@(?!(?:[\w-]+\.)*(?:example\.(?:com|org|net)|[\w-]+\.(?:example|invalid|test|localhost))(?![\w.-]))[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![\w-])/
+/**
+ * The addresses the project publishes on purpose, such as the code of conduct's contact: the email check passes
+ * them, and only them (test/private-terms.test.ts checks each is still in use).
+ */
+export const PUBLIC_ADDRESSES: readonly string[] = Object.freeze(['frank@zgentic.ai'])
+
+// An email address, unless it is at a domain kept for examples (example.com, .example, .invalid, .test, .localhost)
+// or is a published one. The whole address, from its first character, so the tail of a published one is no match. The domain is in lower case, as addresses are written, and its last part is two or more
+// letters, as every top-level domain is, so a version ("v1.0.0") and random bytes in a font or an archive ("o@5.1",
+// "kJ@gD.kJ") don't count.
+const PUBLISHED = PUBLIC_ADDRESSES.map(address => `${escapeRegex(address)}(?![\\w.-]*[\\w-])`).join('|')
+const EMAIL = new RegExp(
+  `(?<![\\w.%+-])(?!(?:${PUBLISHED}))[\\w.%+-]+@(?!(?:[\\w-]+\\.)*(?:example\\.(?:com|org|net)|[\\w-]+\\.(?:example|invalid|test|localhost))(?![\\w.-]))[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.[a-z]{2,}(?![\\w-])`,
+)
 
 export const GENERIC_TERMS: readonly Term[] = Object.freeze([
   { label: 'a macOS home folder', pattern: /\/Users\/[^\s/]/ },

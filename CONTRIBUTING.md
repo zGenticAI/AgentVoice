@@ -1,6 +1,6 @@
 # Contributing
 
-Bug reports, fixes and improvements are welcome.
+Bug reports, fixes and improvements are welcome. Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Before you start
 
