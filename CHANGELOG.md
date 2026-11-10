@@ -2,6 +2,12 @@
 
 The notable changes in each version. The project follows [Semantic Versioning](https://semver.org/): until 1.0, a minor version may change settings or behaviour, and says so here.
 
+## Unreleased
+
+### Added
+
+- A code of conduct: the Contributor Covenant 2.1.
+
 ## 0.1.0
 
 The first public release.

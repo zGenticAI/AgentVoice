@@ -182,7 +182,7 @@ See [Ports and security](docs/security.md). To report a vulnerability, see [SECU
 
 ## Contributing
 
-Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues privately, as [SECURITY.md](SECURITY.md) says.
+Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md), and the [Code of Conduct](CODE_OF_CONDUCT.md) everyone taking part follows. Report security issues privately, as [SECURITY.md](SECURITY.md) says.
 
 ## Licence
 

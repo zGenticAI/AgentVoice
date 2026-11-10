@@ -12,7 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { ROOT } from '../src/config.ts'
 import {
-  GENERIC_TERMS, NO_LIST_NOTE, decode, findTerms, loadPrivateTerms, offenders, parseList, parseTermList, privateTermsFile,
+  GENERIC_TERMS, PUBLIC_ADDRESSES, NO_LIST_NOTE, decode, findTerms, loadPrivateTerms, offenders, parseList, parseTermList, privateTermsFile,
   trackedFiles,
 } from './private-terms.ts'
 
@@ -174,6 +174,21 @@ test('the always-on patterns catch a home folder, a claude.ai account link and a
     'x@' + 'acme.invalid', 'users/me', 'Sam', 'Acme',
   ]
   for (const text of ordinary) assert.deepEqual(findTerms(text, GENERIC_TERMS), [], text)
+})
+
+test('the email check passes the addresses the project publishes, and only those, whole', () => {
+  for (const address of PUBLIC_ADDRESSES) {
+    assert.deepEqual(findTerms(`report it to ${address}.`, GENERIC_TERMS), [], address)
+    const [local, domain] = address.split('@')
+    for (const near of [`x${address}`, `${address}.evil.com`, `${address}x`, `${local.slice(1)}@${domain}`, `someone@${domain}`]) {
+      assert.notDeepEqual(findTerms(near, GENERIC_TERMS), [], near)
+    }
+  }
+})
+
+test('every published address is still in use, so the list never keeps one nobody should write to', { skip: FILES ? false : 'not a git checkout' }, () => {
+  const text = (FILES ?? []).filter(file => file !== 'test/private-terms.ts').map(file => fs.readFileSync(path.join(ROOT, file), 'utf8')).join('\n')
+  for (const address of PUBLIC_ADDRESSES) assert.ok(text.includes(address), address)
 })
 
 test('the list is PRIVATE_TERMS_FILE, else private-terms.txt here, which git ignores; a named list that is missing fails', () => {
