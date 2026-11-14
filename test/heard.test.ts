@@ -27,7 +27,9 @@ class FakeFlux extends EventEmitter {
     setImmediate(() => this.emit('close', 1000, ''))
   }
   endTurn(text: string) { this.emit('turn', { type: 'TurnInfo', event: 'EndOfTurn', turn_index: 0, transcript: text }) }
-  startTurn() { this.emit('turn', { type: 'TurnInfo', event: 'StartOfTurn', turn_index: 1, transcript: '' }) }
+  // Like Flux: a turn starts once its first words are heard, and each event carries the turn so far.
+  startTurn(text = 'Wait, what about') { this.emit('turn', { type: 'TurnInfo', event: 'StartOfTurn', turn_index: 1, transcript: text }) }
+  update(text: string) { this.emit('turn', { type: 'TurnInfo', event: 'Update', turn_index: 1, transcript: text }) }
 }
 
 /** How the fake ElevenLabs says each line: this many ms of audio at once, then it ends, waits to be stopped, or fails. */

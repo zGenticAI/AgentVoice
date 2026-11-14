@@ -137,7 +137,7 @@ test('someone talking over Alex stops the reply and clears playback', async () =
   const { flux, ws, session } = setup([{ kind: 'say', text: 'A long answer.' }], slow)
   flux.endTurn('Alex, explain everything')
   await settle()
-  flux.emit('turn', { type: 'TurnInfo', event: 'StartOfTurn', turn_index: 1, transcript: '' })
+  flux.emit('turn', { type: 'TurnInfo', event: 'StartOfTurn', turn_index: 1, transcript: 'Hold on, what' })
   await settle()
   const sentBefore = ws.audio().length
   await new Promise(r => setTimeout(r, 60))
@@ -599,7 +599,7 @@ test('talking over the goodbye does not cut it off', async () => {
   const { ws, flux, ended } = botSetup({ speak: slow })
   flux.endTurn('Alex, please leave.')
   await new Promise(r => setTimeout(r, 25))
-  flux.emit('turn', { type: 'TurnInfo', event: 'StartOfTurn', turn_index: 1, transcript: '' }) // "Bye, Alex"
+  flux.emit('turn', { type: 'TurnInfo', event: 'StartOfTurn', turn_index: 1, transcript: 'Bye, Alex' })
   await until(() => ended() !== undefined)
   // The page is told to clear once, as the request is heard, so the goodbye plays at once: never after it has started.
   const firstAudio = ws.sent.findIndex(d => typeof d !== 'string')
