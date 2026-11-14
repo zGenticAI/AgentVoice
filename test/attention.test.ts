@@ -3,7 +3,7 @@
 // changed (see NOTICE).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { attention, endsOnQuestion, isFillerOnly, type Attention } from '../src/brain/attention.ts'
+import { attention, endsOnQuestion, isFillerOnly, makeAttention, wordsThatCount, type Attention } from '../src/brain/attention.ts'
 
 /** What speech recognition may give for a sentence: lower case, no punctuation but apostrophes. */
 const spoken = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}'’\s]/gu, ' ').replace(/\s+/g, ' ').trim()
@@ -559,4 +559,50 @@ test("an answer that ends on a question hands the turn back; one that asks and c
 test('"um" is someone thinking, but "mm-hmm" and "yeah" are answers', () => {
   for (const line of ['um', 'Uh...', 'Erm, hmm.', 'ah']) assert.equal(isFillerOnly(line), true, line)
   for (const line of ['mm-hmm', 'uh-huh', 'yeah', 'yes', 'no', 'ok', 'um, yes']) assert.equal(isFillerOnly(line), false, line)
+})
+
+// --- Talking over Alex: which words of the line count as someone taking the floor --------------------------------
+
+test('said over Alex, sounds of agreement, laughs and fillers count for nothing', () => {
+  for (const line of [
+    'Mm-hm.', 'Mm-hmm.', 'Mhmm.', 'Uh-huh.', 'Nuh-uh.', 'Mm-mm.', 'Mm.', 'Hmm.', 'Uh.', 'Yeah, yeah.', 'OK.', 'Right.', 'Sure.',
+    'I see.', 'Oh, I see.', 'Oh, sorry, go ahead.', 'Ha ha.', 'Hehe.', 'Oh wow.', 'That makes sense.', 'Sounds good.',
+    'Yes, exactly right.', "That's true.", '',
+  ]) {
+    assert.equal(wordsThatCount(line), 0, line)
+    assert.equal(wordsThatCount(line, true), 0, `${line} (partial)`)
+  }
+})
+
+test("Alex's name always counts, alone or among sounds of agreement, and so does another assistant's", () => {
+  assert.equal(wordsThatCount('Alex.'), 1)
+  assert.equal(wordsThatCount('Okay, Alex.'), 1)
+  assert.equal(wordsThatCount('Alex what', true), 2)
+  const nova = makeAttention({ name: 'Nova', variants: [], misheard: [], leaveMisheard: [] })
+  assert.equal(nova.wordsThatCount('Yeah, Nova.'), 1)
+  // A name that is also a sound of agreement only makes that assistant stop more readily.
+  const truly = makeAttention({ name: 'True', variants: [], misheard: [], leaveMisheard: [] })
+  assert.equal(truly.wordsThatCount('True.'), 1)
+  assert.equal(wordsThatCount('True.'), 0)
+})
+
+test('words that take the floor count, one each', () => {
+  for (const line of ['No.', 'Wait.', 'Stop.', 'Thanks.', 'Hey.', 'So.', 'Actually.']) assert.equal(wordsThatCount(line), 1, line)
+  assert.equal(wordsThatCount('Hold on.'), 2)
+  assert.equal(wordsThatCount('Thank you.'), 2)
+  assert.equal(wordsThatCount('He said no.'), 3, '"he" is not a laugh')
+  assert.equal(wordsThatCount('Yeah, but what about pricing?'), 4)
+})
+
+test('a line still being said does not count a phrase it may be partway through, and counts it once it has ended', () => {
+  assert.equal(wordsThatCount('That makes', true), 0)
+  assert.equal(wordsThatCount('That makes'), 2)
+  assert.equal(wordsThatCount('I', true), 0)
+  assert.equal(wordsThatCount('I'), 1)
+  assert.equal(wordsThatCount('Oh go', true), 0)
+  assert.equal(wordsThatCount('Wait, I', true), 1, 'the words before it still count')
+})
+
+test('"mm-hmm" and "yeah" still answer Alex once it has finished: they are not fillers', () => {
+  for (const line of ['Mm-hmm.', 'Yeah.', 'Sure.', 'I see.']) assert.equal(isFillerOnly(line), false, line)
 })

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import WebSocket from 'ws'
 import { BriefAdditions } from '../brain/additions.ts'
 import type { Brain } from '../brain/brain.ts'
-import { attention, endsOnQuestion, isFillerOnly } from '../brain/attention.ts'
+import { attention, endsOnQuestion, isFillerOnly, wordsThatCount } from '../brain/attention.ts'
 import { isCancelRequest, isLeaveReply, isLeaveRequest } from '../brain/text.ts'
 import type { SessionAnswer, SessionBridge, ToSession } from '../bridge.ts'
 import { CHECKING_LINES, JOIN_LINE, LEAVE_LINE, PROGRESS_LINE, REFUSAL_LINE, SESSION_OFFLINE_LINE } from '../consent.ts'
@@ -49,6 +49,8 @@ export interface SessionDeps {
   progressAfterMs?: number
   /** The time (epoch ms) for following what the page has played of Alex's voice: Date.now unless a test passes one. */
   clock?: () => number
+  /** How long the page stays paused for someone who started talking over Alex, with no words yet that stop it (ms). */
+  pauseMaxMs?: number
 }
 
 type MeetingEnded = Extract<ToSession, { type: 'meeting_ended' }>
@@ -72,6 +74,18 @@ const STT_FLUSH_MS = 1500
 const BYTES_PER_MS = (SAMPLE_RATE * 2) / 1000
 // After the goodbye has played, the bot waits this much longer before it drops, so its last word isn't cut.
 const LEAVE_MARGIN_MS = 500
+// Someone who starts talking over Alex pauses it at once (see turnStarted). With no words yet that stop it, the page
+// resumes after this long, so a cough Deepgram is slow to end the turn on doesn't leave the meeting in silence. The
+// turn is still watched after that: words that come later still stop Alex.
+const PAUSE_MAX_MS = 1500
+// Speech that starts with no more than this much of the line left to play, and nothing more going out, neither pauses
+// nor stops Alex: it is someone answering as a question ends. Pausing would cut the last word, and lose the reply.
+const TAIL_MS = 400
+// How many words that count (wordsThatCount: not a filler, not "mm-hm", "yeah" or "I see", and the name always) stop
+// Alex: 2 while the turn goes on, since Deepgram may still be partway through it, and 1 once it has ended. A single
+// stray word is often noise.
+const STOP_WORDS_PARTIAL = 2
+const STOP_WORDS_FINAL = 1
 /**
  * What the bot page shows when something fails. The page is the assistant's camera, so the whole meeting reads it: it
  * gets these fixed words, never the error itself (a provider's reply can hold account details or request ids, and a
@@ -186,6 +200,11 @@ export class MeetingSession {
   private flux: Pick<FluxStream, 'send' | 'close' | 'on'>
   private turn: AbortController | null = null
   private speaking = false
+  // Someone started talking over Alex, and their turn has not ended yet: what they say decides whether Alex stops
+  // (see turnStarted). Only whether, never the words.
+  private watching = false
+  // While the page is paused for someone talking over Alex: resumes it after PAUSE_MAX_MS. Null when not paused.
+  private pauseTimer: NodeJS.Timeout | null = null
   // What Alex said last in this answer, to see whether it ended on a question. Only in memory.
   private lastSaid = ''
   // Until when (epoch ms) the next thing said goes to Alex without the name: after Alex ended an answer
@@ -248,10 +267,16 @@ export class MeetingSession {
 
     this.sttClosed = new Promise(resolve => this.flux.on('close', () => resolve()))
     this.flux.on('turn', turn => {
-      // Talking over Alex stops its reply, but not the consent line (the meeting has to hear all of it) nor
-      // the goodbye (it promises the transcript is deleted).
-      if (turn.event === 'StartOfTurn' && this.speaking && !this.leaving && !this.greeting) this.bargeIn()
-      if (turn.event === 'EndOfTurn' && turn.transcript.trim()) void this.onUtterance(turn.transcript.trim())
+      // Talking over Alex pauses it at once, then stops it for words, or lets it carry on for a cough, a laugh or
+      // "mm-hm" (see turnStarted). Not the consent line (the meeting has to hear all of it) nor the goodbye (it
+      // promises the transcript is deleted). Each event carries the turn so far: an Update (or an EagerEndOfTurn or
+      // TurnResumed, which are not asked for) goes on with it.
+      const text = (turn.transcript ?? '').trim()
+      if (turn.event === 'StartOfTurn') return this.turnStarted(text)
+      if (turn.event !== 'EndOfTurn') return this.turnGoesOn(text)
+      // The verdict first: a stop clears the page and stops the turn before the line can start an answer.
+      this.turnEnded(text)
+      if (text) void this.onUtterance(text)
     })
     this.flux.on('error', err => {
       console.error('[stt]', err.message)
@@ -296,6 +321,8 @@ export class MeetingSession {
    * removal and the end of the session still stop it at once, since they stop the turn it is said in.
    */
   private greet(): void {
+    // A pause under way ends first (the page plays what it held), so the consent line never waits behind a paused page.
+    this.endWatch()
     const greeting = this.runTurn(async signal => {
       await this.say(JOIN_LINE, signal)
       // Not when it was stopped: by then the timings may already be the goodbye's.
@@ -543,6 +570,88 @@ export class MeetingSession {
     }
   }
 
+  /** Whether the page is there to play Alex's voice, and to be paused or told to clear: while its socket is open. */
+  private attached(): boolean {
+    return this.ws.readyState === WebSocket.OPEN
+  }
+
+  /**
+   * Whether the meeting can still hear Alex, so that talking over it pauses it: it is still sending a line, the page is
+   * paused, or the page has more than the last TAIL_MS of a line left to play. Never the consent line or the goodbye,
+   * which are heard in full, and never once the page has gone (a pause it never gets would leave the model of what it
+   * played out of step with it).
+   */
+  private audible(): boolean {
+    if (!this.attached() || this.leaving || this.ended || this.greeting) return false
+    return this.speaking || this.playback.paused || this.playback.playsUntil - this.clock() > TAIL_MS
+  }
+
+  /**
+   * Someone started talking. Over Alex, the page pauses at once, and their turn is watched until it ends: two words
+   * that count stop Alex at once. Fewer leave it paused, to see what comes next.
+   */
+  private turnStarted(text: string): void {
+    if (!this.watching && !this.audible()) return
+    this.watching = true
+    if (wordsThatCount(text, true) >= STOP_WORDS_PARTIAL) return this.talkedOver()
+    this.pausePage()
+  }
+
+  /** A watched turn goes on: two words that count stop Alex, even after the page has resumed. */
+  private turnGoesOn(text: string): void {
+    if (this.watching && wordsThatCount(text, true) >= STOP_WORDS_PARTIAL) this.talkedOver()
+  }
+
+  /**
+   * A watched turn ended. One word that counts stops Alex. With none (a cough, a laugh, "mm-hm", "yeah, sure") the page
+   * resumes where it paused. The line is then heard as any other (onUtterance): this only decides about Alex's voice.
+   */
+  private turnEnded(text: string): void {
+    if (!this.watching) return
+    if (wordsThatCount(text) >= STOP_WORDS_FINAL) return this.talkedOver()
+    this.endWatch()
+  }
+
+  /**
+   * Someone took the floor: Alex stops as it always has (the page clears, the turn stops). Paused, the lines keep the
+   * words the page had played when it paused. Nothing to stop once Alex has finished (the watch outlasted the
+   * answer). An open reply window stays open: the speech may well be the reply to the question Alex just asked.
+   */
+  private talkedOver(): void {
+    this.watching = false
+    if (!this.audible() && !this.turn) return this.dropPause()
+    this.bargeIn()
+  }
+
+  /** Pauses the page, and the model of what it plays, until resumePage or a clear: at most PAUSE_MAX_MS. */
+  private pausePage(): void {
+    if (this.pauseTimer) return
+    this.control({ type: 'pause' })
+    this.playback.pause()
+    this.pauseTimer = setTimeout(() => this.resumePage(), this.deps.pauseMaxMs ?? PAUSE_MAX_MS)
+    this.pauseTimer.unref()
+  }
+
+  /** The page plays what it held, from where it paused. Nothing when it is not paused. The watch goes on. */
+  private resumePage(): void {
+    if (!this.pauseTimer) return
+    this.dropPause()
+    this.control({ type: 'resume' })
+    this.playback.resume()
+  }
+
+  /** Stops watching the turn, and resumes the page if it is paused. */
+  private endWatch(): void {
+    this.watching = false
+    this.resumePage()
+  }
+
+  /** Forgets the pause timer, for a page that is cleared or gone: a clear ends the page's pause too. */
+  private dropPause(): void {
+    if (this.pauseTimer) clearTimeout(this.pauseTimer)
+    this.pauseTimer = null
+  }
+
   private bargeIn(): void {
     // The page first, so the line stops where the page was, not where its audio had got to.
     this.clearPage()
@@ -550,11 +659,12 @@ export class MeetingSession {
   }
 
   /**
-   * Tells the page to stop playing what it still has of Alex's voice. The lines it had not played to the end keep, in
-   * the transcript, only the words the meeting heard. (When Alex leaves, stopRecording clears the page itself: the
-   * transcript is gone by then.)
+   * Tells the page to stop playing what it still has of Alex's voice, and what it held if paused (a clear ends a pause).
+   * The lines it had not played to the end keep, in the transcript, only the words the meeting heard. (When Alex
+   * leaves, stopRecording clears the page itself: the transcript is gone by then.)
    */
   private clearPage(): void {
+    this.dropPause()
     this.control({ type: 'clear' })
     this.playback.stop()
   }
@@ -596,6 +706,9 @@ export class MeetingSession {
   private stopRecording(): void {
     const first = !this.leaving
     this.leaving = true
+    // No pause or resume goes to the page after this: the clear below ends a pause, and the goodbye is never paused.
+    this.watching = false
+    this.dropPause()
     // Nothing of the transcript is corrected as the turn stops: it goes.
     this.playback.reset()
     this.turn?.abort()
@@ -664,8 +777,11 @@ export class MeetingSession {
   end(): void {
     if (this.ended) return
     this.ended = true
-    // The page has gone, or goes now: what it had not played of Alex's voice was not heard. Before the turn stops, so
-    // the line stops where the page was.
+    // Nothing more goes to the page, a resume included.
+    this.watching = false
+    this.dropPause()
+    // The page has gone, or goes now: what it had not played of Alex's voice was not heard (a paused page, nothing
+    // after the pause). Before the turn stops, so the line stops where the page was.
     this.playback.stop()
     this.turn?.abort()
     this.flux.close()

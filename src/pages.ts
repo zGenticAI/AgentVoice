@@ -8,7 +8,8 @@
 // A page of your own (AGENT_PAGE_FILE) keeps the contract the default page keeps:
 // - it imports startAgent from /agent.js and calls it, which streams the meeting's audio to the service and plays
 //   the assistant's voice (the only other file the page may load from the service is /pcm-worklet.js, which
-//   agent.js loads itself);
+//   agent.js loads itself). agent.js also pauses and resumes the voice when someone talks over the assistant: the page
+//   needs nothing for that, and gets no new states (onState says 'listening' while it is paused);
 // - it says the assistant is an AI where the meeting can see it, with the word "AI" in its visible text, as the
 //   consent line, the chat notice and the participant list do. That is not a setting.
 // The service reads the page once, when it starts (loadAgentPage): it checks both, refuses a page that breaks either,

@@ -87,7 +87,7 @@ cp profile.example.md profile.md
 | --- | --- |
 | "Alex, what's the timeline?" | It answers, from the brief or after checking with your session. |
 | "Alex, never mind" or "Alex, stop" | It stops talking, and drops the question. |
-| Talking over it while it answers | It stops while the answer is still going out to the bot page; the end the page already has still plays ("Alex, never mind" stops that too). The transcript keeps only the words the meeting heard, ending in "(cut off)". |
+| Talking over it while it answers | It pauses at once. It stops for real words, and carries on for "mm-hm", "yeah", "okay" or a cough. It can be talked over until the bot page has played the end of the answer. The transcript keeps only the words the meeting heard, ending in "(cut off)". |
 | "Alex, please leave" | It says goodbye and leaves. It deletes its transcript of the meeting (in `data/`), and writes no minutes. |
 | Removing it from the participant list | The same as "Alex, please leave", once Recall confirms the removal. |
 
