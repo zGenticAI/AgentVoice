@@ -218,3 +218,133 @@ test('the page plays until the end of everything sent to it, gaps and the 50 ms 
   playback.stop()
   assert.equal(playback.playsUntil, 0)
 })
+
+// --- Pausing: someone talks over the assistant, and the page holds the rest until it resumes or is cleared --------
+
+// Where the clock of follow() starts, and a line of 42 letters.
+const T = 1_000_000
+const A = 'The pilot starts in March and ends in May.'
+
+test('a pause holds what the page had not played; resume plays it 50 ms after, back to back; a later stop counts both runs', () => {
+  const { playback, amended, at } = follow()
+  const a = playback.begin('a', A)
+  playback.sent(a, 2000) // 50-2050
+  playback.close(a, true)
+  at(550)
+  playback.pause() // 500 played, 1500 held
+  assert.deepEqual(a.runs, [[T + 50, T + 550]])
+  assert.equal(playback.paused, true)
+  at(1550)
+  assert.equal(playback.playsUntil, T + 1550 + PAGE_LEAD_MS + 1500)
+  playback.resume() // 1600-3100
+  assert.deepEqual(a.runs, [[T + 50, T + 550], [T + 1600, T + 3100]])
+  assert.equal(playback.playsUntil, T + 3100)
+  at(2100) // 500 + 500 = 1000 of 2000
+  playback.stop()
+  assert.deepEqual(amended, [['a', `The pilot starts in… ${CUT_OFF}`]])
+})
+
+test('a stop while paused cuts at the pause, however long the pause, and the page starts afresh', () => {
+  const { playback, amended, at } = follow()
+  const a = playback.begin('a', A)
+  playback.sent(a, 2000)
+  playback.close(a, true)
+  at(1050)
+  playback.pause() // 1000 played
+  at(9000)
+  playback.stop()
+  assert.deepEqual(amended, [['a', `The pilot starts in… ${CUT_OFF}`]])
+  assert.equal(playback.paused, false)
+  const b = playback.begin('b', 'Next.')
+  playback.sent(b, 100)
+  assert.deepEqual(b.runs, [[T + 9000 + PAGE_LEAD_MS, T + 9150]])
+})
+
+test('audio sent while paused queues behind what was held', () => {
+  const { playback, at } = follow()
+  const a = playback.begin('a', A)
+  playback.sent(a, 1000) // 50-1050
+  at(300)
+  playback.pause() // 250 played, 750 held
+  playback.sent(a, 500)
+  playback.close(a, true)
+  const b = playback.begin('b', 'Next.')
+  playback.sent(b, 400)
+  at(1000)
+  playback.resume()
+  assert.deepEqual(a.runs, [[T + 50, T + 300], [T + 1050, T + 2300]])
+  assert.deepEqual(b.runs, [[T + 2300, T + 2700]])
+})
+
+test('gaps are not kept: pieces held play back to back', () => {
+  const { playback, at } = follow()
+  const a = playback.begin('a', A)
+  playback.sent(a, 200) // 50-250
+  at(1000)
+  playback.sent(a, 200) // 1050-1250
+  at(1020)
+  playback.pause() // the second piece had not started
+  at(2000)
+  playback.resume()
+  assert.deepEqual(a.runs, [[T + 50, T + 250], [T + 2050, T + 2250]])
+})
+
+test('a line closed short while paused counts what the page holds of it, which plays on resume', () => {
+  const { playback, amended, at } = follow()
+  const text = 'We expect the first results in the second week of April.' // 3920
+  const a = playback.begin('a', text)
+  playback.sent(a, 1960) // 50-2010
+  at(50 + 980)
+  playback.pause()
+  playback.close(a, false) // ElevenLabs failed while paused: the page plays all 1960 ms
+  assert.deepEqual(amended, [['a', `We expect the first results… ${CUT_OFF}`]])
+})
+
+test('a closed line whose audio is held is still followed when the next line begins', () => {
+  const { playback, at } = follow()
+  const a = playback.begin('a', A)
+  playback.sent(a, 400)
+  playback.close(a, true)
+  at(100)
+  playback.pause()
+  at(5000)
+  playback.begin('b', 'Next.')
+  assert.deepEqual(playback.following.map(p => p.line), ['a', 'b'])
+})
+
+test('audio of no line (the goodbye) is held and resumed too', () => {
+  const { playback, at } = follow()
+  playback.sent(null, 1000) // 50-1050
+  at(550)
+  playback.pause()
+  const a = playback.begin('a', 'Queued.')
+  playback.sent(a, 100)
+  at(600)
+  playback.resume()
+  assert.deepEqual(a.runs, [[T + 650 + 500, T + 650 + 600]])
+  assert.equal(playback.playsUntil, T + 1250)
+})
+
+test('pausing or resuming twice changes nothing more, a resume with nothing held plays nothing, and a reset unpauses', () => {
+  const { playback, at } = follow()
+  const a = playback.begin('a', A)
+  playback.sent(a, 1000) // 50-1050
+  at(300)
+  playback.pause() // 250 played, 750 held
+  at(600)
+  playback.pause()
+  at(1000)
+  playback.resume() // 1050-1800
+  at(1200)
+  playback.resume()
+  assert.deepEqual(a.runs, [[T + 50, T + 300], [T + 1050, T + 1800]])
+  const { playback: empty } = follow()
+  empty.pause()
+  assert.equal(empty.playsUntil, 0)
+  empty.resume()
+  assert.equal(empty.paused, false)
+  assert.equal(empty.playsUntil, 0)
+  empty.pause()
+  empty.reset()
+  assert.equal(empty.paused, false)
+})

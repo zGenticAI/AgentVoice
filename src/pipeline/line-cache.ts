@@ -116,10 +116,11 @@ export class LineCache {
 
   /**
    * Sends kept audio in 100 ms pieces: the first second at once, then no more than a second ahead of
-   * real time. The session treats Alex as speaking (so talking over it stops it, except during the
-   * consent line, which only leaving, removal or the end of the session stop) only while it is still
-   * sending. ElevenLabs streams about as fast as Alex talks, but kept audio would otherwise all go out at
-   * once, and the line could no longer be cut off. Stops at once when the signal aborts.
+   * real time, as ElevenLabs streams it about as fast as Alex talks. Talking over Alex pauses or stops
+   * what the page still has to play, whether or not it is still going out, so this is not what lets a
+   * line be cut off, but it keeps what the page has queued, and a clear throws away, to about a second.
+   * It keeps its own time through a pause: the page just holds more meanwhile. Stops at once when the
+   * signal aborts.
    */
   private async *paced(audio: Buffer, signal?: AbortSignal): AsyncGenerator<Buffer> {
     const start = this.now()

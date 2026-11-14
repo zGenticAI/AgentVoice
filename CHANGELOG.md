@@ -10,9 +10,16 @@ The notable changes in each version. The project follows [Semantic Versioning](h
 
 ### Changed
 
+- Talking over the assistant pauses it first. It stops only for words, and carries on after a cough, a laugh, or "mm-hm", "yeah", "okay", "right" or "I see". It can now be talked over until the bot page has played the end of an answer. Before, it stopped at the first sound Deepgram turned into a word, and only while the answer was still going out to the page.
 - The transcript says what the meeting heard the assistant say. When it is talked over, told never mind, or asked something new partway through an answer, when its page goes, or when ElevenLabs fails partway through a line, the line keeps only the words the bot page had played, ending in "(cut off)", and a line it never got to is left out. The minutes and the next answers go by it. Before, the transcript had every line in full as soon as the assistant started it.
 - The consent line and the goodbye are protected until the bot page has played them to the end, as the service now follows the page's playback. Before, it went by when their audio had gone out, which could be earlier: when the page started 50 ms late, when ElevenLabs paused partway, or when an answer to a question asked before the consent line was still playing ahead of it.
 - The bot leaves a meeting by itself sooner: 5 minutes after it got in if nobody else has joined (Recall's default was 20), and after 15 minutes of silence, counted once it has been in the call 10 minutes (the default was 60, after 20).
+- Speech recognition reconnects by itself when Deepgram drops the stream, as soon as more of the meeting's audio comes in, then backing off, and sends the last 2 seconds said meanwhile first. A sentence cut off by the drop is kept as far as it got. The bot page says "can't hear the meeting" only once Deepgram has been unreachable for 5 seconds, or refused the key, and the message clears once speech recognition is back. Before, a dropped stream left the assistant deaf for the rest of the meeting.
+- The last words before a meeting ends are transcribed: the sentence in progress is ended before the stream closes, so it reaches the transcript and the minutes (and a "please leave" among them is honoured). Before, it was lost.
+
+### Fixed
+
+- A refused Deepgram connection (a wrong key, no credit left) no longer piles up the meeting's audio in memory for the rest of the meeting, and is not tried again.
 
 ## 0.1.0
 
