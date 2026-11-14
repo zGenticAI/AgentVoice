@@ -244,6 +244,9 @@ export class MeetingSession {
   // attached): a page that does not come back is taken to have played what it had until then.
   private heardAt = 0
   private droppedAt = 0
+  // Whether any page has sent this session anything. A page sends nothing until it has had 'ready', so until then a
+  // page whose first 'ready' never reached it (and so has no secret) may still take the session over (see resumes).
+  private pageSpoke = false
   // While the page is away: ends the session if it doesn't come back in time, ends the turn someone is in the middle
   // of (STT_HOLD_MS), and asks Recall whether the bot has left the call (a meeting that ended takes its page with it).
   private awayTimer: NodeJS.Timeout | null = null
@@ -381,6 +384,7 @@ export class MeetingSession {
     this.heardAt = this.clock()
     const message = (data: WebSocket.RawData, isBinary: boolean) => {
       this.heardAt = this.clock()
+      this.pageSpoke = true
       // Once someone has asked Alex to leave (or removed it), the meeting's audio goes nowhere: nothing
       // more of it is sent out to be transcribed while Alex says goodbye.
       if (isBinary && !this.leaving) this.flux.send(data as Buffer)
@@ -455,10 +459,14 @@ export class MeetingSession {
 
   /**
    * Whether a page may come back to this session with this secret (from its 'ready'), compared in constant time. Never
-   * once the session has ended, nor once Alex is leaving: no page is let in then.
+   * once the session has ended, nor once Alex is leaving: no page is let in then. A page with no secret ('') may take
+   * the session over only while no page has sent it anything: its first 'ready' was lost on the way (the page sends
+   * nothing before it has one), and without this it could never come back. The server still wants a later try (n).
    */
   resumes(secret: string): boolean {
-    return !this.ended && !this.leaving && sameSecret(secret, this.rejoin)
+    if (this.ended || this.leaving) return false
+    if (!secret) return !this.pageSpoke
+    return sameSecret(secret, this.rejoin)
   }
 
   /**
@@ -493,7 +501,8 @@ export class MeetingSession {
     this.droppedAt = 0
     this.wire(ws)
     this.control({ type: 'ready', sampleRate: SAMPLE_RATE, rejoin: this.rejoin })
-    if (this.deaf) this.control({ type: 'error', message: PAGE_ERRORS.hearing })
+    // Either way: a 'hearing' lost in the drop would leave the page showing "can't hear the meeting" for good.
+    this.control(this.deaf ? { type: 'error', message: PAGE_ERRORS.hearing } : { type: 'hearing' })
     if (this.clearOnReturn) {
       this.clearOnReturn = false
       this.clearPage()

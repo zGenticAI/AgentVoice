@@ -632,6 +632,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     if (meeting.state === 'live' || meeting.state === 'away') {
       // One page per meeting. Only the meeting's own page comes back to it, with the secret its session gave it in
       // 'ready'; it may then take the place of a connection that stopped answering. Any other page is someone else's.
+      // (Until a page has sent the session anything, one without a secret may take over: its first 'ready' was lost.)
       const session = meeting.session
       if (!session || !session.resumes(url.searchParams.get('rejoin') ?? '')) {
         console.warn(`[audio] refused a page for bot ${meeting.botId} without its meeting's secret: the meeting has its page`)
