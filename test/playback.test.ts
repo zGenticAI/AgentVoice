@@ -1,7 +1,7 @@
 // What the meeting heard of the assistant: how much of a line the page had played when it stopped, as whole words.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { CUT_OFF, MS_PER_CHAR, PAGE_LEAD_MS, Playback, heardText } from '../src/pipeline/playback.ts'
+import { CUT_OFF, MS_PER_CHAR, PAGE_LEAD_MS, Playback, heardText, spokenLength } from '../src/pipeline/playback.ts'
 
 test('a line cut off keeps the whole words heard, rounded down, and says it was cut off', () => {
   const line = 'The pilot starts in March and ends in May.'
@@ -10,6 +10,18 @@ test('a line cut off keeps the whole words heard, rounded down, and says it was 
   assert.equal(heardText(line, 19 / 42), `The pilot starts in… ${CUT_OFF}`)
   assert.equal(heardText(line, 18 / 42), `The pilot starts… ${CUT_OFF}`, 'a word cut off partway was not heard')
   assert.equal(heardText(line, 25 / 42), `The pilot starts in March… ${CUT_OFF}`)
+  // Rounded down: half of the "n" of "in" was said, so "in" was not.
+  assert.equal(heardText(line, 18.5 / 42), `The pilot starts… ${CUT_OFF}`)
+})
+
+test('figures and signs take longer to say than to write, so a line goes by how long it takes to say', () => {
+  const line = 'Revenue rose 18% to $4.2M in March.'
+  // 35 characters, said as about 57 letters: "eighteen percent", "four point two million dollars".
+  assert.equal(spokenLength(line), 57)
+  assert.equal(spokenLength('The pilot starts in March and ends in May.'), 42)
+  // Three quarters of the way through, by its letters, "$4.2M" was over; it is still being said.
+  assert.equal(heardText(line, 0.75), `Revenue rose 18% to… ${CUT_OFF}`)
+  assert.equal(heardText(line, 0.83), `Revenue rose 18% to $4.2M… ${CUT_OFF}`)
 })
 
 test('a line none of whose words was heard is empty, so it goes from the transcript', () => {
@@ -151,4 +163,58 @@ test('audio for no line (the goodbye, once the transcript is gone) still holds t
   playback.stop()
   playback.close(a, false) // its turn ends after the reset: nothing is asked of a transcript that is gone
   assert.deepEqual(amended, [])
+})
+
+test('a line stopped while its audio is still going out goes by how long the whole line takes, not by what was sent', () => {
+  const { playback, amended, at } = follow()
+  const text = 'We expect the first results in the second week of April.' // reckoned at 3920 ms
+  const a = playback.begin('a', text)
+  playback.sent(a, 1960) // half the line has gone out, and ElevenLabs is still making the rest
+  at(PAGE_LEAD_MS + 980) // a quarter of it has played: talked over
+  playback.stop()
+  assert.deepEqual(amended, [['a', `We expect the… ${CUT_OFF}`]])
+  // The turn then stops, and say() closes the line: it was settled already.
+  playback.close(a, false)
+  assert.equal(amended.length, 1)
+})
+
+test('a line whose audio did not all go out is reckoned by how long it takes to say, figures included', () => {
+  const { playback, amended } = follow()
+  const a = playback.begin('a', 'Revenue rose 18% to $4.2M in March.') // 57 letters' worth: 3990 ms
+  playback.sent(a, 3000) // by its 35 characters (2450 ms) all of it, but three quarters by what it says
+  playback.close(a, false)
+  assert.deepEqual(amended, [['a', `Revenue rose 18% to… ${CUT_OFF}`]])
+})
+
+test('a line played to all but its last moment loses its last word', () => {
+  const { playback, amended, at } = follow()
+  const a = playback.begin('a', 'It ships in March.')
+  playback.sent(a, 400)
+  playback.close(a, true)
+  at(PAGE_LEAD_MS + 390)
+  playback.stop()
+  assert.deepEqual(amended, [['a', `It ships in… ${CUT_OFF}`]])
+})
+
+test('a line is closed once: closing it again, as say() does after the turn stopped, changes nothing', () => {
+  const { playback, amended, at } = follow()
+  const a = playback.begin('a', 'It ships in March.')
+  playback.sent(a, 400)
+  playback.close(a, true) // all of it went out, and the page is playing it
+  playback.close(a, false)
+  assert.equal(a.complete, true)
+  at(PAGE_LEAD_MS + 400)
+  playback.stop()
+  assert.deepEqual(amended, [])
+})
+
+test('the page plays until the end of everything sent to it, gaps and the 50 ms lead included, and nothing after a stop', () => {
+  const { playback, at } = follow()
+  assert.equal(playback.playsUntil, 0)
+  playback.sent(null, 1000) // 50-1050
+  at(2000)
+  playback.sent(null, 500) // after a gap: 2050-2550
+  assert.equal(playback.playsUntil, 1_002_550)
+  playback.stop()
+  assert.equal(playback.playsUntil, 0)
 })

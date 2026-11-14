@@ -10,7 +10,8 @@ The notable changes in each version. The project follows [Semantic Versioning](h
 
 ### Changed
 
-- The transcript says what the meeting heard the assistant say. When it is talked over, told never mind, or its page goes, or ElevenLabs fails partway through a line, the line keeps only the words the bot page had played, ending in "(cut off)", and a line it never got to is left out. The minutes and the next answers go by it. Before, the transcript had every line in full as soon as the assistant started it.
+- The transcript says what the meeting heard the assistant say. When it is talked over, told never mind, or asked something new partway through an answer, when its page goes, or when ElevenLabs fails partway through a line, the line keeps only the words the bot page had played, ending in "(cut off)", and a line it never got to is left out. The minutes and the next answers go by it. Before, the transcript had every line in full as soon as the assistant started it.
+- The consent line and the goodbye are protected until the bot page has played them to the end, as the service now follows the page's playback. Before, it went by when their audio had gone out, which could be earlier: when the page started 50 ms late, when ElevenLabs paused partway, or when an answer to a question asked before the consent line was still playing ahead of it.
 - The bot leaves a meeting by itself sooner: 5 minutes after it got in if nobody else has joined (Recall's default was 20), and after 15 minutes of silence, counted once it has been in the call 10 minutes (the default was 60, after 20).
 
 ## 0.1.0

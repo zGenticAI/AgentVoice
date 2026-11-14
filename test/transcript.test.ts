@@ -59,3 +59,34 @@ test('an amend of a line that is not in the transcript changes nothing', () => {
   assert.equal(t.lines.length, 1)
   t.delete()
 })
+
+test('a correction that cannot be written leaves the file as it was and no copy beside it, and memory has it right', t => {
+  const tr = new Transcript(`amend-full-${process.pid}`)
+  tr.add('Speaker', 'When does the pilot start?')
+  const said = tr.add('Alex', 'The pilot starts in March and ends in May.', 'agent')!
+  const before = fs.readFileSync(tr.file, 'utf8')
+  const write = fs.writeFileSync
+  // A full disk: part of the copy is written, then the write fails.
+  t.mock.method(fs, 'writeFileSync', function (file: fs.PathOrFileDescriptor, ...rest: unknown[]) {
+    if (!String(file).endsWith('.next')) return (write as Function).call(fs, file, ...rest)
+    ;(write as Function).call(fs, file, '[00:00:00] Speaker: When does')
+    throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })
+  })
+  const errors: string[] = []
+  t.mock.method(console, 'error', (...args: unknown[]) => void errors.push(args.map(String).join(' ')))
+  tr.amend(said, 'The pilot starts in… (cut off)') // does not throw
+  assert.equal(fs.readFileSync(tr.file, 'utf8'), before)
+  assert.equal(fs.existsSync(`${tr.file}.next`), false)
+  assert.equal(tr.lines[1].text, 'The pilot starts in… (cut off)')
+  assert.deepEqual(errors, ['[transcript] could not correct a line in the transcript file: ENOSPC'])
+  tr.delete()
+})
+
+test('a delete takes a copy left beside the transcript with it', () => {
+  const tr = new Transcript(`amend-left-${process.pid}`)
+  tr.add('Speaker', 'When does the pilot start?')
+  fs.writeFileSync(`${tr.file}.next`, '[00:00:00] Speaker: When does', { mode: 0o600 }) // left by a crash mid-write
+  tr.delete()
+  assert.equal(fs.existsSync(tr.file), false)
+  assert.equal(fs.existsSync(`${tr.file}.next`), false)
+})

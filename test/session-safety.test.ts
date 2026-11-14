@@ -435,7 +435,8 @@ test('"Alex?" during the consent line opens the called window once the line is o
   const called = Date.now()
   s.flux.endTurn('Alex?')
   await until(() => joinPieces(s.ws) === JOIN_PIECES)
-  await sleep(50) // people wait for Alex to finish before they ask
+  // People wait for Alex to finish before they ask: the page plays the last piece from 50 ms after it arrives.
+  await sleep(120)
   assert.ok(Date.now() - called > 150, 'past the window as counted from "Alex?"')
   s.flux.endTurn('What are the tiers?')
   await until(() => s.answered.length === 1)

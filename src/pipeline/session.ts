@@ -205,13 +205,12 @@ export class MeetingSession {
   // Counts the lines that asked Alex something or told it to stop, so a question that waited for the
   // consent line is dropped when something said after it has taken its place.
   private lineCount = 0
-  // When the line Alex said last started going out to the page (epoch ms), and how many milliseconds of
-  // audio went out: the page plays it from about then, for that long. Only timings, never content.
-  private sentFrom = 0
-  private sentMs = 0
-  // How the page plays Alex's lines, so that a line cut off (Alex was talked over or told never mind, or the page went)
-  // keeps in the transcript only the words the meeting heard. Only timings, and the lines while they may still play.
+  // How the page plays Alex's voice: when it will have played what went out to it (for the consent line and the
+  // goodbye, which are heard in full), and how much of a line it had played when the line stopped short, so that the
+  // transcript keeps only the words the meeting heard. Only timings, and the lines while they may still play.
   private readonly playback: Playback<Line>
+  // The time for following the page's playback: Date.now unless a test passes a clock.
+  private readonly clock: () => number
   private questions: string[] = []
   private ended = false
   // How many questions this session has handed to the owner's session: Alex takes the checking lines in turn.
@@ -236,7 +235,8 @@ export class MeetingSession {
     private deps: SessionDeps,
   ) {
     this.transcript = new Transcript(opts.meetingKey)
-    this.playback = new Playback((line, text) => this.transcript.amend(line, text), deps.clock)
+    this.clock = deps.clock ?? Date.now
+    this.playback = new Playback((line, text) => this.transcript.amend(line, text), this.clock)
     this.recall = deps.recall ?? recall
     this.flux = deps.flux ? deps.flux() : new FluxStream()
     this.records = recordsFor(opts.meetingKey)
@@ -300,10 +300,11 @@ export class MeetingSession {
       await this.say(JOIN_LINE, signal)
       // Not when it was stopped: by then the timings may already be the goodbye's.
       if (signal.aborted) return
-      this.consentPlaysUntil = this.sentFrom + this.sentMs
-      // The page is still playing the last of the line (about a second when it was kept, longer when it
-      // streamed). The greeting lasts until the page has played it, so neither talking over Alex's first
-      // answer nor "Alex, never mind" can clear the end of it, and a question asked meanwhile is answered after.
+      this.consentPlaysUntil = Date.now() + Math.max(0, this.playback.playsUntil - this.clock())
+      // The page is still playing the last of the line (about a second when it was kept, longer when it streamed,
+      // or when an answer to a question asked before it was still playing ahead of it). The greeting lasts until the
+      // page has played it, so neither talking over Alex's first answer nor "Alex, never mind" can clear the end of
+      // it, and a question asked meanwhile is answered after.
       await new Promise<void>(resolve => {
         const timer = setTimeout(resolve, Math.max(0, this.consentPlaysUntil - Date.now()))
         timer.unref()
@@ -513,10 +514,12 @@ export class MeetingSession {
     const playing = line ? this.playback.begin(line, text) : null
     // Whether every piece of the line went out to the page.
     let complete = false
+    // When the turn stops (a new question, say), the line keeps the words its audio got to at once, before the next
+    // answer is asked for with the transcript: not later, as this ends. Only while this line is still going out.
+    const stopped = () => playing && this.playback.close(playing, false)
+    signal.addEventListener('abort', stopped, { once: true })
     this.lastSaid = text
     this.speaking = true
-    this.sentFrom = 0
-    this.sentMs = 0
     this.control({ type: 'speaking', on: true })
     try {
       let skipped = false
@@ -526,14 +529,12 @@ export class MeetingSession {
           skipped = true
           continue
         }
-        this.sentFrom ||= Date.now()
         this.ws.send(chunk)
-        const ms = chunk.length / BYTES_PER_MS
-        this.sentMs += ms
-        this.playback.sent(playing, ms)
+        this.playback.sent(playing, chunk.length / BYTES_PER_MS)
       }
       complete = !signal.aborted && !skipped
     } finally {
+      signal.removeEventListener('abort', stopped)
       // A line that did not all go out (Alex was stopped, or ElevenLabs failed partway) keeps only the words its audio
       // got to: the page plays what it was sent, and nothing more.
       if (playing) this.playback.close(playing, complete)
@@ -543,8 +544,9 @@ export class MeetingSession {
   }
 
   private bargeIn(): void {
-    this.turn?.abort()
+    // The page first, so the line stops where the page was, not where its audio had got to.
     this.clearPage()
+    this.turn?.abort()
   }
 
   /**
@@ -594,12 +596,13 @@ export class MeetingSession {
   private stopRecording(): void {
     const first = !this.leaving
     this.leaving = true
+    // Nothing of the transcript is corrected as the turn stops: it goes.
+    this.playback.reset()
     this.turn?.abort()
     // The page may still hold audio that has gone out: about a second of a kept line such as the consent
     // line, or the rest of an answer ElevenLabs sent faster than it plays. It is cleared, so nothing more
     // of it is heard, and the goodbye (see leave) plays from when it arrives instead of queueing behind it.
     if (first) this.control({ type: 'clear' })
-    this.playback.reset()
     this.questions = []
     this.transcript.delete()
     this.additions.clear()
@@ -614,7 +617,11 @@ export class MeetingSession {
     this.records.left ??= how
     for (const session of this.records.sessions) session.stopRecording()
     this.stopRecording()
-    for (const file of this.records.files) fs.rmSync(file, { force: true })
+    // With the copy a correction of the transcript leaves if it fails (see Transcript.amend).
+    for (const file of this.records.files) {
+      fs.rmSync(file, { force: true })
+      fs.rmSync(`${file}.next`, { force: true })
+    }
   }
 
   private async leave(): Promise<void> {
@@ -627,7 +634,7 @@ export class MeetingSession {
     // ahead of what has played, a streamed one as fast as ElevenLabs makes it. The page plays it from when
     // its first piece arrived, nothing queued ahead of it, so wait for the rest of it, and a little more,
     // but no longer: until the bot drops, the meeting is in a call with a bot that has said it is leaving.
-    const playing = Math.max(0, this.sentFrom + this.sentMs - Date.now())
+    const playing = Math.max(0, this.playback.playsUntil - this.clock())
     await new Promise(r => setTimeout(r, this.deps.leaveDelayMs ?? playing + LEAVE_MARGIN_MS))
     if (this.opts.botId) {
       await this.recall.leaveCall(this.opts.botId).catch(err => console.error('[leave]', err.message))
@@ -657,9 +664,10 @@ export class MeetingSession {
   end(): void {
     if (this.ended) return
     this.ended = true
-    this.turn?.abort()
-    // The page has gone, or goes now: what it had not played of Alex's voice was not heard.
+    // The page has gone, or goes now: what it had not played of Alex's voice was not heard. Before the turn stops, so
+    // the line stops where the page was.
     this.playback.stop()
+    this.turn?.abort()
     this.flux.close()
     const botId = this.opts.botId
     if (botId) {

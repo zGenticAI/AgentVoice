@@ -1,13 +1,15 @@
 // What the meeting has heard of the assistant. The bot page plays each piece of the assistant's voice as soon as it
 // arrives, or straight after the piece before it (public/agent.js), so the service can tell from when each piece went
-// out how much of a line had played when the page stopped: someone talked over the assistant or told it never mind
-// (the page is told to clear), or the page went. The transcript then keeps only the words the meeting heard.
+// out how much of a line had played when it stopped. A line stops short when the page is told to clear (someone talked
+// over the assistant or told it never mind) or goes, and when the rest of its audio never went out (a new question
+// stopped the answer, or ElevenLabs failed partway). The transcript then keeps only the words the meeting heard.
 
 /** The page starts a piece this long after it arrives, unless the piece before it is still playing (public/agent.js). */
 export const PAGE_LEAD_MS = 50
 /**
- * Roughly how long one character of a line takes to say: for a line whose audio did not all go out (ElevenLabs was
- * stopped or failed partway), whose full length is not known. On the slow side, so such a line claims fewer words.
+ * Roughly how long a letter of a line takes to say (figures and signs take longer: see spokenLength): for a line whose
+ * audio did not all go out (ElevenLabs was stopped or failed partway), whose full length is not known. On the slow
+ * side, so such a line claims fewer words.
  */
 export const MS_PER_CHAR = 70
 /** How a line that was cut off ends in the transcript. */
@@ -15,17 +17,36 @@ export const CUT_OFF = '(cut off)'
 // Rounding in the sums of milliseconds: a line whose audio has all played, to within this, was heard in full.
 const ROUNDING_MS = 1
 
+// How long a character takes to say, in letters: a figure or a sign is said as a word or more ("18%" is "eighteen
+// percent", "$4.2M" is "four point two million dollars"), so a line full of them takes longer than its length says.
+function weight(char: string): number {
+  if (/\d/u.test(char)) return 4
+  if (/[%$€£]/u.test(char)) return 6
+  return 1
+}
+
+/** About how long a line takes to say, in letters (see weight): a figure counts as 4, a currency or percent sign as 6. */
+export function spokenLength(text: string): number {
+  let length = 0
+  for (let i = 0; i < text.length; i++) length += weight(text[i])
+  return length
+}
+
 /**
  * The words of a line heard when `fraction` of it was said, as the transcript keeps them: whole words only (a word
  * cut off partway wasn't really heard), then "… (cut off)", or " (cut off)" after the end of a sentence. '' when not
- * one whole word was heard.
+ * one whole word was heard. The fraction is of the time the line takes to say (see spokenLength), not of its letters.
  */
 export function heardText(text: string, fraction: number): string {
-  const upTo = Math.floor(Math.min(1, Math.max(0, fraction)) * text.length)
+  // said[i]: how long text.slice(0, i) takes to say. A hair over, so that a fraction worked out in floating point
+  // (19 / 42 of a line) still reaches the end of the word it lands on.
+  const said = [0]
+  for (let i = 0; i < text.length; i++) said.push(said[i] + weight(text[i]))
+  const upTo = Math.min(1, Math.max(0, fraction)) * said[text.length] + 1e-9
   let end = 0
   for (const word of text.matchAll(/\S+/g)) {
     const wordEnd = word.index + word[0].length
-    if (wordEnd > upTo) break
+    if (said[wordEnd] > upTo) break
     end = wordEnd
   }
   const heard = text.slice(0, end).replace(/[\s,;:–—-]+$/u, '')
@@ -91,8 +112,9 @@ export class Playback<L> {
    * page plays what it was sent, so a line that did not all go out keeps the words its audio got to, at once.
    */
   close(playing: Playing<L>, complete: boolean): void {
-    // The page was cleared while the line went out: what was heard of it was settled then.
-    if (!this.lines.includes(playing)) return
+    // Closed already (the turn stopped, and say() closes it again as it ends), or the page was cleared while the line
+    // went out: what was heard of it was settled then.
+    if (playing.closed || !this.lines.includes(playing)) return
     playing.closed = true
     playing.complete = complete
     if (!complete) this.settle(playing, Infinity)
@@ -104,15 +126,24 @@ export class Playback<L> {
    */
   stop(): void {
     const at = this.clock()
-    for (const playing of this.lines) this.settle(playing, at)
+    const lines = this.lines
     this.lines = []
     this.head = 0
+    for (const playing of lines) this.settle(playing, at)
   }
 
   /** The page was cleared with no transcript left to correct (the assistant is leaving): forgets every line. */
   reset(): void {
     this.lines = []
     this.head = 0
+  }
+
+  /**
+   * When the page will have played everything sent to it so far (by the clock), or earlier when that is already over:
+   * how long the consent line and the goodbye are still heard for. 0 after a stop or a reset, until audio goes out.
+   */
+  get playsUntil(): number {
+    return this.head
   }
 
   /** Lines the page may still be playing, for tests. */
@@ -124,7 +155,7 @@ export class Playback<L> {
     const played = playing.runs.reduce((sum, [start, end]) => sum + Math.max(0, Math.min(end, at) - start), 0)
     if (playing.complete && played >= playing.sentMs - ROUNDING_MS) return
     // A line whose audio did not all go out is longer than what was sent: about this long, at least.
-    const whole = playing.complete ? playing.sentMs : Math.max(playing.sentMs, playing.text.length * MS_PER_CHAR)
+    const whole = playing.complete ? playing.sentMs : Math.max(playing.sentMs, spokenLength(playing.text) * MS_PER_CHAR)
     const text = heardText(playing.text, whole > 0 ? played / whole : 0)
     if (text === playing.shown) return
     playing.shown = text

@@ -636,10 +636,13 @@ test("\"Alex, please leave\" in a later session of the meeting deletes the earli
   await until(() => first.ended() !== undefined)
   const minutesFile = first.ended()!.minutes_file
   assert.ok(fs.existsSync(minutesFile))
+  // A copy of the first session's transcript that a correction left beside it (see Transcript.amend) goes too.
+  fs.writeFileSync(`${first.session.transcript.file}.next`, 'We agreed the pilot', { mode: 0o600 })
   const second = botSetup({ botId: first.botId }) // and the page connected again
   second.flux.endTurn('Alex, please leave.')
   await until(() => second.ended() !== undefined)
   assert.equal(fs.existsSync(first.session.transcript.file), false, "the first session's transcript is deleted")
+  assert.equal(fs.existsSync(`${first.session.transcript.file}.next`), false, 'and a copy left beside it')
   assert.equal(fs.existsSync(minutesFile), false, "the first session's minutes are deleted")
   assert.equal(fs.existsSync(second.session.transcript.file), false)
   const e = second.ended()!
