@@ -18,11 +18,11 @@ The tests use fakes for Deepgram, ElevenLabs, Claude and Recall. The real test o
 
 | Path | What it does |
 | --- | --- |
-| `src/server.ts` | HTTP and websocket server: the public and control listeners, the agent page, `/audio`, `/bridge`, `/api/join`, the limits on meetings, getting bots out of their calls, and stopping in order |
+| `src/server.ts` | HTTP and websocket server: the public and control listeners, the agent page, `/audio` (its heartbeat, and a page coming back with its secret), `/bridge`, `/api/join`, the limits on meetings, getting bots out of their calls, and stopping in order |
 | `src/network.ts`, `src/local-token.ts`, `src/control-socket.ts` | Who may reach what: the `Origin` and token checks, the local token, the data folder's permissions, and the control socket |
 | `src/sessions.ts` | Which meeting a request from your session is for (`get_transcript`, `add_to_brief`, `post_chat`, a late answer) |
-| `src/pipeline/session.ts` | One conversation: speech to text, deciding when to answer, pausing and stopping when talked over, speaking |
-| `src/pipeline/playback.ts` | How much of each line the page had played when Alex was cut off, through pauses, so the transcript keeps only what was heard |
+| `src/pipeline/session.ts` | One conversation: speech to text, deciding when to answer, pausing and stopping when talked over, speaking, and carrying on while the page is away (`test/reconnect-session.test.ts`) |
+| `src/pipeline/playback.ts` | How much of each line the page had played when Alex was cut off, through pauses and drops (what a page that came back says it never got), so the transcript keeps only what was heard |
 | `src/pipeline/deepgram.ts`, `tts.ts` | Deepgram Flux and ElevenLabs streaming clients. The Flux stream opens again by itself when Deepgram drops it, and says when it can't hear |
 | `src/pipeline/line-cache.ts` | Alex's fixed lines, made once per voice and kept in `data/tts-cache`, sent as fast as it speaks them |
 | `src/brain/brain.ts` | Claude call for spoken answers and the hand-off to your session |
@@ -37,7 +37,7 @@ The tests use fakes for Deepgram, ElevenLabs, Claude and Recall. The real test o
 | `src/channel/profile-tool.ts` | `get_profile`: the owner's names, the brief and the profile, for the agent and the session |
 | `.claude/settings.json` | The files no Claude Code session in this folder may read (your own go in `.claude/settings.local.json`) |
 | `scripts/install-service.sh`, `scripts/agent-voice.plist`, `scripts/agent-voice.service` | Keeping the service running: launchd on macOS, systemd on Linux |
-| `src/recall.ts` | Recall.ai bot API |
+| `src/recall.ts` | Recall.ai bot API, and how a bot left its call (read again while it finishes, and after its page drops) |
 | `src/consent.ts` | The consent wording Alex says and posts |
 | `public/`, `src/pages.ts` | The agent page (Alex's camera and microphone in the meeting) and its scripts (`agent.d.ts` only types `agent.js` for the tests, and is not served); the server puts the names in the page, and checks a page of your own (`AGENT_PAGE_FILE`) |
 | `data/` | Transcripts and minutes (deleted after 30 days), brief, the local token, the control socket, the bots not yet seen out of their calls (`pending-bots.json`), the audio of Alex's fixed lines (`tts-cache`), and the service's log under launchd or systemd (`agent-voice.log`). Readable only by you. Never committed. |

@@ -1,5 +1,6 @@
 // One live conversation: the agent page streams meeting audio in, and the assistant's voice streams back out.
 // The notes use the default name, Alex; the assistant's name comes from src/identity.ts.
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import WebSocket from 'ws'
 import { BriefAdditions } from '../brain/additions.ts'
@@ -10,6 +11,7 @@ import type { SessionAnswer, SessionBridge, ToSession } from '../bridge.ts'
 import { CHECKING_LINES, JOIN_LINE, LEAVE_LINE, PROGRESS_LINE, REFUSAL_LINE, SESSION_OFFLINE_LINE } from '../consent.ts'
 import { PARTICIPANT_LABEL, identity } from '../identity.ts'
 import { type MinutesInput, writeMinutes } from '../minutes.ts'
+import { sameSecret } from '../network.ts'
 import * as recall from '../recall.ts'
 import { type Line, Transcript } from '../transcript.ts'
 import { FluxStream, SAMPLE_RATE } from './deepgram.ts'
@@ -30,9 +32,9 @@ export interface SessionDeps {
   bridge: SessionBridge
   brief: () => string
   speak?: typeof synthesize
-  flux?: () => Pick<FluxStream, 'send' | 'close' | 'on'>
-  /** The Recall calls a bot session makes (the real ones unless a test passes fakes). */
-  recall?: Pick<typeof recall, 'sendChat' | 'leaveCall' | 'deleteMedia' | 'howBotEnded'>
+  flux?: () => Flux
+  /** The Recall calls a bot session makes (the real ones unless a test passes fakes; without botLeftCall, no probe). */
+  recall?: Pick<typeof recall, 'sendChat' | 'leaveCall' | 'deleteMedia' | 'howBotEnded'> & Partial<Pick<typeof recall, 'botLeftCall'>>
   /** Writes the minutes and resolves with their file, or throws why not (writeMinutes unless a test passes one). */
   writeMinutes?: (input: MinutesInput) => Promise<string>
   /** How long the bot waits after the goodbye has gone out before it drops (ms). By default, until it has played. */
@@ -51,7 +53,17 @@ export interface SessionDeps {
   clock?: () => number
   /** How long the page stays paused for someone who started talking over Alex, with no words yet that stop it (ms). */
   pauseMaxMs?: number
+  /**
+   * How long a page whose connection dropped has to come back (ms): the session carries on meanwhile, and ends if it
+   * doesn't. 0 or unset: the page going ends the session at once.
+   */
+  reconnectMs?: number
+  /** How long a turn someone is in the middle of when the page drops is left open for the page to come back (ms). */
+  sttHoldMs?: number
 }
+
+/** What a session uses of speech recognition: a FluxStream, unless a test passes a fake (which may not end turns). */
+type Flux = Pick<FluxStream, 'send' | 'close' | 'on'> & Partial<Pick<FluxStream, 'forceEndTurn'>>
 
 type MeetingEnded = Extract<ToSession, { type: 'meeting_ended' }>
 
@@ -87,6 +99,16 @@ const TAIL_MS = 400
 // stray word is often noise.
 const STOP_WORDS_PARTIAL = 2
 const STOP_WORDS_FINAL = 1
+// When the page drops, a turn someone is in the middle of is left open this long, so a page back within it keeps the
+// turn whole. Then it is ended on the words heard so far (ForceEndTurn): Deepgram drops a turn left open when it closes
+// a stream that gets no audio (after about 10 s).
+const STT_HOLD_MS = 3000
+/**
+ * How the session closes the page's connection, so the page knows not to come back: the meeting's session is over
+ * (asked to leave or removed, the meeting ended, the time limit, the service stopping), or could not start. Any other
+ * close and the page reconnects. public/agent.js has the same codes.
+ */
+export const PAGE_CLOSE = Object.freeze({ over: 4000, cannotStart: 4003 })
 /**
  * What the bot page shows when something fails. The page is the assistant's camera, so the whole meeting reads it: it
  * gets these fixed words, never the error itself (a provider's reply can hold account details or request ids, and a
@@ -100,7 +122,10 @@ export const PAGE_ERRORS = Object.freeze({
    * audio came in. The page is sent {type: 'hearing'} once it is back, to clear it.
    */
   hearing: "can't hear the meeting",
-  /** The meeting's session could not start (a key not set, a data folder it can't write to). The page is closed. */
+  /**
+   * The meeting's session could not start (a key not set, a data folder it can't write to). The page is closed with
+   * PAGE_CLOSE.cannotStart, so it doesn't try again.
+   */
   start: "can't start",
 })
 
@@ -115,7 +140,7 @@ const LEFT_NOTES: Record<Left, string> = {
 const unconfirmedNote = (why: string) =>
   `Could not confirm how the meeting ended (${why}), so there are no minutes, in case ${identity.name} was removed from it. ` +
   'The transcript is kept.'
-// When an earlier session of the meeting (its page reconnected) had already reported its files.
+// When an earlier session of the meeting had already reported its files.
 const LEFT_EARLIER_NOTE =
   ` The transcript and minutes named in the earlier meeting_ended for this meeting were deleted too, at a participant's request: tell ${identity.owner}, and do not pass them on again.`
 const STOPPED_NOTE = 'The voice service stopped before the minutes were written. The transcript is kept.'
@@ -141,8 +166,8 @@ function deleteMediaOnce(botId: string, deleteMedia: (botId: string) => Promise<
 }
 
 /**
- * What a meeting has on record, across its sessions (a page that reconnects starts another session
- * for the same meeting key). When anyone asks Alex to leave, or removes it, in any of them, all of it
+ * What a meeting has on record, across its sessions. A meeting has one (a page that drops comes back to the same
+ * session), but nothing here counts on it. When anyone asks Alex to leave, or removes it, in any of them, all of it
  * goes and no session of that meeting records anything or writes minutes again.
  */
 interface MeetingRecords {
@@ -154,7 +179,7 @@ interface MeetingRecords {
   left: Left | null
   /** A meeting_ended naming a transcript or minutes file has been sent for it. */
   reported: boolean
-  /** What the owner's session added to the brief during the meeting, so a page that reconnects keeps it. */
+  /** What the owner's session added to the brief during the meeting, for every session of it. */
   additions: BriefAdditions
 }
 
@@ -201,7 +226,39 @@ export async function endSessions(sessions: Iterable<MeetingSession>, waitMs = 1
 
 export class MeetingSession {
   readonly transcript: Transcript
-  private flux: Pick<FluxStream, 'send' | 'close' | 'on'>
+  /** Resolves once the session has ended (end()), however it ended: the server then gets the bot out of the call. */
+  readonly over: Promise<void>
+  private resolveOver!: () => void
+  private flux: Flux
+  // The page's connection: null while the page is away (its connection dropped, and it may come back).
+  private ws: WebSocket | null = null
+  // Takes this session's listeners off the page's socket, once it has dropped or been replaced.
+  private unwire: (() => void) | null = null
+  // What a page that dropped gives back to come back to this session ('ready' tells it): the same for every connection
+  // of the session, so a page whose 'ready' was lost in a drop can still come back with it. Never logged.
+  private readonly rejoin = randomBytes(24).toString('base64url')
+  // The bytes of Alex's voice the page has had: what went out to it, set back to what the page says it got when it comes
+  // back. Only a count.
+  private pageBytes = 0
+  // When the page was last heard from (by the clock). While it is away, droppedAt keeps that time (0 while a page is
+  // attached): a page that does not come back is taken to have played what it had until then.
+  private heardAt = 0
+  private droppedAt = 0
+  // While the page is away: ends the session if it doesn't come back in time, ends the turn someone is in the middle
+  // of (STT_HOLD_MS), and asks Recall whether the bot has left the call (a meeting that ended takes its page with it).
+  private awayTimer: NodeJS.Timeout | null = null
+  private holdTimer: NodeJS.Timeout | null = null
+  private probe: AbortController | null = null
+  // How Recall says the bot left the call, when it said so while the page was away.
+  private botEnding: recall.BotEnding | null = null
+  // "Alex, never mind" was said while the page was away, still playing what it had: it is told to clear once it is back.
+  private clearOnReturn = false
+  // The consent line: due (not said, or said again once the page is back, since it did not hear all of it), saying,
+  // sent (all of it went out to the page, ending at consentEnd of pageBytes) or heard (the page came back having had
+  // all of it). greetDue: the time to say it has come.
+  private consent: 'due' | 'saying' | 'sent' | 'heard' = 'due'
+  private consentEnd = 0
+  private greetDue = false
   private turn: AbortController | null = null
   private speaking = false
   // Someone started talking over Alex, and their turn has not ended yet: what they say decides whether Alex stops
@@ -255,10 +312,11 @@ export class MeetingSession {
   private deaf = false
 
   constructor(
-    private ws: WebSocket,
+    ws: WebSocket,
     readonly opts: SessionOptions,
     private deps: SessionDeps,
   ) {
+    this.over = new Promise(resolve => (this.resolveOver = resolve))
     this.transcript = new Transcript(opts.meetingKey)
     this.clock = deps.clock ?? Date.now
     this.playback = new Playback((line, text) => this.transcript.amend(line, text), this.clock)
@@ -306,22 +364,173 @@ export class MeetingSession {
       this.control({ type: 'error', message: PAGE_ERRORS.hearing })
     })
 
-    ws.on('message', (data, isBinary) => {
+    this.wire(ws)
+    this.control({ type: 'ready', sampleRate: SAMPLE_RATE, rejoin: this.rejoin })
+    deps.bridge.notify({ type: 'meeting_started', meeting: opts.meetingKey })
+    setTimeout(() => {
+      this.greetDue = true
+      // Not into a session that has ended (its transcript may be gone), nor over the goodbye. With the page away, once
+      // it is back (attach).
+      if (!this.ended && !this.leaving && this.ws && this.consent === 'due') this.greet()
+    }, deps.greetDelayMs ?? 2500).unref()
+  }
+
+  /** Takes the page's socket: its audio goes to speech recognition, and its close is the page going. */
+  private wire(ws: WebSocket): void {
+    this.ws = ws
+    this.heardAt = this.clock()
+    const message = (data: WebSocket.RawData, isBinary: boolean) => {
+      this.heardAt = this.clock()
       // Once someone has asked Alex to leave (or removed it), the meeting's audio goes nowhere: nothing
       // more of it is sent out to be transcribed while Alex says goodbye.
       if (isBinary && !this.leaving) this.flux.send(data as Buffer)
-    })
+    }
     // A malformed frame from the page (or a reset) is an 'error' on the socket: with nothing listening, it would take the
-    // whole service down, and every meeting with it. 'close' follows, which ends this session as usual.
-    ws.on('error', err => console.error('[audio] the page connection failed:', err.message))
-    ws.on('close', () => this.end())
+    // whole service down, and every meeting with it. 'close' follows, which is the page going.
+    const failed = (err: Error) => console.error('[audio] the page connection failed:', err.message)
+    // Taken off with the rest once the page is replaced, so only the current connection's close counts.
+    const closed = () => this.pageClosed()
+    ws.on('message', message)
+    ws.on('error', failed)
+    ws.on('close', closed)
+    this.unwire = () => {
+      ws.off('message', message)
+      ws.off('error', failed)
+      ws.off('close', closed)
+      // A socket let go of can still fail, and an error nothing listens to would take the service down.
+      ws.on('error', () => {})
+    }
+  }
 
-    this.control({ type: 'ready', sampleRate: SAMPLE_RATE })
-    deps.bridge.notify({ type: 'meeting_started', meeting: opts.meetingKey })
-    setTimeout(() => {
-      // Not into a session that has ended (its transcript may be gone), nor over the goodbye.
-      if (!this.ended && !this.leaving) this.greet()
-    }, deps.greetDelayMs ?? 2500).unref()
+  /**
+   * The page's connection closed. Without a window for the page to come back in, or once Alex is leaving (no page is
+   * let back then), the session ends, as it always has. Otherwise it carries on while the page is away (see drop), and
+   * ends if the page is not back within reconnectMs, or as soon as Recall says the bot has left the call.
+   */
+  private pageClosed(): void {
+    if (this.ended) return
+    const reconnectMs = this.deps.reconnectMs ?? 0
+    if (reconnectMs <= 0 || this.leaving) return this.end()
+    this.drop()
+    this.awayTimer = setTimeout(() => {
+      this.endReason = 'its page went and did not come back'
+      this.end()
+    }, reconnectMs)
+    this.awayTimer.unref()
+    // Speech recognition hears nothing more from the meeting until the page is back. A turn it was in the middle of is
+    // ended after a while, so its words are kept even if the page doesn't come back; a page back sooner keeps it whole.
+    this.holdTimer = setTimeout(() => {
+      this.holdTimer = null
+      this.flux.forceEndTurn?.()
+    }, this.deps.sttHoldMs ?? STT_HOLD_MS)
+    this.holdTimer.unref()
+    this.probeBot()
+  }
+
+  /**
+   * The page's connection is gone (or about to be replaced). The page plays on what it has, so what Alex was saying is
+   * followed as it plays, unless the page was paused: a paused page clears itself as it loses its connection
+   * (public/agent.js), so the lines keep what was heard up to the pause. Nothing more goes out to it: the turn stops,
+   * and a question waiting for the consent line is dropped. What was asked or said meanwhile is not answered.
+   */
+  private drop(): void {
+    if (!this.ws) return
+    this.unwire?.()
+    this.unwire = null
+    this.ws = null
+    this.droppedAt = this.heardAt
+    // In this order: no pause or resume can reach the page now, and a stop while paused cuts at the pause, before the
+    // turn stops and closes its line.
+    this.dropPause()
+    this.watching = false
+    if (this.playback.paused) this.playback.stop()
+    // A consent line cut off is said again, in full, once the page is back.
+    if (this.consent === 'saying') this.consent = 'due'
+    this.lineCount++
+    this.calledDuringConsent = false
+    // The bridge stops waiting for the owner's session with the turn, and keeps a late answer, so asking again gets it
+    // at once.
+    this.turn?.abort()
+  }
+
+  /**
+   * Whether a page may come back to this session with this secret (from its 'ready'), compared in constant time. Never
+   * once the session has ended, nor once Alex is leaving: no page is let in then.
+   */
+  resumes(secret: string): boolean {
+    return !this.ended && !this.leaving && sameSecret(secret, this.rejoin)
+  }
+
+  /**
+   * The page came back (the server has checked its secret with resumes). got: the bytes of Alex's voice it says it has
+   * had, in all. What went out to it and never arrived is taken off what the meeting heard (Playback.lost). A
+   * connection the page has given up on but that still looked open is let go first. The consent line is said again, in
+   * full, unless the page had all of it; nothing else is said: what was asked meanwhile, or an answer cut off, is not
+   * answered.
+   */
+  attach(ws: WebSocket, from: { got?: number } = {}): void {
+    if (this.ended || this.leaving) {
+      ws.close(PAGE_CLOSE.over, 'over')
+      return
+    }
+    const old = this.ws
+    if (old) {
+      this.drop()
+      old.terminate()
+    }
+    this.stopWaiting()
+    const { got } = from
+    // More than went out to it can't be right either.
+    if (got !== undefined && Number.isSafeInteger(got) && got >= 0 && got <= this.pageBytes) {
+      if (this.pageBytes > got) this.playback.lost((this.pageBytes - got) / BYTES_PER_MS)
+      this.pageBytes = got
+      if (this.consent === 'sent') this.consent = got >= this.consentEnd ? 'heard' : 'due'
+    } else {
+      // How much it got is not known: it is taken to have played what it had until it was last heard.
+      this.playback.stop(this.droppedAt)
+      if (this.consent === 'sent') this.consent = 'due'
+    }
+    this.droppedAt = 0
+    this.wire(ws)
+    this.control({ type: 'ready', sampleRate: SAMPLE_RATE, rejoin: this.rejoin })
+    if (this.deaf) this.control({ type: 'error', message: PAGE_ERRORS.hearing })
+    if (this.clearOnReturn) {
+      this.clearOnReturn = false
+      this.clearPage()
+    }
+    // At once, so nothing still playing ahead of it (the end of an answer) can be paused or stopped meanwhile.
+    if (this.consent === 'due' && this.greetDue) this.greet()
+  }
+
+  /** The page is back, or the session is over: nothing more waits for the page. */
+  private stopWaiting(): void {
+    for (const timer of [this.awayTimer, this.holdTimer]) if (timer) clearTimeout(timer)
+    this.awayTimer = null
+    this.holdTimer = null
+    this.probe?.abort()
+    this.probe = null
+  }
+
+  /**
+   * Asks Recall whether the bot has left the call, for a while after the page dropped: a page that goes as the meeting
+   * ends (or as Alex is removed) would otherwise keep the session waiting for it. If it has, the session ends at once,
+   * and the bot is not asked to leave.
+   */
+  private probeBot(): void {
+    const botId = this.opts.botId
+    const botLeftCall = this.recall.botLeftCall
+    if (!botId || !botLeftCall) return
+    const probe = new AbortController()
+    this.probe = probe
+    void botLeftCall(botId, { signal: probe.signal })
+      .then(ending => {
+        if (this.probe === probe) this.probe = null
+        if (!ending || this.ended) return
+        console.log(`[leave] bot ${botId} has left the call, Recall says, so its meeting session ends without waiting for its page`)
+        this.botEnding = ending
+        this.end()
+      })
+      .catch(err => console.error('[recall]', (err as Error).message))
   }
 
   /**
@@ -340,10 +549,16 @@ export class MeetingSession {
   private greet(): void {
     // A pause under way ends first (the page plays what it held), so the consent line never waits behind a paused page.
     this.endWatch()
+    this.consent = 'saying'
     const greeting = this.runTurn(async signal => {
-      await this.say(JOIN_LINE, signal)
+      const complete = await this.say(JOIN_LINE, signal)
       // Not when it was stopped: by then the timings may already be the goodbye's.
       if (signal.aborted) return
+      // Where it ends in what went out to the page: a page that drops and comes back having had less is told it again.
+      if (complete) {
+        this.consent = 'sent'
+        this.consentEnd = this.pageBytes
+      }
       this.consentPlaysUntil = Date.now() + Math.max(0, this.playback.playsUntil - this.clock())
       // The page is still playing the last of the line (about a second when it was kept, longer when it streamed,
       // or when an answer to a question asked before it was still playing ahead of it). The greeting lasts until the
@@ -409,7 +624,7 @@ export class MeetingSession {
   }
 
   private control(msg: object): void {
-    if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg))
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg))
   }
 
   private async onUtterance(text: string): Promise<void> {
@@ -438,6 +653,9 @@ export class MeetingSession {
     // "Alex, never mind" stops what Alex is doing, and is not a question for it. In an open window the name may
     // be left out ("Never mind."), so the line is also read as if it had been said with the name.
     if (isCancelRequest(text) || (awaiting && isCancelRequest(`${identity.name}, ${text}`))) return this.cancel()
+    // Words heard while the page is away (said just before it dropped) are kept, but not answered: Alex could not say
+    // the answer, and the meeting may have moved on by the time the page is back.
+    if (!this.ws) return
     const how = attention(text)
     const addressed = how === 'asked' || awaiting
     if (!addressed && how === 'called') {
@@ -477,15 +695,19 @@ export class MeetingSession {
     if (this.greeting) return console.log('[turn] told to stop during the consent line, which is said in full')
     // The page can still be playing an answer that has all gone out (ElevenLabs sends it faster than it
     // plays), so it is told to clear whether or not Alex is still sending: a clear with nothing playing does
-    // nothing. Not while the page still plays the end of the consent line, which is heard in full.
-    if (Date.now() >= this.consentPlaysUntil) this.clearPage()
+    // nothing. Not while the page still plays the end of the consent line, which is heard in full. A page that is
+    // away plays on what it has: it is told once it is back.
+    if (Date.now() >= this.consentPlaysUntil) {
+      if (this.ws) this.clearPage()
+      else this.clearOnReturn = true
+    }
     if (!this.turn) return console.log('[turn] told to stop, with nothing left to send')
     this.turn.abort()
     console.log(`[turn] told to stop: ${identity.name} stopped`)
   }
 
   /** Runs one reply, cancelling any reply still in progress. */
-  private async runTurn(work: (signal: AbortSignal) => Promise<void>): Promise<void> {
+  private async runTurn(work: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
     this.turn?.abort()
     const turn = new AbortController()
     this.turn = turn
@@ -549,10 +771,11 @@ export class MeetingSession {
 
   /**
    * Says a line: into the transcript, then out to the page as ElevenLabs makes it. The transcript has the whole line
-   * from the start, and keeps only what the meeting heard of it if it is cut off (see Playback).
+   * from the start, and keeps only what the meeting heard of it if it is cut off (see Playback). Resolves with whether
+   * all of it went out to the page.
    */
-  private async say(text: string, signal: AbortSignal): Promise<void> {
-    if (!text.trim()) return
+  private async say(text: string, signal: AbortSignal): Promise<boolean> {
+    if (!text.trim()) return false
     const line = this.transcript.add(identity.name, text, 'agent')
     // Not once the transcript is gone (the goodbye): there is nothing to correct.
     const playing = line ? this.playback.begin(line, text) : null
@@ -569,14 +792,17 @@ export class MeetingSession {
       let skipped = false
       for await (const chunk of (this.deps.speak ?? synthesize)(text, signal)) {
         if (signal.aborted) break
-        if (this.ws.readyState !== WebSocket.OPEN) {
+        const ws = this.ws
+        if (ws?.readyState !== WebSocket.OPEN) {
           skipped = true
           continue
         }
-        this.ws.send(chunk)
+        ws.send(chunk)
+        this.pageBytes += chunk.length
         this.playback.sent(playing, chunk.length / BYTES_PER_MS)
       }
       complete = !signal.aborted && !skipped
+      return complete
     } finally {
       signal.removeEventListener('abort', stopped)
       // A line that did not all go out (Alex was stopped, or ElevenLabs failed partway) keeps only the words its audio
@@ -587,9 +813,12 @@ export class MeetingSession {
     }
   }
 
-  /** Whether the page is there to play Alex's voice, and to be paused or told to clear: while its socket is open. */
+  /**
+   * Whether a page is attached to play Alex's voice, and to be paused or told to clear: not while it is away, nor once
+   * its socket has started to close.
+   */
   private attached(): boolean {
-    return this.ws.readyState === WebSocket.OPEN
+    return this.ws?.readyState === WebSocket.OPEN
   }
 
   /**
@@ -678,7 +907,8 @@ export class MeetingSession {
   /**
    * Tells the page to stop playing what it still has of Alex's voice, and what it held if paused (a clear ends a pause).
    * The lines it had not played to the end keep, in the transcript, only the words the meeting heard. (When Alex
-   * leaves, stopRecording clears the page itself: the transcript is gone by then.)
+   * leaves, stopRecording clears the page itself: the transcript is gone by then.) Not while the page is away: it is
+   * told once it is back (see cancel).
    */
   private clearPage(): void {
     this.dropPause()
@@ -726,6 +956,9 @@ export class MeetingSession {
     // No pause or resume goes to the page after this: the clear below ends a pause, and the goodbye is never paused.
     this.watching = false
     this.dropPause()
+    // Nor is a turn ended for a page that is away: nothing more is transcribed.
+    if (this.holdTimer) clearTimeout(this.holdTimer)
+    this.holdTimer = null
     // Nothing of the transcript is corrected as the turn stops: it goes.
     this.playback.reset()
     this.turn?.abort()
@@ -762,13 +995,17 @@ export class MeetingSession {
     // stops whatever Alex was saying and clears what the page still had to play (see stopRecording), so the
     // goodbye starts playing as soon as it arrives.
     this.forget()
-    await this.runTurn(signal => this.say(LEAVE_LINE, signal))
-    // The goodbye has gone out to the page, but has not all played yet: a kept line goes out about a second
-    // ahead of what has played, a streamed one as fast as ElevenLabs makes it. The page plays it from when
-    // its first piece arrived, nothing queued ahead of it, so wait for the rest of it, and a little more,
-    // but no longer: until the bot drops, the meeting is in a call with a bot that has said it is leaving.
-    const playing = Math.max(0, this.playback.playsUntil - this.clock())
-    await new Promise(r => setTimeout(r, this.deps.leaveDelayMs ?? playing + LEAVE_MARGIN_MS))
+    // Asked while the page was away (among the last words heard before it dropped): nobody can hear a goodbye, and no
+    // page is let back in once Alex is leaving, so the bot just leaves.
+    if (this.ws) {
+      await this.runTurn(signal => this.say(LEAVE_LINE, signal))
+      // The goodbye has gone out to the page, but has not all played yet: a kept line goes out about a second
+      // ahead of what has played, a streamed one as fast as ElevenLabs makes it. The page plays it from when
+      // its first piece arrived, nothing queued ahead of it, so wait for the rest of it, and a little more,
+      // but no longer: until the bot drops, the meeting is in a call with a bot that has said it is leaving.
+      const playing = Math.max(0, this.playback.playsUntil - this.clock())
+      await new Promise(r => setTimeout(r, this.deps.leaveDelayMs ?? playing + LEAVE_MARGIN_MS))
+    }
     if (this.opts.botId) {
       await this.recall.leaveCall(this.opts.botId).catch(err => console.error('[leave]', err.message))
     }
@@ -793,23 +1030,29 @@ export class MeetingSession {
     this.end()
   }
 
-  /** The session is over: the meeting ended, the bot was removed or left, or the page disconnected. */
+  /**
+   * The session is over: the meeting ended, the bot was removed or left, the page went (and did not come back in time),
+   * the time limit, or the service stopping.
+   */
   end(): void {
     if (this.ended) return
     this.ended = true
+    this.stopWaiting()
     // Nothing more goes to the page, a resume included.
     this.watching = false
     this.dropPause()
     // The page has gone, or goes now: what it had not played of Alex's voice was not heard (a paused page, nothing
-    // after the pause). Before the turn stops, so the line stops where the page was.
-    this.playback.stop()
+    // after the pause; a page that went and did not come back, nothing after it was last heard). Before the turn stops,
+    // so the line stops where the page was.
+    this.playback.stop(this.droppedAt || undefined)
     this.turn?.abort()
     this.flux.close()
     const botId = this.opts.botId
     if (botId) {
       // Alex can't hear once its page has gone, so it never stays in the call. When the meeting is
-      // over or Alex was removed, the bot has left already and Recall just says so.
-      if (!this.leaving) {
+      // over or Alex was removed, the bot has left already and Recall just says so; when Recall has said so
+      // already, it is not asked.
+      if (!this.leaving && !this.botEnding) {
         this.recall
           .leaveCall(botId)
           .then(() => console.log(`[leave] bot ${botId} left the call: ${this.endReason}`))
@@ -819,7 +1062,9 @@ export class MeetingSession {
       deleteMediaOnce(botId, id => this.recall.deleteMedia(id))
     }
     this.finish().catch(err => console.error('[meeting_ended]', err))
-    if (this.ws.readyState === WebSocket.OPEN) this.ws.close()
+    // So the page doesn't try to come back.
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.close(PAGE_CLOSE.over, 'over')
+    this.resolveOver()
   }
 
   /** meeting_ended as things stand, before any minutes. */
@@ -839,6 +1084,7 @@ export class MeetingSession {
   private howEnded(): Promise<recall.BotEnding> {
     const botId = this.opts.botId
     if (!botId) return Promise.resolve({ kind: 'unknown', why: 'no Recall bot is known for this meeting' })
+    if (this.botEnding) return Promise.resolve(this.botEnding)
     return this.recall
       .howBotEnded(botId)
       .catch((err: Error): recall.BotEnding => ({ kind: 'unknown', why: `Recall could not be read: ${err.message}` }))

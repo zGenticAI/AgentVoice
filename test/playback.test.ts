@@ -1,7 +1,7 @@
 // What the meeting heard of the assistant: how much of a line the page had played when it stopped, as whole words.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { CUT_OFF, MS_PER_CHAR, PAGE_LEAD_MS, Playback, heardText, spokenLength } from '../src/pipeline/playback.ts'
+import { CUT_OFF, KEEP_MS, MS_PER_CHAR, PAGE_LEAD_MS, Playback, heardText, spokenLength } from '../src/pipeline/playback.ts'
 
 test('a line cut off keeps the whole words heard, rounded down, and says it was cut off', () => {
   const line = 'The pilot starts in March and ends in May.'
@@ -128,7 +128,7 @@ test('a stop with the page played out changes nothing, and nothing is asked twic
   assert.deepEqual(amended, [])
 })
 
-test('lines the page has played out stop being followed when the next line starts', () => {
+test('lines the page has played out stop being followed KEEP_MS after, so what a page that dropped got can still correct them', () => {
   const { playback, at } = follow()
   const a = playback.begin('a', 'It ships in March.')
   playback.sent(a, 400)
@@ -136,9 +136,12 @@ test('lines the page has played out stop being followed when the next line start
   at(300)
   playback.begin('b', 'Still playing a.')
   assert.deepEqual(playback.following.map(p => p.line), ['a', 'b'])
-  at(PAGE_LEAD_MS + 400)
-  playback.begin('c', 'a has played.')
-  assert.deepEqual(playback.following.map(p => p.line), ['b', 'c'])
+  at(PAGE_LEAD_MS + 400 + KEEP_MS - 1)
+  playback.begin('c', 'a has played, a moment less than KEEP_MS ago.')
+  assert.deepEqual(playback.following.map(p => p.line), ['a', 'b', 'c'])
+  at(PAGE_LEAD_MS + 400 + KEEP_MS)
+  playback.begin('d', 'a has played, KEEP_MS ago.')
+  assert.deepEqual(playback.following.map(p => p.line), ['b', 'c', 'd'], 'b and c have nothing sent, and are still going out')
 })
 
 test('a stop starts the page afresh: the next piece plays 50 ms after it arrives', () => {
@@ -347,4 +350,93 @@ test('pausing or resuming twice changes nothing more, a resume with nothing held
   empty.pause()
   empty.reset()
   assert.equal(empty.paused, false)
+})
+
+// --- A page that dropped: it played on what it had, and says when it comes back how much it got ---------------------
+
+test('lost(ms) takes the last ms off the newest lines: a line none of whose audio arrived goes, and the one before it is cut', () => {
+  const { playback, amended, at } = follow()
+  const a = playback.begin('a', A)
+  playback.sent(a, 2000) // 50-2050
+  playback.close(a, true)
+  const b = playback.begin('b', 'Next.')
+  playback.sent(b, 600) // 2050-2650
+  playback.close(b, true)
+  at(5000) // the page came back: it never got the last 1600 ms
+  playback.lost(1600)
+  assert.deepEqual(amended, [['a', `The pilot starts in… ${CUT_OFF}`], ['b', '']])
+  assert.deepEqual(a.runs, [[T + 50, T + 1050]])
+  assert.deepEqual(b.runs, [])
+  // What goes out next plays from when it arrives: the page has nothing left.
+  const c = playback.begin('c', 'Next again.')
+  playback.sent(c, 100)
+  assert.deepEqual(c.runs, [[T + 5000 + PAGE_LEAD_MS, T + 5150]])
+})
+
+test('lost(ms) takes audio no line is kept for first when it is the newest, and the line before it keeps the rest', () => {
+  const { playback, amended } = follow()
+  const a = playback.begin('a', A)
+  playback.sent(a, 2000) // 50-2050
+  playback.close(a, true)
+  playback.sent(null, 500) // 2050-2550: audio of no line
+  playback.lost(500)
+  assert.deepEqual(amended, [], 'only the audio of no line was lost')
+  assert.equal(playback.playsUntil, T + 2050)
+  playback.lost(1000)
+  assert.deepEqual(amended, [['a', `The pilot starts in… ${CUT_OFF}`]])
+  assert.equal(playback.playsUntil, T + 1050)
+})
+
+test('lost(ms) corrects a line closed short too, and changes nothing once nothing is lost', () => {
+  const { playback, amended } = follow()
+  const text = 'We expect the first results in the second week of April.' // 3920
+  const a = playback.begin('a', text)
+  playback.sent(a, 1960) // 50-2010
+  playback.close(a, false) // the turn stopped as the page dropped
+  assert.deepEqual(amended, [['a', `We expect the first results… ${CUT_OFF}`]])
+  playback.lost(980)
+  assert.deepEqual(amended.at(-1), ['a', `We expect the… ${CUT_OFF}`])
+  playback.lost(0)
+  assert.equal(amended.length, 2)
+})
+
+test('lost(ms) on a paused page takes what it holds first, the newest audio of all', () => {
+  const { playback, amended, at } = follow()
+  const a = playback.begin('a', A)
+  playback.sent(a, 2000) // 50-2050
+  playback.close(a, true)
+  at(1050)
+  playback.pause() // 1000 played, 1000 held
+  playback.lost(500) // the page never got the last 500 ms of what it holds
+  assert.deepEqual(amended, [['a', `The pilot starts in March and… ${CUT_OFF}`]])
+  assert.deepEqual(a.runs, [[T + 50, T + 1050]], 'what it played is untouched')
+  assert.equal(playback.playsUntil, T + 1050 + PAGE_LEAD_MS + 500)
+  playback.lost(1000) // the rest of what it held, and 500 of what it played
+  assert.deepEqual(amended.at(-1), ['a', `The pilot… ${CUT_OFF}`])
+  assert.equal(playback.playsUntil, 0)
+})
+
+test('stop(at) settles as of a past time: a page last heard at t is credited only with what it played by t', () => {
+  const { playback, amended, at } = follow()
+  const a = playback.begin('a', A)
+  playback.sent(a, 2000) // 50-2050
+  playback.close(a, true)
+  at(9000) // the page has been away a while; it was last heard 1000 ms into the line
+  playback.stop(T + PAGE_LEAD_MS + 1000)
+  assert.deepEqual(amended, [['a', `The pilot starts in… ${CUT_OFF}`]])
+  assert.equal(playback.following.length, 0)
+})
+
+test('audio of no line is kept KEEP_MS too, so a loss after it never takes the line before it instead', () => {
+  const { playback, amended, at } = follow()
+  const a = playback.begin('a', 'It ships in March.')
+  playback.sent(a, 500) // 50-550
+  playback.close(a, true)
+  playback.sent(null, 500) // 550-1050: audio of no line
+  at(1100)
+  const b = playback.begin('b', 'Next.')
+  playback.sent(b, 500) // 1150-1650
+  playback.close(b, true)
+  playback.lost(1000)
+  assert.deepEqual(amended, [['b', '']], 'b and the audio of no line went; a was played in full')
 })

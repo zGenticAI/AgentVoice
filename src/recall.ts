@@ -334,6 +334,8 @@ export function botEnding(changes: readonly StatusChange[]): BotEnding | null {
 export const ENDING_WAIT_MS = 10_000
 export const ENDING_EVERY_MS = 1_500
 
+type GetBot = (path: string, signal: AbortSignal) => Promise<unknown>
+
 /** Resolves as `work` does, or rejects once `signal` aborts, whichever is first. */
 function until<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -344,19 +346,31 @@ function until<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   })
 }
 
+/** Waits ms, or less if `stop` aborts. */
+function pause(ms: number, stop?: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    if (stop?.aborted) return resolve()
+    const timer = setTimeout(done, ms)
+    function done() {
+      clearTimeout(timer)
+      stop?.removeEventListener('abort', done)
+      resolve()
+    }
+    stop?.addEventListener('abort', done, { once: true })
+  })
+}
+
 /**
- * How the bot left the call, read from Recall until it says (within waitMs). Never throws: if Recall
- * cannot be read, or has still not said by then, the answer is unknown, with why.
+ * Reads the bot from Recall every everyMs until it says how the bot left the call, for waitMs at most, or until `stop`
+ * aborts: the ending, or why there is none.
  */
-export async function howBotEnded(
-  botId: string,
-  opts: { waitMs?: number; everyMs?: number; get?: (path: string, signal: AbortSignal) => Promise<unknown> } = {},
-): Promise<BotEnding> {
-  const { waitMs = ENDING_WAIT_MS, everyMs = ENDING_EVERY_MS, get = (p: string, signal: AbortSignal) => call('GET', p, undefined, signal) } = opts
+async function readEnding(botId: string, opts: { waitMs: number; everyMs: number; get: GetBot; stop?: AbortSignal }): Promise<BotEnding | string> {
+  const { waitMs, everyMs, get, stop } = opts
   const deadline = Date.now() + waitMs
   let why = 'Recall had not said the bot left the call'
   for (;;) {
-    const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()))
+    const bound = AbortSignal.timeout(Math.max(1, deadline - Date.now()))
+    const signal = stop ? AbortSignal.any([bound, stop]) : bound
     try {
       const bot = (await until(get(`/bot/${botId}/`, signal), signal)) as { status_changes?: unknown } | null
       const changes = Array.isArray(bot?.status_changes) ? (bot.status_changes as StatusChange[]) : []
@@ -366,10 +380,39 @@ export async function howBotEnded(
     } catch (err) {
       why = `Recall could not be read: ${((err as Error).message || String(err)).slice(0, 200)}`
     }
-    if (Date.now() + everyMs >= deadline) {
-      console.warn(`[recall] could not tell how bot ${botId} left the call: ${why}`)
-      return { kind: 'unknown', why }
-    }
-    await new Promise(r => setTimeout(r, everyMs))
+    if (Date.now() + everyMs >= deadline) return why
+    await pause(everyMs, stop)
+    // A read under way when it aborted has failed above.
+    if (stop?.aborted) return why
   }
+}
+
+/**
+ * How the bot left the call, read from Recall until it says (within waitMs). Never throws: if Recall
+ * cannot be read, or has still not said by then, the answer is unknown, with why.
+ */
+export async function howBotEnded(
+  botId: string,
+  opts: { waitMs?: number; everyMs?: number; get?: GetBot } = {},
+): Promise<BotEnding> {
+  const { waitMs = ENDING_WAIT_MS, everyMs = ENDING_EVERY_MS, get = (p: string, signal: AbortSignal) => call('GET', p, undefined, signal) } = opts
+  const ending = await readEnding(botId, { waitMs, everyMs, get })
+  if (typeof ending !== 'string') return ending
+  console.warn(`[recall] could not tell how bot ${botId} left the call: ${ending}`)
+  return { kind: 'unknown', why: ending }
+}
+
+/**
+ * Whether the bot has left the call, for a meeting whose page has just dropped: how it left once Recall says so (read
+ * as howBotEnded reads it, within waitMs). Null while the bot is still in the call, when Recall can't be read, or once
+ * `signal` aborts (the page came back). Never throws, and logs nothing: a page that drops is most often only the network,
+ * and the bot still in its call.
+ */
+export async function botLeftCall(
+  botId: string,
+  opts: { signal?: AbortSignal; waitMs?: number; everyMs?: number; get?: GetBot } = {},
+): Promise<BotEnding | null> {
+  const { waitMs = ENDING_WAIT_MS, everyMs = ENDING_EVERY_MS, get = (p: string, signal: AbortSignal) => call('GET', p, undefined, signal) } = opts
+  const ending = await readEnding(botId, { waitMs, everyMs, get, stop: opts.signal })
+  return typeof ending === 'string' ? null : ending
 }

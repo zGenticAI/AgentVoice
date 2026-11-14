@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ENDED_SUB_CODES, FATAL_SUB_CODES, RecallError, botEnding, botRequest, deleteMedia, howBotEnded, leaveCall, meetingPlatform, sendChat, worthRetrying } from '../src/recall.ts'
+import { ENDED_SUB_CODES, FATAL_SUB_CODES, RecallError, botEnding, botLeftCall, botRequest, deleteMedia, howBotEnded, leaveCall, meetingPlatform, sendChat, worthRetrying } from '../src/recall.ts'
 import { joinChatMessage } from '../src/consent.ts'
 import { config } from '../src/config.ts'
 
@@ -131,6 +131,71 @@ test('reading the bot is bounded: failures, no final status and no answer at all
   assert.ok(Date.now() - startedAt < 500)
   assert.ok(aborted, 'the request is aborted at the bound')
   assert.equal((await howBotEnded('b1', { get: async () => null, everyMs: 5, waitMs: 20 })).kind, 'unknown', 'an empty answer is not an ending')
+})
+
+// --- After a page drops: has the bot left the call? -------------------------------------------------
+
+test('after a page drops, the bot is read again until Recall says it has left, and how', async () => {
+  const paths: string[] = []
+  const get = async (p: string) => {
+    paths.push(p)
+    return { status_changes: paths.length < 3 ? left('in_call_recording', null).slice(0, 2) : left('call_ended', 'bot_kicked_from_call') }
+  }
+  assert.deepEqual(await botLeftCall('b1', { get, everyMs: 0, waitMs: 1000 }), { kind: 'removed', sub_code: 'bot_kicked_from_call' })
+  assert.deepEqual(paths, ['/bot/b1/', '/bot/b1/', '/bot/b1/'])
+  // Any ending counts, one Recall gives no reason for included: the bot is out of the call.
+  const done = await botLeftCall('b1', { get: async () => ({ status_changes: left('done', null) }), everyMs: 0, waitMs: 100 })
+  assert.equal(done?.kind, 'unknown')
+})
+
+test('a bot still in the call, or a Recall that cannot be read, is null after the wait, and nothing is logged', { timeout: 2000 }, async t => {
+  const logged: unknown[][] = []
+  for (const name of ['log', 'warn', 'error', 'info'] as const) t.mock.method(console, name, (...args: unknown[]) => void logged.push(args))
+  let reads = 0
+  const inCall = await botLeftCall('b1', { get: async () => (reads++, { status_changes: left('in_call_recording', null) }), everyMs: 5, waitMs: 40 })
+  assert.equal(inCall, null)
+  assert.ok(reads > 1, 'read again while it was in the call')
+  const failing = await botLeftCall('b1', { get: async () => { throw new Error('Recall GET /bot/b1/ failed (500): oops') }, everyMs: 5, waitMs: 40 })
+  assert.equal(failing, null)
+  const hanging = await botLeftCall('b1', { get: (_p, signal) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')))), everyMs: 5, waitMs: 40 })
+  assert.equal(hanging, null)
+  t.mock.restoreAll()
+  assert.deepEqual(logged, [])
+})
+
+test('the page coming back stops the reads at once: the request on its way is aborted, and no ending is given', { timeout: 2000 }, async () => {
+  // Between reads.
+  const between = new AbortController()
+  let reads = 0
+  const startedAt = Date.now()
+  const waiting = botLeftCall('b1', { signal: between.signal, get: async () => (reads++, { status_changes: left('in_call_recording', null) }), everyMs: 1000, waitMs: 10_000 })
+  await new Promise(r => setTimeout(r, 20))
+  between.abort()
+  assert.equal(await waiting, null)
+  assert.equal(reads, 1)
+  assert.ok(Date.now() - startedAt < 500, 'not after the wait between reads')
+  // During a read, even one that then says the bot left.
+  const during = new AbortController()
+  let aborted = false
+  let answer!: (bot: unknown) => void
+  const reading = botLeftCall('b1', {
+    signal: during.signal,
+    get: (_p, signal) => {
+      signal.addEventListener('abort', () => (aborted = true))
+      return new Promise(resolve => (answer = resolve))
+    },
+    everyMs: 1000,
+    waitMs: 10_000,
+  })
+  await new Promise(r => setTimeout(r, 10))
+  during.abort()
+  answer({ status_changes: left('call_ended', 'call_ended_by_host') })
+  assert.equal(await reading, null)
+  assert.ok(aborted, 'the request is aborted')
+  // Aborted before it starts: Recall is read at most once, and nothing is given.
+  const before = new AbortController()
+  before.abort()
+  assert.equal(await botLeftCall('b1', { signal: before.signal, get: async () => ({ status_changes: left('call_ended', 'call_ended_by_host') }) }), null)
 })
 
 test('meeting links are matched to their platform', () => {

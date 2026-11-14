@@ -11,7 +11,7 @@ import path from 'node:path'
 import { WebSocket } from 'ws'
 import { ROOT, cap, retiredSettings } from '../src/config.ts'
 import { ensureLocalToken, localTokenPath, prepareDataDir, readLocalToken } from '../src/local-token.ts'
-import { PAGE_ERRORS, type SessionOptions } from '../src/pipeline/session.ts'
+import { PAGE_CLOSE, PAGE_ERRORS, type SessionOptions } from '../src/pipeline/session.ts'
 import { RecallError } from '../src/recall.ts'
 import { PENDING_BOTS_FILE, type ServiceConfig, type ServiceSession, createServers, stopper } from '../src/server.ts'
 
@@ -33,17 +33,41 @@ function tempDir(t: Ctx, prefix: string): string {
   return dir
 }
 
-/** Stands in for a MeetingSession: says what it was started with, and when its time ran out. */
+let secrets = 0
+
+/**
+ * Stands in for a MeetingSession: says what it was started with, and when its time ran out. Like one, it sends 'ready'
+ * with its secret on each connection, carries on while its page is away, takes the page back with attach (letting go of
+ * a connection it replaces), and closes its page with 4000 as it ends.
+ */
 class FakeSession implements ServiceSession {
   readonly transcript = { recent: () => '' }
   readonly timeLimits: number[] = []
   readonly startedAt = Date.now()
+  readonly rejoin = `rejoin-secret-${++secrets}-${'s'.repeat(24)}`
+  readonly over: Promise<void>
+  readonly attached: { got?: number }[] = []
+  private resolveOver!: () => void
+  ws!: WebSocket
   ended = false
   leftMeeting = false
+  /** How many times its page's connection has closed while it was live. */
+  drops = 0
   constructor(
-    readonly ws: WebSocket,
+    ws: WebSocket,
     readonly opts: SessionOptions,
-  ) {}
+    readonly reconnectMs: number,
+  ) {
+    this.over = new Promise(resolve => (this.resolveOver = resolve))
+    this.wire(ws)
+  }
+  private wire(ws: WebSocket) {
+    this.ws = ws
+    ws.send(JSON.stringify({ type: 'ready', sampleRate: 16000, rejoin: this.rejoin }))
+    ws.on('close', () => {
+      if (ws === this.ws && !this.ended) this.drops++
+    })
+  }
   get botId() {
     return this.opts.botId
   }
@@ -53,9 +77,20 @@ class FakeSession implements ServiceSession {
   async postChat() {
     return true
   }
+  resumes(secret: string) {
+    return !this.ended && !this.leftMeeting && secret === this.rejoin
+  }
+  attach(ws: WebSocket, from: { got?: number }) {
+    const old = this.ws
+    this.attached.push(from)
+    this.wire(ws)
+    if (old.readyState !== WebSocket.CLOSED) old.terminate()
+  }
   end() {
+    if (this.ended) return
     this.ended = true
-    this.ws.close()
+    if (this.ws.readyState === WebSocket.OPEN) this.ws.close(4000, 'over')
+    this.resolveOver()
   }
   async reachedTimeLimit(minutes: number) {
     this.timeLimits.push(minutes)
@@ -101,9 +136,9 @@ async function start(t: Ctx, overrides: Partial<ServiceConfig> = {}, fakes: Fake
         left.push(botId)
         await fakes.leaveCall?.(botId)
       },
-      startSession: (ws, opts) => {
+      startSession: (ws, opts, { reconnectMs }) => {
         if (fakes.startSessionFails) throw fakes.startSessionFails
-        const session = new FakeSession(ws, opts)
+        const session = new FakeSession(ws, opts, reconnectMs)
         started.push(session)
         return session
       },
@@ -171,25 +206,58 @@ function upgrade(
 /** Links to /bridge on the control socket, as the channel does unless a test changes the headers. */
 const bridgeLink = (control: string, headers: Record<string, string> = {}) => upgrade('ws://localhost/bridge', headers, control)
 
-const botAudio = (port: number, key: string, token = PAGE_TOKEN) =>
-  `ws://127.0.0.1:${port}/audio?${new URLSearchParams({ key, token })}`
+/** What the bot page adds to /audio: which try it is (n), and once it has had a 'ready', its secret and what it got. */
+type Rejoin = { n?: number; rejoin?: string; got?: number | string }
+
+const botAudio = (port: number, key: string, token = PAGE_TOKEN, more: Rejoin = {}) => {
+  const params = new URLSearchParams({ key, token })
+  for (const [name, value] of Object.entries(more)) if (value !== undefined) params.set(name, String(value))
+  return `ws://127.0.0.1:${port}/audio?${params}`
+}
 
 /** Opens the bot page's audio for a meeting, as Recall's browser does through the tunnel. */
-async function botPage(port: number, key: string, token = PAGE_TOKEN) {
-  return upgrade(botAudio(port, key, token))
+async function botPage(port: number, key: string, token = PAGE_TOKEN, more: Rejoin = {}) {
+  return upgrade(botAudio(port, key, token, more))
+}
+
+/**
+ * The bot page's audio, as public/agent.js opens it, keeping every message from the start: 'open' with its 'ready' (and
+ * the secret in it), or the HTTP status it was refused with.
+ */
+function page(port: number, key: string, more: Rejoin = {}, opts: WebSocket.ClientOptions = {}) {
+  return new Promise<{ outcome: 'open' | number | 'error'; ws: WebSocket; messages: any[]; ready: () => Promise<string>; code: () => Promise<number> }>(resolve => {
+    const ws = new WebSocket(botAudio(port, key, PAGE_TOKEN, more), opts)
+    const messages: any[] = []
+    ws.on('message', (data, isBinary) => void (isBinary || messages.push(JSON.parse(data.toString()))))
+    const ready = async () => {
+      await until(() => messages.some(m => m.type === 'ready'))
+      return messages.find(m => m.type === 'ready').rejoin as string
+    }
+    const code = () => new Promise<number>(r => ws.once('close', c => r(c)))
+    const done = (outcome: 'open' | number | 'error') => resolve({ outcome, ws, messages, ready, code })
+    ws.on('open', () => done('open'))
+    ws.on('unexpected-response', (_req, res) => {
+      done(res.statusCode ?? 0)
+      ws.terminate()
+    })
+    ws.on('error', () => done('error'))
+  })
 }
 
 function closed(ws: WebSocket): Promise<void> {
   return new Promise(resolve => (ws.readyState === WebSocket.CLOSED ? resolve() : ws.once('close', () => resolve())))
 }
 
-/** The bot page's audio for the nth meeting started, open, then closed again (its page went). */
+/** The bot page's audio for the nth meeting started, open, then closed again (its page went, and its session waits for it). */
 async function pageComesAndGoes(s: Awaited<ReturnType<typeof start>>, n: number) {
   const page = await botPage(s.publicPort, s.keyOf(n))
   assert.equal(page.outcome, 'open')
+  await until(() => s.started.length > 0)
+  const session = s.started.at(-1)!
+  const drops = session.drops
   page.ws.close()
   await closed(page.ws)
-  await until(() => s.service.sessions.size === 0)
+  await until(() => session.drops > drops)
 }
 
 /**
@@ -266,10 +334,15 @@ test('a session that cannot start shows fixed words on the bot page, never its e
   const messages: unknown[] = []
   const ws = new WebSocket(botAudio(s.publicPort, s.keyOf(0)))
   ws.on('message', (data, isBinary) => void (isBinary || messages.push(JSON.parse(data.toString()))))
-  await new Promise(resolve => ws.on('close', resolve))
+  const code = await new Promise(resolve => ws.on('close', resolve))
   t.mock.restoreAll()
   assert.deepEqual(messages, [{ type: 'error', message: PAGE_ERRORS.start }])
   assert.ok(errors.some(line => line.includes(failure.message)), 'the error itself is in the log')
+  // The page is told not to try again, and nothing will start for the meeting, so its bot leaves at once.
+  assert.equal(code, PAGE_CLOSE.cannotStart)
+  await until(() => s.left.length > 0)
+  assert.deepEqual(s.left, ['bot-1'])
+  assert.equal((await botPage(s.publicPort, s.keyOf(0))).outcome, 403)
 })
 
 test("the bot page's own failure shows fixed words too, never the error", () => {
@@ -487,25 +560,28 @@ test('a bot page needs the page token and the key of a live meeting this service
   assert.equal((await botPage(s.publicPort, key, '')).outcome, 403)
   assert.equal(s.started.length, 0)
 
-  const page = await botPage(s.publicPort, key)
-  assert.equal(page.outcome, 'open')
+  const first = await page(s.publicPort, key, { n: 1 })
+  assert.equal(first.outcome, 'open')
   await until(() => s.started.length === 1)
   assert.deepEqual(s.started[0].opts, { meetingKey: key, botId: 'bot-1', platform: 'Zoom' })
-  assert.equal((await botPage(s.publicPort, key)).outcome, 409, 'a second page for the same meeting at the same time')
+  const rejoin = await first.ready()
+  assert.equal((await botPage(s.publicPort, key, PAGE_TOKEN, { n: 2 })).outcome, 409, 'a second page for the same meeting at the same time')
 
-  // A page that reconnects for the meeting is let in.
-  page.ws.close()
-  await closed(page.ws)
-  await until(() => s.service.sessions.size === 0)
-  const again = await botPage(s.publicPort, key)
+  // The page that comes back for the meeting, with the secret from its 'ready', is let back in to the same session.
+  first.ws.close()
+  await closed(first.ws)
+  assert.equal((await botPage(s.publicPort, key, PAGE_TOKEN, { n: 3 })).outcome, 409, 'not a page without it')
+  const again = await botPage(s.publicPort, key, PAGE_TOKEN, { n: 4, rejoin, got: 0 })
   assert.equal(again.outcome, 'open')
+  assert.deepEqual(s.started[0].attached, [{ got: 0 }])
   again.ws.close()
   await closed(again.ws)
-  // Once the meeting is over (its page gone for longer than a reconnect takes), its bot is asked to leave and its key opens nothing.
+  // Once the meeting is over (its page gone for longer than the window), its bot is asked to leave and its key opens nothing.
   await until(() => s.left.length > 0)
   assert.deepEqual(s.left, ['bot-1'])
-  assert.equal((await botPage(s.publicPort, key)).outcome, 403)
-  assert.equal(s.started.length, 2)
+  assert.equal(s.started[0].ended, true, 'its session ended with the window')
+  assert.equal((await botPage(s.publicPort, key, PAGE_TOKEN, { n: 5, rejoin, got: 0 })).outcome, 403)
+  assert.equal(s.started.length, 1, 'one session for the meeting')
 })
 
 test('a meeting whose bot page never connects gives up its key and its bot leaves the call', async t => {
@@ -516,6 +592,252 @@ test('a meeting whose bot page never connects gives up its key and its bot leave
   assert.deepEqual(s.left, ['bot-1'])
   assert.equal((await botPage(s.publicPort, s.keyOf(0))).outcome, 403)
   assert.equal((await joinRequest(s.control, s.auth)).status, 200, 'and its place is free')
+})
+
+// --- A page that drops and comes back ----------------------------------------------------------------------------
+
+test("a page comes back to its session only with the secret from its 'ready': never without it, nor with another meeting's, live or away", async t => {
+  const s = await start(t, { reconnectMs: 60_000 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  const [a, b] = [s.keyOf(0), s.keyOf(1)]
+  const pageA = await page(s.publicPort, a, { n: 1 })
+  const pageB = await page(s.publicPort, b, { n: 1 })
+  const [secretA, secretB] = [await pageA.ready(), await pageB.ready()]
+  assert.notEqual(secretA, secretB)
+  assert.match(secretA, /^rejoin-secret-/)
+  // Live: none of these takes the page's place.
+  for (const more of [{ n: 2 }, { n: 2, rejoin: secretB, got: 0 }, { n: 2, rejoin: `${secretA}x`, got: 0 }, { n: 2, rejoin: '', got: 0 }]) {
+    assert.equal((await botPage(s.publicPort, a, PAGE_TOKEN, more)).outcome, 409, JSON.stringify(more))
+  }
+  // Away: the same.
+  pageA.ws.close()
+  await until(() => s.started[0].drops === 1)
+  for (const more of [{ n: 3 }, { n: 3, rejoin: secretB, got: 0 }, { n: 3, rejoin: secretA.slice(0, -1), got: 0 }]) {
+    assert.equal((await botPage(s.publicPort, a, PAGE_TOKEN, more)).outcome, 409, JSON.stringify(more))
+  }
+  assert.equal(s.started.length, 2, 'no session was started for any of them')
+  assert.deepEqual(s.started[0].attached, [])
+  // Its own secret, and the bytes of voice it says it got, reach its session.
+  const back = await page(s.publicPort, a, { n: 4, rejoin: secretA, got: 123_456 })
+  assert.equal(back.outcome, 'open')
+  assert.equal(await back.ready(), secretA, 'the same secret in every ready')
+  assert.deepEqual(s.started[0].attached, [{ got: 123_456 }])
+  assert.equal(s.started.length, 2)
+  assert.deepEqual(s.left, [])
+  const health = JSON.parse((await request(s.control, { path: '/health' })).body)
+  assert.equal(health.meetings, 2)
+})
+
+test('what a coming-back page says it got reaches its session as a count, or not at all', async t => {
+  const s = await start(t, { reconnectMs: 60_000 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  const first = await page(s.publicPort, s.keyOf(0), { n: 1 })
+  const rejoin = await first.ready()
+  let n = 1
+  for (const got of ['12', '-1', '1e3', 'x', '', '9'.repeat(16)]) {
+    const next = await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: ++n, rejoin, got })
+    assert.equal(next.outcome, 'open', got)
+  }
+  assert.deepEqual(s.started[0].attached.map(a => a.got), [12, undefined, undefined, undefined, undefined, undefined])
+})
+
+test('the page coming back while its old connection still looks live takes its place at once, and the old one is let go', async t => {
+  const s = await start(t, { reconnectMs: 100 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  const old = await page(s.publicPort, s.keyOf(0), { n: 1 })
+  const rejoin = await old.ready()
+  // The page has given up on its connection (it went silent), which still looks open from here.
+  const back = await page(s.publicPort, s.keyOf(0), { n: 2, rejoin, got: 0 })
+  assert.equal(back.outcome, 'open')
+  await closed(old.ws)
+  assert.deepEqual(s.started[0].attached, [{ got: 0 }])
+  // The old connection's close changes nothing: the meeting is live, with no window running.
+  await wait(250)
+  assert.deepEqual(s.left, [])
+  assert.equal(s.started[0].ended, false)
+  assert.equal(back.ws.readyState, WebSocket.OPEN)
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 3 })).outcome, 409, 'still one page per meeting')
+})
+
+test('a try the page gave up on that arrives late is refused: each try must count up from the last one let in', async t => {
+  const s = await start(t, { reconnectMs: 60_000 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  const first = await page(s.publicPort, s.keyOf(0), { n: 3 })
+  const rejoin = await first.ready()
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 3, rejoin, got: 0 })).outcome, 409, 'live: the same try again')
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 2, rejoin, got: 0 })).outcome, 409, 'live: an earlier try')
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { rejoin, got: 0 })).outcome, 409, 'live: no try number')
+  const later = await page(s.publicPort, s.keyOf(0), { n: 7, rejoin, got: 0 })
+  assert.equal(later.outcome, 'open')
+  later.ws.close()
+  await until(() => s.started[0].drops === 1)
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 5, rejoin, got: 0 })).outcome, 409, 'away: an earlier try')
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 7, rejoin, got: 0 })).outcome, 409, 'away: the same try')
+  assert.equal(first.ws.readyState, WebSocket.CLOSED)
+  assert.deepEqual(s.started[0].attached, [{ got: 0 }], 'only the later try reached the session')
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 8, rejoin, got: 0 })).outcome, 'open')
+})
+
+test("the server sends {type:'hb'} and a ping every quarter of pageSilenceMs, and drops a page that has gone silent", { timeout: 10_000 }, async t => {
+  const s = await start(t, { pageSilenceMs: 400, reconnectMs: 60_000 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  let pings = 0
+  // A page whose connection died on the way: it neither sends audio nor answers pings.
+  const dead = await page(s.publicPort, s.keyOf(0), { n: 1 }, { autoPong: false })
+  dead.ws.on('ping', () => pings++)
+  const from = Date.now()
+  const code = await dead.code()
+  const after = Date.now() - from
+  assert.ok(after >= 380 && after < 1000, `dropped after ${after} ms`)
+  assert.equal(code, 1006, 'cut off, not closed: the page reconnects')
+  const beats = dead.messages.filter(m => m.type === 'hb').length
+  assert.ok(beats >= 2 && beats <= 4, `${beats} heartbeats`)
+  assert.ok(pings >= 2, `${pings} pings`)
+  await until(() => s.started[0].drops === 1)
+  // A page that answers pings, but sends nothing (its microphone is quiet), is not dropped.
+  const quiet = await page(s.publicPort, s.keyOf(0), { n: 2, rejoin: s.started[0].rejoin, got: 0 })
+  await wait(1000)
+  assert.equal(quiet.ws.readyState, WebSocket.OPEN)
+  assert.ok(quiet.messages.filter(m => m.type === 'hb').length >= 7)
+})
+
+test('the heartbeat of a page is stopped when its connection closes, and when the server cuts it off', { timeout: 10_000 }, async t => {
+  const created: unknown[] = []
+  const cleared = new Set<unknown>()
+  const setInterval = globalThis.setInterval
+  const clearInterval = globalThis.clearInterval
+  t.mock.method(globalThis, 'setInterval', (fn: () => void, ms: number) => {
+    const handle = setInterval(fn, ms)
+    if (ms === 100) created.push(handle)
+    return handle
+  })
+  t.mock.method(globalThis, 'clearInterval', (handle: NodeJS.Timeout) => {
+    cleared.add(handle)
+    return clearInterval(handle)
+  })
+  const s = await start(t, { pageSilenceMs: 400, reconnectMs: 60_000 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  const first = await page(s.publicPort, s.keyOf(0), { n: 1 })
+  const rejoin = await first.ready()
+  first.ws.close()
+  await until(() => s.started[0].drops === 1)
+  assert.equal(created.length, 1)
+  assert.ok(cleared.has(created[0]), 'stopped as the connection closed, not a silence later')
+  const silent = await page(s.publicPort, s.keyOf(0), { n: 2, rejoin, got: 0 }, { autoPong: false })
+  await silent.code()
+  await until(() => s.started[0].drops === 2)
+  t.mock.restoreAll()
+  assert.equal(created.length, 2, 'one heartbeat for each connection')
+  assert.ok(cleared.has(created[1]), 'stopped as the server cut it off')
+})
+
+test('a page that does not come back within the window: its session ends (with its minutes), the bot leaves, and its key opens nothing', async t => {
+  const s = await start(t, { reconnectMs: 150 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  const from = Date.now()
+  await pageComesAndGoes(s, 0)
+  assert.equal(s.service.sessions.size, 1, 'the session is still live while its page is away')
+  await wait(50)
+  assert.deepEqual(s.left, [], 'not before the window ends')
+  await until(() => s.left.length > 0)
+  assert.ok(Date.now() - from >= 150)
+  assert.equal(s.started[0].ended, true)
+  assert.deepEqual(s.left, ['bot-1'])
+  await until(() => s.service.sessions.size === 0)
+  assert.equal(s.service.sessions.size, 0, 'not live once it is over')
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 2, rejoin: s.started[0].rejoin, got: 0 })).outcome, 403)
+})
+
+test('a session that ends while its page is away (Recall says its bot left) frees its meeting at once, and lets no page in', async t => {
+  const s = await start(t, { maxMeetings: 1, reconnectMs: 60_000 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  await pageComesAndGoes(s, 0)
+  s.started[0].end()
+  await until(() => s.left.length > 0)
+  assert.deepEqual(s.left, ['bot-1'], 'without waiting for the window')
+  await until(() => s.service.sessions.size === 0)
+  assert.equal(s.service.sessions.size, 0, 'not live once it is over')
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 2, rejoin: s.started[0].rejoin, got: 0 })).outcome, 403)
+  await wait(20)
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200, 'its place is free')
+})
+
+test('when the meeting session ends, its page is closed with 4000 (over), the bot leaves at once, and later pages get 403', async t => {
+  const s = await start(t, { reconnectMs: 60_000 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  const live = await page(s.publicPort, s.keyOf(0), { n: 1 })
+  const rejoin = await live.ready()
+  const code = live.code()
+  s.started[0].end()
+  assert.equal(await code, PAGE_CLOSE.over)
+  await until(() => s.left.length > 0)
+  assert.deepEqual(s.left, ['bot-1'])
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 2, rejoin, got: 0 })).outcome, 403)
+  assert.equal((await botPage(s.publicPort, s.keyOf(0))).outcome, 403)
+  await wait(50)
+  assert.deepEqual(s.left, ['bot-1'], 'its close changed nothing more')
+})
+
+test('after "please leave" or a removal while the page is away, its secret no longer lets it in, and the bot leaves', async t => {
+  const s = await start(t, { reconnectMs: 60_000 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  await pageComesAndGoes(s, 0)
+  const session = s.started[0]
+  session.leftMeeting = true // "Alex, please leave", among the last words heard before the page dropped
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 2, rejoin: session.rejoin, got: 0 })).outcome, 409)
+  session.end()
+  await until(() => s.left.length > 0)
+  assert.deepEqual(s.left, ['bot-1'])
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 3, rejoin: session.rejoin, got: 0 })).outcome, 403)
+})
+
+test('stopping ends the sessions whose page is away too, so their meeting_ended still goes out, and lets no page back', async t => {
+  const s = await start(t, { reconnectMs: 60_000 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  await pageComesAndGoes(s, 0)
+  const ended: number[] = []
+  const exits: number[] = []
+  const stop = stopper(s.service, {
+    endSessions: async sessions => {
+      for (const session of sessions) session.end()
+      ended.push(sessions.length)
+    },
+    exit: code => void exits.push(code),
+    exitDelayMs: 0,
+  })
+  stop('SIGTERM')
+  await until(() => exits.length > 0)
+  assert.deepEqual(ended, [1])
+  assert.equal(s.started[0].ended, true)
+  assert.deepEqual(s.left, ['bot-1'])
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 2, rejoin: s.started[0].rejoin, got: 0 })).outcome, 503)
+})
+
+test('a page dropping, coming back, going silent and being refused logs no meeting key, secret, token or URL', { timeout: 10_000 }, async t => {
+  const logged: string[] = []
+  for (const name of ['log', 'warn', 'error', 'info'] as const) {
+    t.mock.method(console, name, (...args: unknown[]) => void logged.push(args.map(String).join(' ')))
+  }
+  const s = await start(t, { pageSilenceMs: 300, reconnectMs: 60_000 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  const key = s.keyOf(0)
+  const first = await page(s.publicPort, key, { n: 1 })
+  const rejoin = await first.ready()
+  assert.equal((await botPage(s.publicPort, key, PAGE_TOKEN, { n: 2 })).outcome, 409)
+  assert.equal((await botPage(s.publicPort, key, PAGE_TOKEN, { n: 1, rejoin, got: 0 })).outcome, 409)
+  const back = await page(s.publicPort, key, { n: 2, rejoin, got: 640 }, { autoPong: false })
+  assert.equal(back.outcome, 'open')
+  await back.code()
+  await until(() => s.started[0].drops >= 1)
+  s.started[0].end()
+  await until(() => s.left.length > 0)
+  t.mock.restoreAll()
+  assert.ok(logged.some(line => /page went silent/.test(line)), logged.join('\n'))
+  assert.ok(logged.some(line => /came back/.test(line)), logged.join('\n'))
+  for (const line of logged) {
+    for (const secret of [key, rejoin, PAGE_TOKEN, 'ws://', '/audio?', 'got=']) assert.ok(!line.includes(secret), `${secret} in: ${line}`)
+  }
 })
 
 // --- Getting bots out of their calls -------------------------------------------------------------------------------
@@ -556,7 +878,7 @@ test('a 4xx from Recall (the bot is no longer in its call) ends the tries at onc
   assert.equal((await joinRequest(s.control, s.auth)).status, 200)
 })
 
-test('the time limit still runs while the page is away: then the bot is asked to leave, and nothing is posted', async t => {
+test('the time limit still runs while the page is away: the session is told (it posts its line through Recall), then the bot leaves', async t => {
   const s = await start(t, { maxMeetingMinutes: 0.005, reconnectMs: 60_000 }) // 300 ms; a window far longer
   assert.equal((await joinRequest(s.control, s.auth)).status, 200)
   const from = Date.now()
@@ -564,8 +886,17 @@ test('the time limit still runs while the page is away: then the bot is asked to
   await until(() => s.left.length > 0, 300)
   assert.deepEqual(s.left, ['bot-1'])
   assert.ok(Date.now() - from < 2000, 'at the time limit, not at the end of the reconnect window')
-  assert.deepEqual(s.started[0].timeLimits, [], 'no session was told: it had ended, and it posts nothing more')
-  assert.equal((await botPage(s.publicPort, s.keyOf(0))).outcome, 403, 'and no page is let in for it again')
+  assert.deepEqual(s.started[0].timeLimits, [0.005], 'the session whose page is away was told')
+  assert.equal((await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 9, rejoin: s.started[0].rejoin })).outcome, 403, 'and no page is let in for it again')
+})
+
+test('the bot leaves at the time limit even when its session declines to (it was already leaving, say)', async t => {
+  const s = await start(t, { maxMeetingMinutes: 0.005, reconnectMs: 60_000 })
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  await pageComesAndGoes(s, 0)
+  s.started[0].reachedTimeLimit = async () => {} // declines, and does not end
+  await until(() => s.left.length > 0, 300)
+  assert.deepEqual(s.left, ['bot-1'])
 })
 
 test('after Alex was asked to leave, no page is let in for that meeting again, and the bot is asked to leave at once', async t => {
@@ -587,7 +918,7 @@ test("a page coming back within the reconnect window can't take Alex past MAX_ME
   assert.equal((await joinRequest(s.control, s.auth)).status, 200)
   await pageComesAndGoes(s, 0)
   assert.equal((await joinRequest(s.control, s.auth)).status, 400, 'a second meeting is refused while the first may come back')
-  const back = await botPage(s.publicPort, s.keyOf(0))
+  const back = await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 2, rejoin: s.started[0].rejoin, got: 0 })
   assert.equal(back.outcome, 'open')
   assert.equal((await joinRequest(s.control, s.auth)).status, 400)
   back.ws.close()
@@ -722,17 +1053,18 @@ test('MAX_MEETING_MINUTES ends a bot session, its bot is asked to leave, and its
 test('the time limit counts from when the meeting first connected, not from a reconnect', async t => {
   const s = await start(t, { maxMeetingMinutes: 0.01 }) // 600 ms
   assert.equal((await joinRequest(s.control, s.auth)).status, 200)
-  const first = await botPage(s.publicPort, s.keyOf(0))
+  const first = await page(s.publicPort, s.keyOf(0), { n: 1 })
   const from = Date.now()
+  const rejoin = await first.ready()
   await wait(350)
   first.ws.close()
   await closed(first.ws)
-  await until(() => s.service.sessions.size === 0)
-  const second = await botPage(s.publicPort, s.keyOf(0))
+  await until(() => s.started[0].drops === 1)
+  const second = await botPage(s.publicPort, s.keyOf(0), PAGE_TOKEN, { n: 2, rejoin, got: 0 })
   assert.equal(second.outcome, 'open')
-  await until(() => s.started[1]?.timeLimits.length > 0)
-  assert.equal(s.started[0].timeLimits.length, 0)
-  assert.deepEqual(s.started[1].timeLimits, [0.01])
+  await until(() => s.started[0].timeLimits.length > 0)
+  assert.equal(s.started.length, 1, 'the page came back to the same session')
+  assert.deepEqual(s.started[0].timeLimits, [0.01])
   assert.ok(Date.now() - from < 900, `${Date.now() - from} ms: from the first connection (600 ms), not the second (950 ms or more)`)
 })
 
