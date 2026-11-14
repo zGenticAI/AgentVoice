@@ -39,7 +39,7 @@ The tests use fakes for Deepgram, ElevenLabs, Claude and Recall. The real test o
 | `scripts/install-service.sh`, `scripts/agent-voice.plist`, `scripts/agent-voice.service` | Keeping the service running: launchd on macOS, systemd on Linux |
 | `src/recall.ts` | Recall.ai bot API, and how a bot left its call (read again while it finishes, and after its page drops) |
 | `src/consent.ts` | The consent wording Alex says and posts |
-| `public/`, `src/pages.ts` | The agent page (Alex's camera and microphone in the meeting) and its scripts (`agent.d.ts` only types `agent.js` for the tests, and is not served); the server puts the names in the page, and checks a page of your own (`AGENT_PAGE_FILE`) |
+| `public/`, `src/pages.ts` | The agent page (Alex's camera and microphone in the meeting) and its scripts: `agent.js` plays Alex's voice, and reconnects to the service by itself when the connection drops (`createLink`, tested on fake connections and timers); `agent.d.ts` only types `agent.js` for the tests, and is not served. The server puts the names in the page, and checks a page of your own (`AGENT_PAGE_FILE`) |
 | `data/` | Transcripts and minutes (deleted after 30 days), brief, the local token, the control socket, the bots not yet seen out of their calls (`pending-bots.json`), the audio of Alex's fixed lines (`tts-cache`), and the service's log under launchd or systemd (`agent-voice.log`). Readable only by you. Never committed. |
 | `docs/` | These pages |
 | `.github/workflows/ci.yml` | CI: the typecheck and the tests, on Node 24 and 26, on Linux and macOS |
