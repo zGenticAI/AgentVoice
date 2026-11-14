@@ -12,6 +12,18 @@ When Alex joins, it says the consent line and posts the chat notice. Talking ove
 
 The transcript and minutes it deletes are its own copies, in `data/`: what was already handed to your Claude Code session stays in that session's history (see the README's [Where meeting data goes](../README.md#where-meeting-data-goes)).
 
+Talking over Alex while it is answering stops it at once, and the page drops what it still had to play. The consent line and the goodbye are the exceptions: they are said in full.
+
+The transcript keeps what the meeting heard of Alex, not what it meant to say. When Alex is cut off, its line keeps the words the page had played by then, whole words only, and ends in "(cut off)" ("The pilot starts in… (cut off)"). A line it never got to is left out. The same goes when you say "Alex, never mind", when the page goes, and when ElevenLabs fails partway through a line. How much was heard is worked out from when each piece of Alex's voice reached the page, so it can be a word or so out, and it rounds down. The minutes, the next answers, and the transcript your session reads all follow it.
+
+Alex also leaves by itself, through Recall's automatic leave:
+- after 10 minutes in a waiting room or lobby without being let in;
+- 5 minutes after it got in, if nobody else has joined;
+- as soon as everyone else has left, and when only other bots (such as note-takers) are left, by Recall's own checks;
+- after 15 minutes in which nobody has said anything, counted once it has been in the call 10 minutes. A longer silent break ends Alex's part of the meeting, so send it in again after one.
+
+Each of these ends the meeting as usual: Alex keeps the transcript, and Claude writes minutes if anyone spoke (see [Minutes](minutes-and-data.md#minutes)).
+
 To stop Alex without making it leave, say "Alex, never mind" (or "Alex, stop", "Alex, cancel that", "Alex, don't worry about it", "Alex, leave it", "Never mind, Alex"). It stops talking at once, even the end of an answer the page is still playing, drops a question it is still checking with your session (the answer is still kept, so asking again gets it at once), and says nothing. A question that only contains such a word, such as "Alex, can you stop the recording?", is answered like any other. It doesn't stop the consent line, which is always said in full.
 
 Removing Alex from the meeting (from the participant list, or from the waiting room) counts the same as "Alex, please leave": once Recall says the host removed the bot, the transcript and any minutes of the meeting are deleted and no minutes are written. See "How it ended" under [Minutes](minutes-and-data.md#minutes).

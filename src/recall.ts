@@ -81,7 +81,17 @@ export function botRequest(plan: BotPlan): Record<string, unknown> {
     // Output audio can stutter on the default bot size.
     variant: { zoom: 'web_4_core', google_meet: 'web_4_core', microsoft_teams: 'web_4_core' },
     chat: { on_bot_join: { send_to: 'everyone', message: joinChatMessage() } },
-    automatic_leave: { waiting_room_timeout: 600 },
+    // Recall gets the bot out by itself (https://docs.recall.ai/docs/automatic-leaving-behavior, and bot_create for the
+    // fields): after 10 minutes in a waiting room; 5 minutes after it got in if nobody else has joined (Recall's default
+    // is 20); after 15 minutes in which nobody has said anything, counted once it has been in the call 10 minutes
+    // (Recall's default is 60, counted after 20), so a meeting left open doesn't run up bot time and speech
+    // recognition. As by default, it also leaves 2 seconds after everyone else has, and when only other bots
+    // (note-takers) are left. Each is a normal end of the meeting, with minutes (timeout_exceeded_*, ENDED_SUB_CODES).
+    automatic_leave: {
+      waiting_room_timeout: 600,
+      noone_joined_timeout: 300,
+      silence_detection: { timeout: 900, activate_after: 600 },
+    },
     // Zero Data Retention: Recall keeps no recording media (audio, video, transcript) for the bot, so
     // "I keep no recording of the meeting" holds from the start. Output media still works with it; leaving
     // recording_config out stores media indefinitely, and recording_config: null does not work with

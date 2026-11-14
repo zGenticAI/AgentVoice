@@ -22,6 +22,7 @@ The tests use fakes for Deepgram, ElevenLabs, Claude and Recall. The real test o
 | `src/network.ts`, `src/local-token.ts`, `src/control-socket.ts` | Who may reach what: the `Origin` and token checks, the local token, the data folder's permissions, and the control socket |
 | `src/sessions.ts` | Which meeting a request from your session is for (`get_transcript`, `add_to_brief`, `post_chat`, a late answer) |
 | `src/pipeline/session.ts` | One conversation: speech to text, deciding when to answer, barge-in, speaking |
+| `src/pipeline/playback.ts` | How much of each line the page had played when Alex was cut off, so the transcript keeps only what was heard |
 | `src/pipeline/deepgram.ts`, `tts.ts` | Deepgram Flux and ElevenLabs streaming clients |
 | `src/pipeline/line-cache.ts` | Alex's fixed lines, made once per voice and kept in `data/tts-cache`, sent as fast as it speaks them |
 | `src/brain/brain.ts` | Claude call for spoken answers and the hand-off to your session |

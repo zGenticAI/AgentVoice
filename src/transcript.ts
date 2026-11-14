@@ -53,16 +53,34 @@ export class Transcript {
     return this.deleted
   }
 
-  add(speaker: string, text: string, role: Role = 'participant'): void {
-    if (this.deleted) return
+  /** Adds a line, and says which it is (to amend later), or null once the transcript has been deleted. */
+  add(speaker: string, text: string, role: Role = 'participant'): Line | null {
+    if (this.deleted) return null
     const line = { at: new Date(), speaker, text, role }
     this.lines.push(line)
-    fs.appendFileSync(this.file, `[${line.at.toISOString().slice(11, 19)}] ${speaker}: ${text}\n`, { mode: 0o600 })
+    fs.appendFileSync(this.file, `${fileLine(line)}\n`, { mode: 0o600 })
+    return line
+  }
+
+  /**
+   * Changes what a line says, in memory and in the file, or takes it out when the text is empty: for a line of the
+   * assistant's that the meeting didn't hear to the end (src/pipeline/playback.ts). Nothing once deleted.
+   */
+  amend(line: Line, text: string): void {
+    const at = this.lines.indexOf(line)
+    if (this.deleted || at < 0) return
+    if (text) line.text = text
+    else this.lines.splice(at, 1)
+    // The file holds the same lines as memory, so it is written again from them, to a file beside it that then takes
+    // its place in one step: a crash leaves the old transcript or the new one, never part of one.
+    const next = `${this.file}.next`
+    fs.writeFileSync(next, this.lines.map(l => `${fileLine(l)}\n`).join(''), { mode: 0o600 })
+    fs.renameSync(next, this.file)
   }
 
   /** Every line, as the transcript file has it: "[hh:mm:ss] Speaker: text" (UTC). */
   text(): string {
-    return this.lines.map(l => `[${l.at.toISOString().slice(11, 19)}] ${l.speaker}: ${l.text}`).join('\n')
+    return this.lines.map(fileLine).join('\n')
   }
 
   /** True once anyone but the assistant has said something. */
@@ -89,7 +107,13 @@ export class Transcript {
     this.deleted = true
     this.lines.length = 0
     fs.rmSync(this.file, { force: true })
+    fs.rmSync(`${this.file}.next`, { force: true })
   }
+}
+
+/** A line as the transcript file has it: "[hh:mm:ss] Speaker: text" (UTC). */
+function fileLine(line: Line): string {
+  return `[${line.at.toISOString().slice(11, 19)}] ${line.speaker}: ${line.text}`
 }
 
 /** Removes transcripts and minutes older than the retention period. Says how many files went. */
