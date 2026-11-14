@@ -9,6 +9,7 @@ import type { BriefAdditions } from '../src/brain/additions.ts'
 import { Brain, type BrainEvent } from '../src/brain/brain.ts'
 import { LEFT_NOTE, SessionBridge, type SessionAnswer, type ToSession } from '../src/bridge.ts'
 import { CHECKING_LINES, JOIN_LINE, LEAVE_LINE, PROGRESS_LINE } from '../src/consent.ts'
+import { type FluxSocket, FluxStream, type FluxTiming } from '../src/pipeline/deepgram.ts'
 import { MeetingSession, PAGE_ERRORS } from '../src/pipeline/session.ts'
 import { sessionHandlers } from '../src/sessions.ts'
 
@@ -38,6 +39,38 @@ class FakeFlux extends EventEmitter {
   update(text: string) { this.emit('turn', { type: 'TurnInfo', event: 'Update', turn_index: 1, transcript: text }) }
 }
 
+/** One socket of a fake Deepgram, for the real FluxStream (see deepgram()). */
+class FakeDeepgram extends EventEmitter {
+  sent: (Buffer | string)[] = []
+  send(data: Buffer | string) { this.sent.push(data) }
+  terminate() {}
+}
+
+const DEEPGRAM_KEY = 'dg-key-never-in-the-log'
+
+/** What Deepgram heard, as a TurnInfo on one of its sockets. */
+function said(socket: FakeDeepgram, event: string, transcript: string, trigger?: string) {
+  socket.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event, turn_index: 0, transcript, trigger })), false)
+}
+
+/** The real FluxStream on a fake Deepgram: the test opens, drops and answers its sockets. */
+function deepgram(timing: Partial<FluxTiming>, keyterms: string[] = []) {
+  process.env.DEEPGRAM_API_KEY = DEEPGRAM_KEY
+  const sockets: FakeDeepgram[] = []
+  const flux = () =>
+    new FluxStream({
+      keyterms,
+      timing,
+      connect: () => {
+        const socket = new FakeDeepgram()
+        sockets.push(socket)
+        return socket as unknown as FluxSocket
+      },
+    })
+  const audio = () => sockets.flatMap(socket => socket.sent.filter(d => typeof d !== 'string')).length
+  return { flux, sockets, audio }
+}
+
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const settle = () => sleep(30)
 async function until(ok: () => boolean, tries = 100): Promise<void> {
@@ -62,6 +95,8 @@ interface Options {
   greetDelayMs?: number
   /** By default 0. Passed as undefined, the session's own wait. */
   leaveDelayMs?: number
+  /** Speech recognition: by default the FakeFlux the test drives. deepgram() gives the real one on a fake Deepgram. */
+  flux?: () => unknown
 }
 
 /**
@@ -99,7 +134,7 @@ function setup(opts: Options = {}) {
       },
     } as any,
     brief: () => 'Meeting with Bob about the pilot.',
-    flux: () => flux as any,
+    flux: (opts.flux ?? (() => flux)) as any,
     speak: async function* (text: string, signal?: AbortSignal) {
       spoken.push(text)
       if (opts.speak) yield* opts.speak(text, signal)
@@ -535,12 +570,39 @@ test('the bot page shows fixed words when something fails, never the error: the 
   assert.deepEqual(pageErrors(), [{ type: 'error', message: PAGE_ERRORS.answer }])
   assert.ok(errors.some(line => line.includes(secret)), 'the error itself is in the log')
 
-  s.flux.emit('error', new Error('Deepgram refused the connection: 401 {"err_msg":"Invalid credentials","request_id":"r-1"}'))
+  // Speech recognition's errors only go to the log: the stream tries again by itself, and the page hears when it is lost.
+  s.flux.emit('error', new Error('Deepgram refused the connection (401): {"err_msg":"Invalid credentials","request_id":"r-1"}'))
+  await settle()
+  assert.equal(pageErrors().length, 1)
+  s.flux.emit('lost', 'Deepgram refused the connection (401)')
   s.flux.emit('close', 1011, 'internal error: req r-2')
   await until(() => pageErrors().length === 3)
   assert.deepEqual(pageErrors().slice(1), [{ type: 'error', message: PAGE_ERRORS.hearing }, { type: 'error', message: PAGE_ERRORS.hearing }])
+  s.flux.emit('open')
+  assert.deepEqual(s.ws.controls().at(-1), { type: 'hearing' })
   for (const c of s.ws.controls()) assert.doesNotMatch(JSON.stringify(c), /401|sk_live|request_id|req r-2|Invalid credentials/, JSON.stringify(c))
   assert.ok(errors.some(line => line.includes('Invalid credentials')) && errors.some(line => line.includes('req r-2')))
+  s.done()
+})
+
+test("the page says \"can't hear the meeting\" once each time speech recognition is lost, and is told when it hears again", async t => {
+  const errors: string[] = []
+  t.mock.method(console, 'error', (...args: unknown[]) => void errors.push(args.map(String).join(' ')))
+  t.mock.method(console, 'log', () => {})
+  const s = setup()
+  const told = () => s.ws.controls().filter(c => c.type === 'error' || c.type === 'hearing')
+  s.flux.emit('open') // the first stream: there was nothing to clear
+  s.flux.emit('error', new Error('connect ECONNREFUSED'))
+  assert.deepEqual(told(), [])
+  s.flux.emit('lost', 'no stream to Deepgram for 5 s')
+  assert.deepEqual(told(), [{ type: 'error', message: PAGE_ERRORS.hearing }])
+  assert.ok(errors.includes("[stt] can't hear the meeting: no stream to Deepgram for 5 s"), errors.join('\n'))
+  s.flux.emit('open')
+  s.flux.emit('open')
+  assert.deepEqual(told(), [{ type: 'error', message: PAGE_ERRORS.hearing }, { type: 'hearing' }])
+  s.flux.emit('lost', 'no stream to Deepgram for 5 s')
+  s.flux.emit('open')
+  assert.deepEqual(told().slice(2), [{ type: 'error', message: PAGE_ERRORS.hearing }, { type: 'hearing' }])
   s.done()
 })
 
@@ -677,6 +739,86 @@ test('a leave heard in another session of the meeting stops this session sending
   assert.equal(first.flux.received.length, 0)
   await until(() => second.ended() !== undefined)
   first.ws.emit('close')
+})
+
+test('a leave stops a speech recognition reconnect already on its way: no stream opens, and none of the audio kept for it is sent', async t => {
+  t.mock.method(console, 'log', () => {})
+  t.mock.method(console, 'warn', () => {})
+  const dg = deepgram({ retryMs: [100] })
+  const first = setup({ flux: dg.flux })
+  const second = setup({ meetingKey: first.meetingKey })
+  dg.sockets[0].emit('open')
+  first.ws.emit('message', Buffer.from([1, 2]), true)
+  assert.equal(dg.audio(), 1)
+  dg.sockets[0].emit('close', 1011, Buffer.from(''))
+  first.ws.emit('message', Buffer.from([3, 4]), true) // kept, and a new stream is due in 100 ms
+  second.flux.endTurn('Alex, please leave.')
+  await sleep(250)
+  assert.equal(dg.sockets.length, 1, 'no stream opens')
+  assert.equal(dg.audio(), 1, 'nothing kept from before the request is sent')
+  await until(() => second.ended() !== undefined)
+  first.ws.emit('close')
+})
+
+test('the last words before the meeting ends are transcribed in full: speech recognition ends the turn in progress before it closes', async t => {
+  t.mock.method(console, 'log', () => {})
+  const dg = deepgram({})
+  const s = setup({ flux: dg.flux })
+  const socket = dg.sockets[0]
+  // As Deepgram documents it: ForceEndTurn ends the turn on everything heard so far, then CloseStream closes the
+  // stream (without ending a turn).
+  socket.send = (data: Buffer | string) => {
+    socket.sent.push(data)
+    const type = typeof data === 'string' ? JSON.parse(data).type : ''
+    if (type === 'ForceEndTurn') setImmediate(() => said(socket, 'EndOfTurn', 'We ship it on Friday.', 'manual'))
+    if (type === 'CloseStream') setImmediate(() => socket.emit('close', 1005, Buffer.from('')))
+  }
+  socket.emit('open')
+  said(socket, 'StartOfTurn', 'We ship')
+  said(socket, 'Update', 'We ship it on')
+  s.ws.emit('close') // the meeting ended
+  await until(() => s.ended() !== undefined)
+  assert.match(fs.readFileSync(s.session.transcript.file, 'utf8'), /We ship it on Friday\./)
+  assert.equal(s.ended()?.transcript_file, s.session.transcript.file)
+  s.session.transcript.delete()
+})
+
+test("speech recognition's reconnects never put what was said, its address or its key in the log", async t => {
+  const logged: string[] = []
+  for (const level of ['log', 'warn', 'error', 'info'] as const) {
+    t.mock.method(console, level, (...args: unknown[]) => void logged.push(args.map(String).join(' ')))
+  }
+  const dg = deepgram({ retryMs: [0], slowRetryMs: 20, deafAfterMs: 100 }, ['Zanzibar'])
+  const s = setup({ flux: dg.flux, reply: () => [{ kind: 'say', text: 'The pilot starts in May.' }] })
+  const first = dg.sockets[0]
+  first.emit('open')
+  said(first, 'StartOfTurn', 'Alex, when does the')
+  said(first, 'Update', 'Alex, when does the pilot start')
+  said(first, 'EndOfTurn', 'Alex, when does the pilot start?')
+  await until(() => s.spoken.length === 1)
+  said(first, 'StartOfTurn', 'The launch code')
+  said(first, 'Update', 'The launch code is tango seven')
+  first.emit('message', Buffer.from('The launch code is tango seven'), false)
+  first.emit('close', 1011, Buffer.from(''))
+  // The page's audio goes on, and speech recognition can't be reached.
+  for (let i = 0; i < 20; i++) {
+    s.ws.emit('message', Buffer.from([i, i]), true)
+    await sleep(10)
+    const socket = dg.sockets[dg.sockets.length - 1]
+    if (socket !== first && socket.listenerCount('error')) {
+      socket.emit('error', new Error('connect ECONNREFUSED'))
+      socket.emit('close', 1006, Buffer.from(''))
+    }
+  }
+  assert.ok(s.ws.controls().some(c => c.type === 'error' && c.message === PAGE_ERRORS.hearing))
+  assert.match(fs.readFileSync(s.session.transcript.file, 'utf8'), /The launch code is tango seven/, 'the cut turn is in the transcript')
+  s.done()
+  await settle()
+  assert.ok(logged.some(line => line.includes('[stt] Deepgram dropped the stream')), logged.join('\n'))
+  for (const line of logged) {
+    assert.doesNotMatch(line, /pilot|launch code|tango|Zanzibar|wss:|deepgram\.com|keyterm/, line)
+    assert.ok(!line.includes(DEEPGRAM_KEY), line)
+  }
 })
 
 test('a polite leave request after an opener ("No, Alex, could you please leave the meeting?") leaves, and never reaches the fast tier', async () => {

@@ -67,8 +67,9 @@ const PROGRESS_AFTER_MS = 15_000
 // A question handed to the owner's session carries the meeting so far, not just its last minutes, so the
 // meeting-assistant has the full context for a deep dive: about an hour of speech.
 export const HANDOFF_CONTEXT_CHARS = 60_000
-// Deepgram can still send what it heard last after the page has gone: it closes the stream about
-// a second after CloseStream. The end of the meeting waits this long at most for those words.
+// Deepgram can still send what it heard last after the page has gone: closing the stream first ends the turn in
+// progress (ForceEndTurn), so its words come, then the stream closes about a second after CloseStream. The end of the
+// meeting waits this long at most for those words.
 const STT_FLUSH_MS = 1500
 // Alex's voice goes to the page as 16 kHz mono 16-bit audio: 32 bytes for each millisecond it plays.
 const BYTES_PER_MS = (SAMPLE_RATE * 2) / 1000
@@ -94,7 +95,10 @@ const STOP_WORDS_FINAL = 1
 export const PAGE_ERRORS = Object.freeze({
   /** A turn failed: Claude or ElevenLabs. The assistant goes on listening. */
   answer: "couldn't answer that",
-  /** Speech recognition failed or stopped: the assistant can't hear the meeting. */
+  /**
+   * Speech recognition has stopped: Deepgram refused the key, or could not be reached for 5 s while the meeting's
+   * audio came in. The page is sent {type: 'hearing'} once it is back, to clear it.
+   */
   hearing: "can't hear the meeting",
   /** The meeting's session could not start (a key not set, a data folder it can't write to). The page is closed. */
   start: "can't start",
@@ -247,6 +251,8 @@ export class MeetingSession {
   private readonly additions: BriefAdditions
   // Resolves once speech recognition has closed: no more words can arrive after that.
   private readonly sttClosed: Promise<void>
+  // Speech recognition said it can't hear the meeting: the page shows so until a stream opens again.
+  private deaf = false
 
   constructor(
     private ws: WebSocket,
@@ -278,12 +284,23 @@ export class MeetingSession {
       this.turnEnded(text)
       if (text) void this.onUtterance(text)
     })
-    this.flux.on('error', err => {
-      console.error('[stt]', err.message)
+    // For the log only: a stream that fails is opened again (see FluxStream), and the page hears of it once
+    // hearing is lost.
+    this.flux.on('error', err => console.error('[stt]', err.message))
+    this.flux.on('lost', why => {
+      console.error(`[stt] can't hear the meeting: ${why}`)
+      this.deaf = true
       this.control({ type: 'error', message: PAGE_ERRORS.hearing })
     })
+    this.flux.on('open', () => {
+      if (!this.deaf) return
+      this.deaf = false
+      console.log('[stt] hearing the meeting again')
+      this.control({ type: 'hearing' })
+    })
     this.flux.on('close', (code, reason) => {
-      // Once Alex is leaving, Deepgram gets no more audio and may close the stream for want of it: expected.
+      // FluxStream closes only when asked to: as the session ends, or once Alex is leaving (see stopRecording). A
+      // stream that closes otherwise can't hear any more.
       if (this.ended || this.leaving) return
       console.error(`[stt] Deepgram closed the stream (${code}${reason ? `: ${reason}` : ''})`)
       this.control({ type: 'error', message: PAGE_ERRORS.hearing })
@@ -716,6 +733,9 @@ export class MeetingSession {
     // line, or the rest of an answer ElevenLabs sent faster than it plays. It is cleared, so nothing more
     // of it is heard, and the goodbye (see leave) plays from when it arrives instead of queueing behind it.
     if (first) this.control({ type: 'clear' })
+    // Nothing more of the meeting goes to speech recognition: not even the audio kept while its stream was down,
+    // which a reconnect already on its way would send.
+    this.flux.close()
     this.questions = []
     this.transcript.delete()
     this.additions.clear()

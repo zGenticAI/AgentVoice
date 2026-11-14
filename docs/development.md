@@ -23,7 +23,7 @@ The tests use fakes for Deepgram, ElevenLabs, Claude and Recall. The real test o
 | `src/sessions.ts` | Which meeting a request from your session is for (`get_transcript`, `add_to_brief`, `post_chat`, a late answer) |
 | `src/pipeline/session.ts` | One conversation: speech to text, deciding when to answer, pausing and stopping when talked over, speaking |
 | `src/pipeline/playback.ts` | How much of each line the page had played when Alex was cut off, through pauses, so the transcript keeps only what was heard |
-| `src/pipeline/deepgram.ts`, `tts.ts` | Deepgram Flux and ElevenLabs streaming clients |
+| `src/pipeline/deepgram.ts`, `tts.ts` | Deepgram Flux and ElevenLabs streaming clients. The Flux stream opens again by itself when Deepgram drops it, and says when it can't hear |
 | `src/pipeline/line-cache.ts` | Alex's fixed lines, made once per voice and kept in `data/tts-cache`, sent as fast as it speaks them |
 | `src/brain/brain.ts` | Claude call for spoken answers and the hand-off to your session |
 | `src/identity.ts` | The assistant's name, its spellings and mishearings, its participant-list name, and the owner and company, from `.env`; Alex's own lists |
