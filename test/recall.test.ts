@@ -144,6 +144,25 @@ test('meeting links are matched to their platform', () => {
   assert.equal(meetingPlatform('not a link'), null)
 })
 
+test('the bot leaves an empty or silent meeting by itself, sooner than Recall would by default', () => {
+  const body = botRequest({ meetingUrl: 'https://zoom.us/j/912345678', pageUrl: 'y' }) as any
+  assert.deepEqual(body.automatic_leave, {
+    // Google Meet allows 10 minutes in the waiting room at most.
+    waiting_room_timeout: 600,
+    // Recall's default is 20 minutes.
+    noone_joined_timeout: 300,
+    // Recall's default is 60 minutes of silence, counted after 20 in the call.
+    silence_detection: { timeout: 900, activate_after: 600 },
+  })
+  // Everyone else leaving, and only other bots left, keep Recall's defaults (2 s; its bot detection).
+  assert.equal('everyone_left_timeout' in body.automatic_leave, false)
+  assert.equal('bot_detection' in body.automatic_leave, false)
+  // Each of these is a normal end of the meeting, which gets its minutes.
+  for (const code of ['timeout_exceeded_waiting_room', 'timeout_exceeded_noone_joined', 'timeout_exceeded_silence_detected', 'timeout_exceeded_everyone_left']) {
+    assert.equal(ENDED_SUB_CODES.has(code), true, code)
+  }
+})
+
 test('the larger bot size is requested on every platform', () => {
   const body = botRequest({ meetingUrl: 'https://meet.google.com/abc-defg-hij', pageUrl: 'y' }) as any
   assert.deepEqual(body.variant, { zoom: 'web_4_core', google_meet: 'web_4_core', microsoft_teams: 'web_4_core' })

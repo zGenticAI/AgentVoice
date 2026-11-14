@@ -51,7 +51,7 @@ You pay each service directly, on your own account. What uses it:
 | ElevenLabs | characters spoken | Alex's answers. Its fixed lines (the consent line, "let me check" and so on) are made once per voice and kept. |
 | Claude Code | your plan's usage, or API tokens with a Console key | writing the brief; for a meeting started with `npm run join`, answering its questions (every session with the channel loaded gets them until one replies); when the session sends Alex in, the meeting-assistant agent, which runs for the whole meeting (it waits for questions, answers them, and reads the transcript and your sources when it is quiet); and, after the meeting, reading the transcript and the minutes |
 
-See each provider's pricing page for the current rates. `MAX_MEETINGS` (3 at once unless set) and `MAX_MEETING_MINUTES` (180 unless set) limit what a stray bot can cost. Set a spending limit at each provider as well (see [Limits on cost](docs/security.md#limits-on-cost)).
+See each provider's pricing page for the current rates. `MAX_MEETINGS` (3 at once unless set) and `MAX_MEETING_MINUTES` (180 unless set) limit what a stray bot can cost, and the bot leaves by itself when nobody else joins within 5 minutes, when everyone else has left, or after 15 minutes of silence. Set a spending limit at each provider as well (see [Limits on cost](docs/security.md#limits-on-cost)).
 
 ## Quick start
 
@@ -87,6 +87,7 @@ cp profile.example.md profile.md
 | --- | --- |
 | "Alex, what's the timeline?" | It answers, from the brief or after checking with your session. |
 | "Alex, never mind" or "Alex, stop" | It stops talking, and drops the question. |
+| Talking over it while it answers | It stops while the answer is still going out to the bot page; the end the page already has still plays ("Alex, never mind" stops that too). The transcript keeps only the words the meeting heard, ending in "(cut off)". |
 | "Alex, please leave" | It says goodbye and leaves. It deletes its transcript of the meeting (in `data/`), and writes no minutes. |
 | Removing it from the participant list | The same as "Alex, please leave", once Recall confirms the removal. |
 

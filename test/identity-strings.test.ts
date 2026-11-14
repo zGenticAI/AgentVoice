@@ -96,6 +96,7 @@ test('the prompts and tool texts say the names they are given, and the hand-off 
   assert.match(system, /on Priya's behalf\. Offer to pass it to Priya instead\./)
   assert.match(system, /When a question is about Acme or Priya's work and neither the brief nor what Priya's session added/)
   assert.match(system, new RegExp(`answers it \\(${DEFAULT_HAND_OFF}\\), call ask_owner_session with the question`))
+  assert.match(system, /- Your own lines in the transcript are what the meeting heard you say\. One that ends in "\(cut off\)" stopped there: the rest of it was never heard\.$/)
   const tool = askTool(PRIYA)
   assert.equal(tool.name, 'ask_owner_session')
   assert.equal(ASK_TOOL_NAME, 'ask_owner_session')
@@ -105,7 +106,7 @@ test('the prompts and tool texts say the names they are given, and the hand-off 
   assert.match(minutes, /^You write the minutes of a meeting for Priya Example, from the transcript that Nova, Priya's AI meeting assistant, made of it\./)
   assert.match(minutes, /for themselves \("This is Priya"\) or for someone else \("Priya has approved it"\)/)
   assert.match(minutes, /never state as fact that Priya, or anyone else, decided/)
-  assert.match(minutes, /Lines labelled "Nova" are Nova speaking\.\n\nEvery other line is labelled "Speaker"/)
+  assert.match(minutes, /Lines labelled "Nova" are Nova speaking: what the meeting heard of it\. A line of Nova's that ends in "\(cut off\)" stopped there, and the rest of it was never heard; that alone does not mean anyone interrupted Nova\.\n\nEvery other line is labelled "Speaker"/)
   assert.match(minutes, /## Asked of Nova\nEach question put to Nova, and briefly what Nova answered/)
   const request = minutesRequest(
     { transcript: '', transcriptFile: 'm.md', brief: 'The pilot starts in May.', questions: ['Nova, when?'], startedAt: new Date(0), endedAt: new Date(0) },
