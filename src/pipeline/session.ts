@@ -522,8 +522,10 @@ export class MeetingSession {
       // By what went out, the page has nothing left to play, but a clear or a pause sent into a connection that had died
       // without closing (noticed only seconds later) may never have reached it, and it plays on: this stops it. Only
       // then: the page can run behind what went out (a stall the connection lived through), and a clear sent on every
-      // return could cut what it still plays, the end of a consent line it had all of.
+      // return could cut what it still plays, the end of a consent line it had all of. Stamped like any clear: if this
+      // connection dies too before the page is heard from, the next return makes it up again.
       this.control({ type: 'clear' })
+      this.stopSentAt = this.clock()
     }
     // At once, so nothing still playing ahead of it (the end of an answer) can be paused or stopped meanwhile.
     if (this.consent === 'due' && this.greetDue) this.greet()

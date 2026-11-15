@@ -389,6 +389,29 @@ test('a clear sent into a connection that died without closing is sent again onc
   s.session.transcript.delete()
 })
 
+test('a clear made up for on a return whose connection dies before the page hears it is made up for again on the next', async () => {
+  const s = start({ answers: [[{ kind: 'say', text: A }]], voice: { [A]: 2000 } })
+  s.flux.said('Alex, when does the pilot run?')
+  await settle()
+  s.at(300)
+  s.ws.frame()
+  s.at(1000)
+  s.flux.said('Alex, never mind.') // into a connection that has died without closing
+  s.at(4300)
+  s.ws.drop()
+  s.at(4500)
+  const first = s.back(s.ws.audioBytes())
+  assert.deepEqual(first.kinds(), ['ready', 'hearing', 'clear'])
+  // That connection dies too before any of it reaches the page: the page sends nothing, and plays on.
+  s.at(9000)
+  first.drop()
+  s.at(9200)
+  const second = s.back(s.ws.audioBytes())
+  assert.deepEqual(second.kinds(), ['ready', 'hearing', 'clear'], 'what it still plays stops')
+  s.session.end()
+  s.session.transcript.delete()
+})
+
 test('a pause and a clear sent into a connection that died without closing are made up for when the page comes back first', async () => {
   const s = start({ answers: [[{ kind: 'say', text: A }]], voice: { [A]: 2000 } })
   s.flux.said('Alex, when does the pilot run?')
