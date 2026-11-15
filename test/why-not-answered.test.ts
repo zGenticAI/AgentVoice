@@ -221,6 +221,23 @@ test("a question handed to Sam's session says what came of it, and never mind sa
   assert.equal(s.verdicts().at(-1), 'asked/no_session_answer')
 })
 
+test("a checking line ElevenLabs fails partway leaves the question handed to Sam's session, still waiting for its answer", async t => {
+  let answer!: (a: SessionAnswer | null) => void
+  const ask = (_q: unknown, _ms: unknown, signal: AbortSignal) =>
+    new Promise<SessionAnswer | null>(r => {
+      answer = r
+      signal.addEventListener('abort', () => r(null), { once: true })
+    })
+  // Every line Alex says, the checking line included, breaks off partway, so the page plays only part of it.
+  const s = setup(t, () => null, { ask, answerMs: 2000, speakFails: true })
+  s.flux.endTurn('Alex, what is our uptime?')
+  await settle()
+  assert.deepEqual(s.verdicts(), ['asked/handed'], 'not cut off: Alex is still waiting for the answer')
+  answer({ spoken: '99.9 percent.' })
+  await settle()
+  assert.deepEqual(s.verdicts(), ['asked/failed'], 'then the answer itself breaks off')
+})
+
 test('a question during the consent line waits for it, and never mind then drops it; the consent line goes on', async t => {
   const s = setup(t, () => 'In March.', { greetDelayMs: 0, consentMs: 300 })
   await sleep(50)

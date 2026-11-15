@@ -360,7 +360,10 @@ export class MeetingSession {
     this.playback = new Playback((line, text) => {
       this.transcript.amend(line, text)
       const heard = this.lineVerdicts.get(line)
-      if (heard && heard.outcome !== 'failed') heard.outcome = 'cut_off'
+      // While the line's own turn still runs, how that turn ends says what came of it: stopped, it is cut off; failed,
+      // it failed; and a checking line ElevenLabs failed partway leaves the question waiting for the owner's session.
+      const running = this.turn !== null && !this.turn.signal.aborted && this.turnVerdicts.get(this.turn.signal) === heard
+      if (heard && !running && heard.outcome !== 'failed') heard.outcome = 'cut_off'
     }, this.clock)
     this.recall = deps.recall ?? recall
     // The speaker probe needs to know when the audio of each word came in: nothing of it is kept otherwise.
