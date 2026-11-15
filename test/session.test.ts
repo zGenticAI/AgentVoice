@@ -319,6 +319,50 @@ test('a failure to write the minutes is reported in meeting_ended, and the trans
   session.transcript.delete()
 })
 
+test('the minutes log lines name the bot, never the minutes file or the meeting key, and a failure logs its code only', async t => {
+  const lines: string[] = []
+  const keep = (...args: unknown[]) => void lines.push(args.map(String).join(' '))
+  t.mock.method(console, 'log', keep)
+  t.mock.method(console, 'error', keep)
+  const written = botSetup()
+  written.flux.endTurn('We agreed the pilot starts in March.')
+  await settle()
+  written.ws.emit('close')
+  await until(() => written.ended() !== undefined)
+  const file = written.ended()!.minutes_file
+  assert.ok(file, 'the minutes were written')
+
+  // A file error's message names the file, and so the meeting's key; Claude's error carries an HTTP status.
+  const errors = [
+    Object.assign(new Error(`EACCES: permission denied, open '/data/minutes/2026-10-25-14-02-key-x.md'`), { code: 'EACCES' }),
+    Object.assign(new Error('529 {"type":"error","error":{"type":"overloaded_error"}}'), { status: 529 }),
+    new Error('Claude took longer than 240 s'),
+  ]
+  const failed = errors.map(err => botSetup({ writeMinutes: async () => Promise.reject(err) }))
+  for (const f of failed) {
+    f.flux.endTurn('We agreed the pilot starts in March.')
+    await settle()
+    f.ws.emit('close')
+  }
+  await until(() => failed.every(f => f.ended() !== undefined))
+  t.mock.restoreAll()
+  for (const [i, f] of failed.entries()) assert.equal(f.ended()!.minutes_error, errors[i].message, 'the session hears why in full')
+
+  const minutes = lines.filter(line => line.startsWith('[minutes]'))
+  assert.deepEqual(minutes, [
+    `[minutes] wrote the minutes for bot ${written.botId}`,
+    `[minutes] could not write the minutes for bot ${failed[0].botId} (the transcript is kept): EACCES`,
+    `[minutes] could not write the minutes for bot ${failed[1].botId} (the transcript is kept): HTTP 529`,
+    `[minutes] could not write the minutes for bot ${failed[2].botId} (the transcript is kept): error`,
+  ])
+  for (const line of lines) {
+    for (const secret of [file, path.basename(file), `key-${written.botId}`, '/data/minutes', 'overloaded', 'took longer']) {
+      assert.ok(!line.includes(secret), `${secret} in: ${line}`)
+    }
+  }
+  for (const f of [written, ...failed]) f.session.transcript.delete()
+})
+
 test("a bot's media is deleted once, even when a second session for it ends", async () => {
   const first = botSetup()
   const second = botSetup({ botId: first.botId })

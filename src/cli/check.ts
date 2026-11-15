@@ -15,6 +15,7 @@ import { SAMPLE_RATE } from '../pipeline/deepgram.ts'
 import { synthesize } from '../pipeline/tts.ts'
 import { agentPageFileProblem } from '../pages.ts'
 import { PROFILE, PROFILE_SECTIONS, type ProfileSection } from '../profile.ts'
+import { PROBE_ON } from '../speakers/probe.ts'
 
 function keyShape(name: string): string {
   const raw = process.env[name]
@@ -156,6 +157,9 @@ if (page) {
 } else {
   console.log(`✓ Bot page: ${config.agentPageFile || 'public/agent.html'}`)
 }
+
+// The speaker probe: for test meetings only, so it is said whenever it is on.
+console.log(config.speakerProbe ? `  Speaker probe: on. ${PROBE_ON}` : '  Speaker probe: off (SPEAKER_PROBE, for test meetings only: docs/speaker-probe.md)')
 
 for (const [name, keys, run] of checks) {
   const shape = keys.map(keyShape).filter(Boolean)

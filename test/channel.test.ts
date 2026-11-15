@@ -51,7 +51,7 @@ test('the zoom-meeting channel relays a question in and the reply out', { timeou
 
   assert.deepEqual(client.getServerCapabilities()?.experimental?.['claude/channel'], {})
   const tools = (await client.listTools()).tools.map(t => t.name).sort()
-  assert.deepEqual(tools, ['add_to_brief', 'get_profile', 'get_transcript', 'join_meeting', 'next_question', 'post_chat', 'reply', 'set_brief'])
+  assert.deepEqual(tools, ['add_to_brief', 'get_profile', 'get_transcript', 'join_meeting', 'next_question', 'post_chat', 'reply', 'set_brief', 'why_not_answered'])
 
   const ws = await service
   const fromChannel: any[] = []

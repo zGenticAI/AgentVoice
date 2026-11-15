@@ -83,6 +83,9 @@ class FakeSession implements ServiceSession {
   async postChat() {
     return true
   }
+  whyNotAnswered() {
+    return { ok: true, lines: [] }
+  }
   resumes(secret: string) {
     if (this.ended || this.leftMeeting) return false
     return secret ? secret === this.rejoin : !this.spoke
@@ -323,13 +326,13 @@ test('/api/join needs the local token, and starts a bot with it', async t => {
 
   const ok = await joinRequest(s.control, s.auth)
   assert.equal(ok.status, 200)
-  assert.deepEqual(Object.keys(JSON.parse(ok.body)).sort(), ['bot_id', 'platform', 'tip'])
+  assert.deepEqual(Object.keys(JSON.parse(ok.body)).sort(), ['bot_id', 'brief', 'brief_note', 'platform', 'speaker_probe', 'tip'])
   assert.equal(s.bots.length, 1)
   assert.match(s.bots[0].pageUrl, /^https:\/\/assistant\.example\.com\/agent\?key=[0-9a-f-]{36}&token=p{48}$/)
 
   assert.equal((await joinRequest(s.control, s.auth, '{not json')).status, 400)
   assert.equal((await joinRequest(s.control, s.auth, JSON.stringify({ meetingUrl: 'https://evil.example/j/1' }))).status, 400)
-  assert.equal((await joinRequest(s.control, s.auth, JSON.stringify({ meetingUrl: 'x'.repeat(20_000) }))).status, 413)
+  assert.equal((await joinRequest(s.control, s.auth, JSON.stringify({ meetingUrl: 'x'.repeat(120_000) }))).status, 413)
   assert.equal(s.bots.length, 1)
 })
 
@@ -541,7 +544,45 @@ test('the public /health says only that the service is up; the control one says 
   assert.equal(pub.status, 200)
   assert.equal(pub.body, '{"ok":true}', 'nothing about meetings or the session link')
   const control = JSON.parse((await request(s.control, { path: '/health' })).body)
-  assert.deepEqual(control, { ok: true, session_linked: false, meetings: 0, bot_meetings: 0, max_meetings: 3 })
+  assert.deepEqual(control, { ok: true, session_linked: false, meetings: 0, bot_meetings: 0, max_meetings: 3, features: ['meeting_brief', 'why_not_answered'], speaker_probe: false })
+})
+
+test('a message over its limit closes the connection it came on: 1 MiB on /bridge, 64 KiB on /audio', async t => {
+  const s = await start(t)
+  // The close code, or 0 if the connection is still open after 3 s.
+  const closeCode = (ws: WebSocket) =>
+    new Promise<number>(resolve => {
+      const timer = setTimeout(() => resolve(0), 3000)
+      ws.once('close', code => (clearTimeout(timer), resolve(code)))
+    })
+
+  // The channel's largest message, a brief, is under 100 KB: one just under the limit is still read.
+  const linked = await bridgeLink(s.control, s.auth)
+  assert.equal(linked.outcome, 'open')
+  const got: any[] = []
+  linked.ws.on('message', raw => void got.push(JSON.parse(raw.toString())))
+  const pad = 'x'.repeat(1024 * 1024 - 100)
+  linked.ws.send(JSON.stringify({ type: 'get_transcript', request_id: 't1', pad }))
+  await until(() => got.some(m => m.request_id === 't1'))
+  assert.ok(got.some(m => m.type === 'transcript' && m.request_id === 't1'))
+  const bridgeClosed = closeCode(linked.ws)
+  linked.ws.send(JSON.stringify({ type: 'get_transcript', request_id: 't2', pad: `${pad}${'x'.repeat(200)}` }))
+  assert.equal(await bridgeClosed, 1009, 'Message Too Big')
+  assert.equal(got.some(m => m.request_id === 't2'), false)
+
+  // The bot page sends 80 ms frames of 2,560 bytes. The fake session listens for no errors on its page, as a session
+  // that could not start doesn't: the service itself must, or the refusal of a frame too big would take it down.
+  assert.equal((await joinRequest(s.control, s.auth)).status, 200)
+  const audio = await page(s.publicPort, s.keyOf(0), { n: 1 })
+  assert.equal(audio.outcome, 'open')
+  await audio.ready()
+  audio.ws.send(Buffer.alloc(64 * 1024))
+  await until(() => s.started[0]?.spoke)
+  assert.equal(audio.ws.readyState, WebSocket.OPEN)
+  const audioClosed = closeCode(audio.ws)
+  audio.ws.send(Buffer.alloc(64 * 1024 + 1))
+  assert.equal(await audioClosed, 1009)
+  assert.equal((await request(s.control, { path: '/health' })).status, 200, 'the service carries on')
 })
 
 test('the control socket serves no pages and no audio: only /api/join, /bridge and /health', async t => {
@@ -1228,7 +1269,10 @@ test('MAX_MEETINGS caps the meetings Alex is in at once, through /api/join and j
 
   const linked = await bridgeLink(s.control, s.auth)
   const acks: any[] = []
-  linked.ws.on('message', raw => acks.push(JSON.parse(raw.toString())))
+  linked.ws.on('message', raw => {
+    const msg = JSON.parse(raw.toString())
+    if (msg.type === 'ack') acks.push(msg)
+  })
   linked.ws.send(JSON.stringify({ type: 'join_meeting', request_id: 'j1', meeting_url: ZOOM }))
   await until(() => acks.some(a => a.request_id === 'j1'))
   const ack = acks.find(a => a.request_id === 'j1')

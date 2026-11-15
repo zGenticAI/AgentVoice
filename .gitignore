@@ -15,8 +15,10 @@ npm-debug.log*
 .claude/worktrees/
 data/*
 !data/.gitkeep
-# Yours, never committed: the owner's profile (it may name private paths), and your own Claude Code permissions.
+# Yours, never committed: the owner's profile (it may name private paths), your own Claude Code permissions, and the
+# briefs you keep for single meetings (npm run join --brief), which hold your clients' facts.
 profile.md
 .claude/settings.local.json
+/briefs/
 # Your own list of private terms, which test/private-terms.test.ts checks the tree for (see test/private-terms.ts).
 private-terms.txt

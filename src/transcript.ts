@@ -6,8 +6,11 @@ import { config } from './config.ts'
 
 export const TRANSCRIPTS_DIR = path.join(config.dataDir, 'transcripts')
 export const MINUTES_DIR = path.join(config.dataDir, 'minutes')
-// What the retention sweep deletes from: the chat notice promises both go after the retention period.
-export const RECORD_DIRS: readonly string[] = [TRANSCRIPTS_DIR, MINUTES_DIR]
+// The speaker probe's measurements (src/speakers/probe.ts), one file per meeting, named as its transcript is.
+export const PROBE_DIR = path.join(config.dataDir, 'speaker-probe')
+// What the retention sweep deletes from: the chat notice promises both go after the retention period, and the probe's
+// measurements go with them.
+export const RECORD_DIRS: readonly string[] = [TRANSCRIPTS_DIR, MINUTES_DIR, PROBE_DIR]
 
 // Transcript files taken by this process, so two sessions started in the same minute for one
 // meeting (the page reconnected) never share a file, nor the minutes named after it.
@@ -129,21 +132,49 @@ function fileLine(line: Line): string {
   return `[${line.at.toISOString().slice(11, 19)}] ${line.speaker}: ${line.text}`
 }
 
-/** Removes transcripts and minutes older than the retention period. Says how many files went. */
-export function sweepOldRecords(now = Date.now(), dirs: readonly string[] = RECORD_DIRS): number {
+/** What a retention sweep did: how many files went, how many it had to leave, and the first failure's code. */
+export interface Swept {
+  removed: number
+  /** Files it could not look at or delete, and folders it could not read. */
+  failed: number
+  /** ENOENT, EPERM and the like, or 'error': never the error's message, which names the file. */
+  code: string
+}
+
+/**
+ * Removes transcripts, minutes and the probe's measurements older than the retention period. A file it can't delete
+ * (a read-only disk, say) doesn't stop it: the others still go, and the next sweep tries that one again.
+ */
+export function sweepOldRecords(now = Date.now(), dirs: readonly string[] = RECORD_DIRS): Swept {
   const cutoff = now - config.retentionDays * 86_400_000
-  let removed = 0
+  const swept: Swept = { removed: 0, failed: 0, code: '' }
+  const failed = (err: unknown) => {
+    swept.failed++
+    const code = (err as NodeJS.ErrnoException)?.code
+    swept.code ||= typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'error'
+  }
   for (const dir of dirs) {
-    if (!fs.existsSync(dir)) continue
-    for (const name of fs.readdirSync(dir)) {
+    let names: string[]
+    try {
+      if (!fs.existsSync(dir)) continue
+      names = fs.readdirSync(dir)
+    } catch (err) {
+      failed(err)
+      continue
+    }
+    for (const name of names) {
       const file = path.join(dir, name)
-      // A transcript deleted meanwhile (the assistant was asked to leave) must not stop the sweep.
-      const stat = fs.statSync(file, { throwIfNoEntry: false })
-      if (stat?.isFile() && stat.mtimeMs < cutoff) {
-        fs.rmSync(file, { force: true })
-        removed++
+      try {
+        // A transcript deleted meanwhile (the assistant was asked to leave) must not stop the sweep.
+        const stat = fs.statSync(file, { throwIfNoEntry: false })
+        if (stat?.isFile() && stat.mtimeMs < cutoff) {
+          fs.rmSync(file, { force: true })
+          swept.removed++
+        }
+      } catch (err) {
+        failed(err)
       }
     }
   }
-  return removed
+  return swept
 }

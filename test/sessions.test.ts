@@ -20,6 +20,9 @@ function fake(meetingKey: string, opts: { bot?: boolean; refuse?: string; chatFa
       posted.push(message)
       return true
     },
+    // Says which meeting it is, and how many lines it was asked for.
+    whyNotAnswered: (lines: number) =>
+      opts.refuse ? { ok: false, note: opts.refuse } : { ok: true, lines: [{ at: '00:00:00', seconds_ago: 0, line: `in ${meetingKey}`, did: 'nothing', read: 'no_name', why: `${lines}` }] },
   }
   return { session, added, posted }
 }
@@ -72,6 +75,26 @@ test('add_to_brief passes on what the session says when it refuses, such as afte
   const left = fake('m1', { bot: true, refuse: 'Alex has been asked to leave this meeting' })
   const { addToBrief } = sessionHandlers(new Set([left.session]))
   assert.deepEqual(addToBrief('More.', 'm1'), { ok: false, note: 'Alex has been asked to leave this meeting' })
+})
+
+test("why_not_answered reads the meeting named, else the newest meeting, with its key, and passes on a refusal", () => {
+  const older = fake('m1', { bot: true })
+  const newer = fake('m2', { bot: true })
+  const sessions = new Set([older.session, newer.session])
+  const { whyNotAnswered } = sessionHandlers(sessions)
+  const named = whyNotAnswered(7, 'm1')
+  assert.equal(named.meeting, 'm1', 'the meeting named, though another started since')
+  assert.deepEqual(named.lines?.map(l => [l.line, l.why]), [['in m1', '7']])
+  assert.equal(whyNotAnswered(3).meeting, 'm2')
+  assert.deepEqual(whyNotAnswered(3, 'm9'), { ok: false, note: 'Alex is not in that meeting right now' })
+  const left = fake('m3', { refuse: 'Alex has been asked to leave this meeting, so nothing of it is kept' })
+  assert.deepEqual(sessionHandlers(new Set([left.session])).whyNotAnswered(3, 'm3'), {
+    ok: false,
+    note: 'Alex has been asked to leave this meeting, so nothing of it is kept',
+    meeting: 'm3',
+  })
+  sessions.clear()
+  assert.deepEqual(whyNotAnswered(3), { ok: false, note: 'Alex is not in a meeting right now' })
 })
 
 test('a message posted in the meeting chat is kept with the meeting\'s additions, and one that failed is not', async () => {

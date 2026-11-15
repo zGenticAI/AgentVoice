@@ -71,6 +71,29 @@ export function meetingPlatform(meetingUrl: string): Platform | null {
 export interface BotPlan {
   meetingUrl: string
   pageUrl: string
+  /** Where Recall sends the meeting's participant events: only for a meeting with the speaker probe (recallEventsUrl). */
+  eventsUrl?: string
+}
+
+/**
+ * The participant events the speaker probe subscribes to: who joins, leaves or changes their details, and who starts
+ * and stops speaking. https://docs.recall.ai/docs/real-time-websocket-endpoints (2026-11-09)
+ */
+export const PARTICIPANT_EVENTS = [
+  'participant_events.join',
+  'participant_events.leave',
+  'participant_events.update',
+  'participant_events.speech_on',
+  'participant_events.speech_off',
+] as const
+
+/** The public path Recall's events connection comes to. The "/" before the query is required, or Recall answers 400. */
+export const RECALL_EVENTS_PATH = '/recall/'
+
+/** The address Recall sends a meeting's participant events to: the tunnel's, with the meeting's key and its own token. */
+export function recallEventsUrl(publicUrl: string, key: string, token: string): string {
+  const params = new URLSearchParams({ key, token })
+  return `wss://${new URL(publicUrl).host}${RECALL_EVENTS_PATH}?${params}`
 }
 
 export function botRequest(plan: BotPlan): Record<string, unknown> {
@@ -96,7 +119,12 @@ export function botRequest(plan: BotPlan): Record<string, unknown> {
     // "I keep no recording of the meeting" holds from the start. Output media still works with it; leaving
     // recording_config out stores media indefinitely, and recording_config: null does not work with
     // output media. https://docs.recall.ai/docs/zero-data-retention
-    recording_config: { retention: null },
+    // With the speaker probe, the meeting's participant events also come live to eventsUrl, beside retention: null in the
+    // same object (BotRecordingConfigRequest in bot_create): Recall keeps none of them after the meeting
+    // (zero-data-retention, 2026-11-12). Without it, the request is what it always was.
+    recording_config: plan.eventsUrl
+      ? { retention: null, realtime_endpoints: [{ type: 'websocket', url: plan.eventsUrl, events: [...PARTICIPANT_EVENTS] }] }
+      : { retention: null },
   }
 }
 
