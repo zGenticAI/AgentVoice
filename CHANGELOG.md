@@ -34,6 +34,10 @@ The notable changes in each version. The project follows [Semantic Versioning](h
 - The `[retention]` log line gave a failure's message, which names the file it could not delete, and so the meeting's key. It now gives counts and the error's code only. One file the sweep can't delete no longer stops it: the others still go, and the next sweep tries again.
 - A refused Deepgram connection (a wrong key, no credit left) no longer piles up the meeting's audio in memory for the rest of the meeting, and is not tried again.
 
+### Security
+
+- The `hono` and `@hono/node-server` packages, which the MCP SDK the Claude Code channel is built on depends on, are updated to versions without the advisories GitHub reported (GHSA-qv5m-9pm6-hqp3, GHSA-jpvv-r467-5p4w, GHSA-4m76-xfj5-7975, GHSA-h7mg-cq63-vhpq, GHSA-3gg2-335m-rxc6, GHSA-46wx-v44x-9hh2, GHSA-4h7h-rv7c-7m2v). They were not reachable here: the channel uses the SDK's stdio transport, and Hono only serves its HTTP one.
+
 ## 0.1.0
 
 The first public release.
