@@ -22,6 +22,11 @@ export const FLUX_STABLE_MS = 10_000
 // While there is no stream, the newest 2 s of audio are kept and sent first when one opens: about one reconnect's
 // worth of speech. Deepgram takes audio at most 1.25 times as fast as it plays, so more would only add lag.
 export const FLUX_BACKLOG_BYTES = 64_000
+// With trackAudio (the speaker probe), how long the times each piece of audio arrived are kept, to map Flux's audio
+// times back to when that audio came in (ms).
+export const FLUX_ANCHOR_MS = 180_000
+// Audio bytes per second: 16 kHz, 16-bit mono.
+const BYTES_PER_SECOND = SAMPLE_RATE * 2
 // How long Deepgram has to answer a new stream's handshake before the try counts as failed.
 export const FLUX_OPEN_TIMEOUT_MS = 5000
 // After CloseStream, Deepgram sends what it still has, then closes the stream. It is cut if that takes longer.
@@ -74,6 +79,11 @@ export interface TurnInfo {
    * 'dropped' for a turn whose stream ended before it did (FluxStream ends it with its last words).
    */
   trigger?: string
+  /** Where the turn's audio starts and ends in the stream (seconds; Deepgram may send them as text). */
+  audio_window_start?: string | number
+  audio_window_end?: string | number
+  /** The turn's words. Deepgram documents word and confidence: start and end only if it sends them. */
+  words?: { word?: string; confidence?: string | number; start?: string | number; end?: string | number }[]
 }
 
 export interface FluxEvents {
@@ -120,6 +130,11 @@ export interface FluxOptions {
   /** Opens a socket to Deepgram's address. By default a ws WebSocket with the key; a test passes a fake. */
   connect?: (url: string) => FluxSocket
   timing?: Partial<FluxTiming>
+  /**
+   * Keeps when each piece of audio arrived, for FLUX_ANCHOR_MS, so audioTime() can say when a point of the stream came
+   * in: the speaker probe's timing. Off unless set: nothing is kept.
+   */
+  trackAudio?: boolean
 }
 
 // connecting: a socket is being opened. open: it is streaming. down: no socket, and one is tried again when audio
@@ -141,9 +156,15 @@ export class FluxStream extends EventEmitter<FluxEvents> {
   // The one socket the stream listens to. Events from any other (one it gave up on) are ignored.
   private ws: FluxSocket | null = null
   // The newest audio that came in while there was no stream, at most timing.backlogBytes of it, and none from before a
-  // gap in the audio.
+  // gap in the audio. With trackAudio, when each piece arrived, beside it.
   private backlog: Buffer[] = []
+  private backlogAt: number[] = []
   private backlogBytes = 0
+  // With trackAudio: the audio sent on the current stream (bytes), and for each piece, where it starts in the stream, its
+  // length and when it arrived here, for FLUX_ANCHOR_MS. Only counts and times.
+  private readonly trackAudio: boolean
+  private streamBytes = 0
+  private anchors: { stream: number; bytes: number; rx: number }[] = []
   // Tries since a stream last stayed open: which wait comes next.
   private tries = 0
   private retryTimer: NodeJS.Timeout | null = null
@@ -177,7 +198,34 @@ export class FluxStream extends EventEmitter<FluxEvents> {
     this.connect =
       opts.connect ??
       (url => new WebSocket(url, { headers: { Authorization: `Token ${key}` }, handshakeTimeout: FLUX_OPEN_TIMEOUT_MS }))
+    this.trackAudio = opts.trackAudio === true
     this.dial()
+  }
+
+  /**
+   * When the audio at `seconds` into the current stream (as Flux times it) arrived here (epoch ms), taking each piece
+   * to have arrived as its last sample did. Null without trackAudio, or for a point outside what is kept. A turn cut off
+   * by its stream ending still maps: the times go only when another stream opens.
+   */
+  audioTime(seconds: number): number | null {
+    if (!this.trackAudio || !Number.isFinite(seconds)) return null
+    const byte = Math.round(seconds * BYTES_PER_SECOND)
+    const anchors = this.anchors
+    let lo = 0
+    let hi = anchors.length - 1
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      const a = anchors[mid]
+      if (byte < a.stream) hi = mid - 1
+      else if (byte > a.stream + a.bytes) lo = mid + 1
+      else return a.rx - ((a.stream + a.bytes - byte) * 1000) / BYTES_PER_SECOND
+    }
+    return null
+  }
+
+  /** How much audio has gone to the current stream (seconds): with trackAudio only, else 0. */
+  streamSeconds(): number {
+    return this.streamBytes / BYTES_PER_SECOND
   }
 
   /** Raw 16 kHz mono PCM16 little-endian audio, ideally in ~80 ms chunks. */
@@ -197,11 +245,18 @@ export class FluxStream extends EventEmitter<FluxEvents> {
       // The turn it ended may have closed the stream (a leave closes it): then nothing more is kept or retried.
       if ((this.state as State) !== 'down') return
     }
-    if (this.state === 'open') return this.ws?.send(chunk)
+    if (this.state === 'open') {
+      if (this.ws) this.stream(this.ws, chunk, now)
+      return
+    }
     // Whole chunks, so the samples stay aligned.
     this.backlog.push(chunk)
+    if (this.trackAudio) this.backlogAt.push(now)
     this.backlogBytes += chunk.length
-    while (this.backlogBytes > this.timing.backlogBytes) this.backlogBytes -= this.backlog.shift()!.length
+    while (this.backlogBytes > this.timing.backlogBytes) {
+      this.backlogBytes -= this.backlog.shift()!.length
+      this.backlogAt.shift()
+    }
     if (this.state === 'down' && !this.retryTimer) this.retryLater()
     this.deafTimer ??= setTimeout(() => this.checkHearing(), this.timing.deafAfterMs).unref()
   }
@@ -248,10 +303,25 @@ export class FluxStream extends EventEmitter<FluxEvents> {
     setImmediate(() => this.closed(1000, ''))
   }
 
+  /** Sends a piece of audio on the open stream, and with trackAudio, notes where it is in the stream and when it arrived. */
+  private stream(ws: FluxSocket, chunk: Buffer, rx: number): void {
+    ws.send(chunk)
+    if (!this.trackAudio) return
+    this.anchors.push({ stream: this.streamBytes, bytes: chunk.length, rx })
+    this.streamBytes += chunk.length
+    const kept = Date.now() - FLUX_ANCHOR_MS
+    let old = 0
+    while (old < this.anchors.length - 1 && this.anchors[old].rx < kept) old++
+    if (old) this.anchors.splice(0, old)
+  }
+
   private dial(): void {
     const ws = this.connect(this.url)
     this.ws = ws
     this.state = 'connecting'
+    // A new stream counts its audio from 0.
+    this.streamBytes = 0
+    this.anchors = []
     // Set once Deepgram has refused the handshake: refused() deals with that socket from then on.
     let refusal = false
     const current = () => ws === this.ws && !refusal
@@ -280,7 +350,8 @@ export class FluxStream extends EventEmitter<FluxEvents> {
     this.openedAt = Date.now()
     this.heardAt = this.openedAt
     console.log('[stt] connected to Deepgram')
-    for (const chunk of this.backlog) ws.send(chunk)
+    // Each with when it arrived, not now.
+    this.backlog.forEach((chunk, i) => this.stream(ws, chunk, this.backlogAt[i] ?? this.openedAt))
     this.dropBacklog()
     if (this.deafTimer) clearTimeout(this.deafTimer)
     this.deafTimer = null
@@ -444,6 +515,7 @@ export class FluxStream extends EventEmitter<FluxEvents> {
 
   private dropBacklog(): void {
     this.backlog = []
+    this.backlogAt = []
     this.backlogBytes = 0
   }
 }

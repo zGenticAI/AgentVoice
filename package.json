@@ -15,7 +15,8 @@
     "channel": "tsx src/channel/server.ts",
     "check-name": "tsx src/cli/check-name.ts",
     "record-name-corpus": "tsx src/cli/record-name-corpus.ts",
-    "test": "AGENT_NAME=Alex AGENT_NAME_VARIANTS= AGENT_NAME_MISHEARD= AGENT_BOT_NAME= ALEX_BOT_NAME= OWNER_NAME=Sam OWNER_FULL_NAME= COMPANY_NAME= PROFILE_FILE=test/fixtures/no-profile.md AGENT_PAGE_FILE= SERVICE_LABEL= RECALL_REGION=us-east-1 DEEPGRAM_KEYTERMS= ZOOM_JOIN_TELEGRAM_CHATS= ALEX_DATA_DIR=$(mktemp -d) node --import tsx --test test/*.test.ts",
+    "speaker-report": "tsx src/cli/speaker-report.ts",
+    "test": "AGENT_NAME=Alex AGENT_NAME_VARIANTS= AGENT_NAME_MISHEARD= AGENT_BOT_NAME= ALEX_BOT_NAME= OWNER_NAME=Sam OWNER_FULL_NAME= COMPANY_NAME= PROFILE_FILE=test/fixtures/no-profile.md AGENT_PAGE_FILE= SERVICE_LABEL= RECALL_REGION=us-east-1 DEEPGRAM_KEYTERMS= ZOOM_JOIN_TELEGRAM_CHATS= SPEAKER_PROBE= ALEX_DATA_DIR=$(mktemp -d) node --import tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

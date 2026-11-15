@@ -6,8 +6,11 @@ import { config } from './config.ts'
 
 export const TRANSCRIPTS_DIR = path.join(config.dataDir, 'transcripts')
 export const MINUTES_DIR = path.join(config.dataDir, 'minutes')
-// What the retention sweep deletes from: the chat notice promises both go after the retention period.
-export const RECORD_DIRS: readonly string[] = [TRANSCRIPTS_DIR, MINUTES_DIR]
+// The speaker probe's measurements (src/speakers/probe.ts), one file per meeting, named as its transcript is.
+export const PROBE_DIR = path.join(config.dataDir, 'speaker-probe')
+// What the retention sweep deletes from: the chat notice promises both go after the retention period, and the probe's
+// measurements go with them.
+export const RECORD_DIRS: readonly string[] = [TRANSCRIPTS_DIR, MINUTES_DIR, PROBE_DIR]
 
 // Transcript files taken by this process, so two sessions started in the same minute for one
 // meeting (the page reconnected) never share a file, nor the minutes named after it.
@@ -129,7 +132,7 @@ function fileLine(line: Line): string {
   return `[${line.at.toISOString().slice(11, 19)}] ${line.speaker}: ${line.text}`
 }
 
-/** Removes transcripts and minutes older than the retention period. Says how many files went. */
+/** Removes transcripts, minutes and the probe's measurements older than the retention period. Says how many files went. */
 export function sweepOldRecords(now = Date.now(), dirs: readonly string[] = RECORD_DIRS): number {
   const cutoff = now - config.retentionDays * 86_400_000
   let removed = 0

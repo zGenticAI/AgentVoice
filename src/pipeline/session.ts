@@ -2,6 +2,7 @@
 // The notes use the default name, Alex; the assistant's name comes from src/identity.ts.
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
+import path from 'node:path'
 import WebSocket from 'ws'
 import { BriefAdditions } from '../brain/additions.ts'
 import type { Brain } from '../brain/brain.ts'
@@ -13,8 +14,9 @@ import { PARTICIPANT_LABEL, identity } from '../identity.ts'
 import { type MinutesInput, writeMinutes } from '../minutes.ts'
 import { sameSecret } from '../network.ts'
 import * as recall from '../recall.ts'
+import { type Ending, type SpeakerProbe, probeCodeword } from '../speakers/probe.ts'
 import { type Line, Transcript } from '../transcript.ts'
-import { FluxStream, SAMPLE_RATE } from './deepgram.ts'
+import { FluxStream, SAMPLE_RATE, type TurnInfo } from './deepgram.ts'
 import { Playback } from './playback.ts'
 import { synthesize } from './tts.ts'
 import { type Outcome, type Reading, type Verdict, Verdicts } from './verdicts.ts'
@@ -61,10 +63,15 @@ export interface SessionDeps {
   reconnectMs?: number
   /** How long a turn someone is in the middle of when the page drops is left open for the page to come back (ms). */
   sttHoldMs?: number
+  /**
+   * The meeting's speaker probe (SPEAKER_PROBE, and a meeting joined with --speaker-probe): told when turns start and
+   * end and when Alex's voice plays, never what was said; dropped on "please leave"; written as the meeting ends.
+   */
+  speakerProbe?: Pick<SpeakerProbe, 'turnStarted' | 'fluxLag' | 'turnEnded' | 'agentAudio' | 'agentStopped' | 'discard' | 'write'>
 }
 
 /** What a session uses of speech recognition: a FluxStream, unless a test passes a fake (which may not end turns). */
-type Flux = Pick<FluxStream, 'send' | 'close' | 'on'> & Partial<Pick<FluxStream, 'forceEndTurn'>>
+type Flux = Pick<FluxStream, 'send' | 'close' | 'on'> & Partial<Pick<FluxStream, 'forceEndTurn' | 'audioTime' | 'streamSeconds'>>
 
 type MeetingEnded = Extract<ToSession, { type: 'meeting_ended' }>
 
@@ -345,7 +352,8 @@ export class MeetingSession {
     this.clock = deps.clock ?? Date.now
     this.playback = new Playback((line, text) => this.transcript.amend(line, text), this.clock)
     this.recall = deps.recall ?? recall
-    this.flux = deps.flux ? deps.flux() : new FluxStream()
+    // The speaker probe needs to know when the audio of each word came in: nothing of it is kept otherwise.
+    this.flux = deps.flux ? deps.flux() : new FluxStream(deps.speakerProbe ? { trackAudio: true } : undefined)
     this.records = recordsFor(opts.meetingKey)
     this.additions = this.records.additions
     this.records.sessions.add(this)
@@ -360,6 +368,7 @@ export class MeetingSession {
       // promises the transcript is deleted). Each event carries the turn so far: an Update (or an EagerEndOfTurn or
       // TurnResumed, which are not asked for) goes on with it.
       const text = (turn.transcript ?? '').trim()
+      this.measure(turn, text)
       if (turn.event === 'StartOfTurn') return this.turnStarted(text)
       if (turn.event !== 'EndOfTurn') return this.turnGoesOn(text)
       // The verdict first: a stop clears the page and stops the turn before the line can start an answer.
@@ -912,6 +921,7 @@ export class MeetingSession {
         ws.send(chunk)
         this.pageBytes += chunk.length
         this.playback.sent(playing, chunk.length / BYTES_PER_MS)
+        this.alexPlays()
       }
       complete = !signal.aborted && !skipped
       return complete
@@ -923,6 +933,47 @@ export class MeetingSession {
       this.speaking = false
       this.control({ type: 'speaking', on: false })
     }
+  }
+
+  /**
+   * What the speaker probe is told of a turn: when it started and ended, when the audio of its first and last word came
+   * in (from Flux's word times, or the turn's audio window, which Flux always sends), how many words it has, and the test
+   * code word it starts with. Never its words. Nothing once Alex is leaving.
+   */
+  private measure(turn: TurnInfo, text: string): void {
+    const probe = this.deps.speakerProbe
+    if (!probe || this.leaving) return
+    const rx = this.clock()
+    if (turn.event === 'StartOfTurn') return probe.turnStarted(rx)
+    if (turn.event === 'Update') {
+      const sent = this.flux.streamSeconds?.()
+      const heard = Number(turn.audio_window_end)
+      if (sent !== undefined && Number.isFinite(heard)) probe.fluxLag((sent - heard) * 1000)
+      return
+    }
+    if (turn.event !== 'EndOfTurn' || !text) return
+    const first = Number(turn.words?.[0]?.start)
+    const last = Number(turn.words?.at(-1)?.end)
+    const wordTimes = Number.isFinite(first) && Number.isFinite(last)
+    const arrived = (seconds: number) => (Number.isFinite(seconds) ? (this.flux.audioTime?.(seconds) ?? null) : null)
+    probe.turnEnded({
+      rx,
+      first: arrived(wordTimes ? first : Number(turn.audio_window_start)),
+      last: arrived(wordTimes ? last : Number(turn.audio_window_end)),
+      words: text.split(/\s+/).length,
+      wordTimes,
+      codeword: probeCodeword(text),
+    })
+  }
+
+  /** Tells the speaker probe until when Alex's voice will play, as it goes out or plays on after a pause. */
+  private alexPlays(): void {
+    if (!this.leaving) this.deps.speakerProbe?.agentAudio(this.clock(), this.playback.playsUntil)
+  }
+
+  /** Tells the speaker probe Alex's voice stopped: the page was paused or cleared. */
+  private alexStopped(): void {
+    if (!this.leaving) this.deps.speakerProbe?.agentStopped(this.clock())
   }
 
   /**
@@ -989,6 +1040,7 @@ export class MeetingSession {
     this.control({ type: 'pause' })
     this.stopSentAt = this.clock()
     this.playback.pause()
+    this.alexStopped()
     this.pauseTimer = setTimeout(() => this.resumePage(), this.deps.pauseMaxMs ?? PAUSE_MAX_MS)
     this.pauseTimer.unref()
   }
@@ -999,6 +1051,7 @@ export class MeetingSession {
     this.dropPause()
     this.control({ type: 'resume' })
     this.playback.resume()
+    this.alexPlays()
   }
 
   /** Stops watching the turn, and resumes the page if it is paused. */
@@ -1030,6 +1083,7 @@ export class MeetingSession {
     this.control({ type: 'clear' })
     this.stopSentAt = this.clock()
     this.playback.stop()
+    this.alexStopped()
   }
 
   /**
@@ -1089,6 +1143,8 @@ export class MeetingSession {
     this.transcript.delete()
     this.additions.clear()
     this.verdicts.clear()
+    // And what the speaker probe measured: Recall's connection closes, and no file is ever written for the meeting.
+    this.deps.speakerProbe?.discard()
   }
 
   /**
@@ -1216,6 +1272,9 @@ export class MeetingSession {
    */
   private async finish(): Promise<void> {
     let sent = false
+    // How the transcript is kept, for the speaker probe's file: as at any normal end, though how the meeting ended was
+    // not confirmed, or as the service stopped.
+    let kept: Ending = 'ended'
     const send = (ended: MeetingEnded): void => {
       if (sent) return
       sent = true
@@ -1226,10 +1285,12 @@ export class MeetingSession {
       // staying in memory with the records of finished meetings.
       if (!this.records.sessions.size) this.records.additions.clear()
       this.deps.bridge.notify(ended)
+      this.keepMeasurements(kept)
     }
     finishing.set(this, () => {
       const ended = this.endedEvent()
       if (!ended.no_minutes) ended.minutes_error = STOPPED_NOTE
+      kept = 'stopped'
       send(ended)
     })
 
@@ -1245,6 +1306,7 @@ export class MeetingSession {
       this.forget('removed')
     } else if (how?.kind === 'unknown') {
       unconfirmed = how.why
+      kept = 'unconfirmed'
     } else if (how?.kind === 'ended') {
       console.log(`[meeting] bot ${this.opts.botId} left the call: ${how.sub_code}`)
     }
@@ -1279,5 +1341,21 @@ export class MeetingSession {
       console.error(`[minutes] could not write the minutes for bot ${this.opts.botId} (the transcript is kept): ${errorCode(err)}`)
     }
     send(ended)
+  }
+
+  /**
+   * Writes what the speaker probe measured, for a meeting whose transcript is kept, once its last session has sent
+   * meeting_ended: never for one Alex was asked to leave or removed from. After meeting_ended, and in a turn of its own,
+   * so working the numbers out never holds up the owner's session hearing the meeting ended, nor the other meetings.
+   * The file joins the meeting's records, so a later "please leave" deletes it with the transcript.
+   */
+  private keepMeasurements(ending: Ending): void {
+    const probe = this.deps.speakerProbe
+    if (!probe || this.records.sessions.size || this.leaving || this.records.left) return
+    setImmediate(() => {
+      if (this.leaving || this.records.left) return
+      const file = probe.write({ stem: path.basename(this.transcript.file, '.md'), startedAt: this.startedAt, endedAt: new Date(), ending })
+      if (file) this.records.files.add(file)
+    })
   }
 }

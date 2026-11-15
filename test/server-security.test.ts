@@ -326,7 +326,7 @@ test('/api/join needs the local token, and starts a bot with it', async t => {
 
   const ok = await joinRequest(s.control, s.auth)
   assert.equal(ok.status, 200)
-  assert.deepEqual(Object.keys(JSON.parse(ok.body)).sort(), ['bot_id', 'brief', 'brief_note', 'platform', 'tip'])
+  assert.deepEqual(Object.keys(JSON.parse(ok.body)).sort(), ['bot_id', 'brief', 'brief_note', 'platform', 'speaker_probe', 'tip'])
   assert.equal(s.bots.length, 1)
   assert.match(s.bots[0].pageUrl, /^https:\/\/assistant\.example\.com\/agent\?key=[0-9a-f-]{36}&token=p{48}$/)
 
@@ -544,7 +544,7 @@ test('the public /health says only that the service is up; the control one says 
   assert.equal(pub.status, 200)
   assert.equal(pub.body, '{"ok":true}', 'nothing about meetings or the session link')
   const control = JSON.parse((await request(s.control, { path: '/health' })).body)
-  assert.deepEqual(control, { ok: true, session_linked: false, meetings: 0, bot_meetings: 0, max_meetings: 3, features: ['meeting_brief', 'why_not_answered'] })
+  assert.deepEqual(control, { ok: true, session_linked: false, meetings: 0, bot_meetings: 0, max_meetings: 3, features: ['meeting_brief', 'why_not_answered'], speaker_probe: false })
 })
 
 test('a message over its limit closes the connection it came on: 1 MiB on /bridge, 64 KiB on /audio', async t => {

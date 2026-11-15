@@ -20,6 +20,16 @@ When a meeting ends normally (the host ends it for everyone, everyone else leave
 - **Length:** up to 16,000 tokens, adaptive thinking included, so a long meeting is not cut short.
 - **Model:** `MINUTES_MODEL` in `.env`, the same as `AGENT_MODEL` unless set. It is one call per meeting, with adaptive thinking at medium effort.
 
+## The speaker probe's measurements
+
+Only with `SPEAKER_PROBE` on, and only for a test meeting joined with `npm run join -- "<link>" --speaker-probe` (see [Measuring who is speaking](speaker-probe.md)):
+- **What:** counts and timings of how Recall's participant events lined up with the turns Alex heard. No name, platform id, email or word: the timings are sorted and rounded to 10 ms, so they hold no timeline, and the only text is the file's own keys, a few fixed words and the date.
+- **Where:** `data/speaker-probe/`, under the transcript's file name (`data/transcripts/2026-10-25-14-02-<key>.md` gets `data/speaker-probe/2026-10-25-14-02-<key>.json`), readable only by you (0600, in a folder made 0700 again at every write).
+- **When:** once, as the meeting ends, whenever its transcript is kept: a normal end, one Recall can't confirm (the file says `unconfirmed`), or the service stopping (`stopped`). It is written just after `meeting_ended` has gone out, and nothing of it is in `meeting_ended` or reaches your Claude Code session.
+- **Never** for a meeting Alex was asked to leave or removed from: what was measured is dropped at once, and Recall's connection closed. A file already written (a later session of the same meeting) is deleted with the transcript and minutes.
+- **Retention:** deleted with the transcripts after `TRANSCRIPT_RETENTION_DAYS`. To clear them all: `rm -r data/speaker-probe`.
+- **Reading them:** `npm run speaker-report` (it changes nothing).
+
 ## Recordings at Recall, Deepgram and ElevenLabs
 
 Alex keeps no recording of the meeting, as the chat notice says, and neither does Recall:

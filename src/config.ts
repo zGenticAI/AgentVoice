@@ -90,6 +90,17 @@ export function cap(
 }
 
 /**
+ * SPEAKER_PROBE: whether this service may measure who is speaking, for meetings joined with --speaker-probe
+ * (docs/speaker-probe.md). Only 1 or true turns it on; anything else is off, with a warning, so a typo never turns it on.
+ */
+export function speakerProbeSetting(raw: string, warn: (message: string) => void = console.warn): boolean {
+  const value = raw.trim()
+  if (value === '1' || value.toLowerCase() === 'true') return true
+  if (value) warn(`[config] SPEAKER_PROBE=${value} is not 1 or true, so the speaker probe is off`)
+  return false
+}
+
+/**
  * Settings an older install may still have in .env that do nothing now: a warning for each, which the service
  * says once at start.
  */
@@ -195,4 +206,7 @@ export const config = {
   agentPageFile: optional('AGENT_PAGE_FILE') && pathSetting(optional('AGENT_PAGE_FILE')),
   // What scripts/install-service.sh names the installed service: the service only says it, to say how to stop it.
   serviceLabel: optional('SERVICE_LABEL', DEFAULT_SERVICE_LABEL),
+  // For test meetings only: a meeting joined with npm run join -- "<link>" --speaker-probe also measures how Recall's
+  // participant events line up with what the assistant hears (src/speakers/probe.ts). Off unless set.
+  speakerProbe: speakerProbeSetting(optional('SPEAKER_PROBE')),
 }

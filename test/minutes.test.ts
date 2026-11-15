@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { MINUTES_MAX_TOKENS, MINUTES_TIMEOUT_MS, type MinutesClient, type MinutesInput, minutesFile, minutesThinking, writeMinutes } from '../src/minutes.ts'
-import { MINUTES_DIR, RECORD_DIRS, TRANSCRIPTS_DIR, sweepOldRecords } from '../src/transcript.ts'
+import { MINUTES_DIR, PROBE_DIR, RECORD_DIRS, TRANSCRIPTS_DIR, sweepOldRecords } from '../src/transcript.ts'
 import { config } from '../src/config.ts'
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'alex-minutes-'))
@@ -144,8 +144,8 @@ test('the retention sweep deletes old minutes and transcripts, and keeps recent 
   assert.deepEqual(fs.readdirSync(transcripts), ['new.md'])
 })
 
-test('the retention sweep covers the minutes by default, not only the transcripts', () => {
-  assert.deepEqual([...RECORD_DIRS], [TRANSCRIPTS_DIR, MINUTES_DIR])
+test("the retention sweep covers the minutes and the speaker probe's measurements by default, not only the transcripts", () => {
+  assert.deepEqual([...RECORD_DIRS], [TRANSCRIPTS_DIR, MINUTES_DIR, PROBE_DIR])
   // One real sweep over the default folders (the live data folder), deleting only files dated 1970:
   // its cutoff is 1970-01-01 00:33 UTC, so nothing real is old enough to go.
   const planted = RECORD_DIRS.map(dir => {
@@ -156,7 +156,7 @@ test('the retention sweep covers the minutes by default, not only the transcript
     return file
   })
   try {
-    assert.equal(sweepOldRecords(2_000_000 + config.retentionDays * 86_400_000), 2)
+    assert.equal(sweepOldRecords(2_000_000 + config.retentionDays * 86_400_000), 3)
     for (const file of planted) assert.equal(fs.existsSync(file), false, `${file} is swept`)
   } finally {
     for (const file of planted) fs.rmSync(file, { force: true })
