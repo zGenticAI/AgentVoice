@@ -333,7 +333,10 @@ function serve(handlers: Partial<BridgeHandlers>) {
 async function link(port: number) {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`)
   const got: any[] = []
-  ws.on('message', raw => got.push(JSON.parse(raw.toString())))
+  ws.on('message', raw => {
+    const msg = JSON.parse(raw.toString())
+    if (msg.type !== 'service') got.push(msg)
+  })
   await new Promise(r => ws.on('open', r))
   const send = (msg: object) => ws.send(JSON.stringify(msg))
   return { ws, got, send }

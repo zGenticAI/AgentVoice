@@ -73,11 +73,12 @@ cp profile.example.md profile.md
 2. **Edit `profile.md`:** a sentence or two about you, which questions go to your session, where it may look, and what must never be shared.
 3. **Run `npm run check`.** It checks your settings, prints what Alex will say, and tries the Anthropic, Deepgram and ElevenLabs keys. The Recall key is first used when Alex joins a meeting.
 4. **Start the service** with `npm start`, or with `scripts/install-service.sh` to keep it running as a launchd or systemd service. Then, from outside your network (a phone with Wi-Fi off, say), open your `PUBLIC_URL` followed by `/health`: it has to show `{"ok":true}`, or the meeting bot can't reach its page. A test from your own network can pass when the bot can't.
-5. **Write the brief** for the meeting: what Alex may say, and what it must not. Copy the example with `install -m 600 brief.example.md data/brief.md`, so that only you can read it, and fill it in, or have your Claude Code session write it (see below).
+5. **Write the brief** for the meeting: what Alex may say, and what it must not. Copy the example with `install -m 600 brief.example.md data/brief.md`, so that only you can read it, and fill it in, or have your Claude Code session write it (see below). That is the shared brief, for every meeting without one of its own.
 6. **Send Alex into a meeting.** If the meeting has a waiting room, admit it from there.
    ```bash
    npm run join -- "https://us06web.zoom.us/j/123456789?pwd=..."
    ```
+   To give the meeting a brief of its own instead, add `--brief` and its file: `npm run join -- "<link>" --brief briefs/acme.md`. That meeting answers from it, and no other meeting sees it. `briefs/` is gitignored, or keep them outside this folder.
 
 [Setting it up](docs/setup.md) has every step in full, with a tunnel example.
 
@@ -100,7 +101,7 @@ When Alex isn't sure a line was said to it, it stays quiet: say its name again. 
    ```bash
    claude --dangerously-load-development-channels server:zoom-meeting
    ```
-3. Ask the session to "prepare Alex for my meeting with ...". It writes the brief.
+3. Ask the session to "prepare Alex for my meeting with ...". It writes the brief. When the session then sends Alex in, it gives that meeting the brief for itself alone.
 4. Allow the meeting-assistant agent's tools, and the folders it may read, in `.claude/settings.local.json` (see [The meeting assistant](docs/claude-code.md#the-meeting-assistant)).
 
 During the meeting, the questions that the brief can't answer reach the session, and Alex speaks the reply. When the session sent Alex in ("Alex, join this meeting: <link>"), its meeting-assistant agent answers them in the background; for a meeting started with `npm run join`, they arrive in the session itself. Afterwards, the session sends you the minutes. [Your Claude Code session](docs/claude-code.md) has the details, the permissions and the safety rules.
@@ -138,13 +139,13 @@ This is not legal advice. You run the assistant, so it is up to you to use it la
 | --- | --- | --- |
 | Recall.ai | Everything the bot gets in the meeting, live: its audio and video (shared screens included), the participant list and the chat. Every chat message Alex posts. The bot's record: its meeting link, name and status, and the bot page's address, which holds the page token and the meeting's key. | No recording is stored: the bots use zero data retention, and when a bot's session ends, the service also asks Recall to delete its media. The bot's record stays in your Recall account. |
 | Deepgram | The meeting's audio, live, for speech to text, and with it the words to listen out for: Alex's name, your name, your company, and `DEEPGRAM_KEYTERMS`. | The stream opts out of Deepgram's model improvement programme. Otherwise, Deepgram's terms. |
-| Anthropic (Claude API) | For each answer: the rules (with your profile's About), the brief, what your session added, and up to about 12,000 characters of the transcript. The rules also hold your full name, your company and the topics your profile hands to your session. After the meeting, for the minutes: the whole transcript, the questions put to Alex, the meeting's date, times and platform, and the brief. | Anthropic's commercial terms for the API. |
+| Anthropic (Claude API) | For each answer: the rules (with your profile's About), the meeting's brief (its own, or the shared one), what your session added, and up to about 12,000 characters of the transcript. The rules also hold your full name, your company and the topics your profile hands to your session. After the meeting, for the minutes: the whole transcript, the questions put to Alex, the meeting's date, times and platform, and the meeting's brief. | Anthropic's commercial terms for the API. |
 | ElevenLabs | What Alex says. | Kept in your ElevenLabs history, unless your account has zero retention (enterprise accounts) and you set `ELEVENLABS_ZERO_RETENTION=true`. |
 | Your tunnel provider | The bot page and the meeting's audio, both ways, in transit. | The provider's terms. Cloudflare Tunnel, for example, decrypts HTTPS at Cloudflare's edge. |
 | Your Claude Code session | The meeting links you give it, and the start and end of each meeting. Each question handed to it, with up to about 60,000 characters of the transcript. The parts of the transcript it asks for, and what it reads in your knowledge sources. After the meeting, the whole transcript, the questions put to Alex and the minutes, which the session and its agent are told to read. When no session has claimed the questions (a meeting started with `npm run join`, say), every session with the channel loaded gets them, and the end-of-meeting event too, so each of those sessions is told to read the transcript and the minutes. | Claude Code keeps its session history on your computer, and sends the conversation to Anthropic under your Claude account's terms. These copies are outside `data/`: neither `TRANSCRIPT_RETENTION_DAYS` nor "please leave" deletes them. On an individual claude.ai plan (Pro, Max or Ultra), check your privacy settings on model training. |
 | Telegram (optional) | Requests to join a meeting, and anything your session sends you there, such as the minutes. | Telegram's terms. Bot chats are not end-to-end encrypted. |
 | The meeting's chat | The chat notice, the longer detail of your session's answers, anything your session posts with `post_chat`, and the notice Alex posts when it reaches `MAX_MEETING_MINUTES`. | The meeting platform keeps it like any chat message. |
-| Your computer (`data/`) | Transcripts, minutes, the brief, the audio of Alex's fixed lines, and the service's log. The log never holds what was said or a meeting's link: it holds each bot's id, the meeting's platform and how the meeting ended. | Readable only by you. Transcripts and minutes are deleted after `TRANSCRIPT_RETENTION_DAYS` (30 unless set), or at once when someone asks Alex to leave, or removes it and Recall confirms the removal (see [Minutes and meeting data](docs/minutes-and-data.md#minutes)). The brief stays until it is replaced, and the log until you delete it. |
+| Your computer (`data/`) | Transcripts, minutes, the shared brief, the audio of Alex's fixed lines, and the service's log. A meeting's own brief is never written there: the service keeps it in memory. The log never holds what was said, a meeting's link or any of a brief: it holds each bot's id, the meeting's platform and how the meeting ended. | Readable only by you. Transcripts and minutes are deleted after `TRANSCRIPT_RETENTION_DAYS` (30 unless set), or at once when someone asks Alex to leave, or removes it and Recall confirms the removal (see [Minutes and meeting data](docs/minutes-and-data.md#minutes)). The shared brief stays until it is replaced, a meeting's own brief until that meeting is over, and the log until you delete it. |
 
 [Minutes and meeting data](docs/minutes-and-data.md) has the details.
 
@@ -161,7 +162,7 @@ See [Ports and security](docs/security.md). To report a vulnerability, see [SECU
 
 - Meetings in English only, and macOS and Linux only.
 - One owner per install, and one Claude Code session takes the questions.
-- One brief at a time: every meeting Alex is in uses `data/brief.md`, until it is replaced.
+- A meeting's own brief is set when Alex joins, and can't be replaced during the meeting: the session adds to it with `add_to_brief`. A brief is at most 16,000 characters.
 - Alex hears the meeting but doesn't see it: it can't see shared screens or video, and doesn't read the meeting chat.
 - Everyone but Alex is "Speaker" in the transcript and the minutes, so it doesn't know who said what.
 - It misses some lines on purpose, rather than answer remarks that weren't for it. It also can't tell a colleague with the same name from itself.

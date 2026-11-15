@@ -67,6 +67,14 @@ type Flux = Pick<FluxStream, 'send' | 'close' | 'on'> & Partial<Pick<FluxStream,
 
 type MeetingEnded = Extract<ToSession, { type: 'meeting_ended' }>
 
+/** What the log says of an error: its code (ENOSPC, or Claude's HTTP status), never its message. */
+function errorCode(err: unknown): string {
+  const { code, status } = (err ?? {}) as { code?: unknown; status?: unknown }
+  if (typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code)) return code
+  if (typeof status === 'number') return `HTTP ${status}`
+  return 'error'
+}
+
 // When Alex ends an answer on a question, it has handed the turn back: the next thing anyone says within
 // this time is taken as the reply, without the name. An answer that ends on a statement opens nothing,
 // so "great, thanks" or the conversation carrying on around Alex is not answered.
@@ -1183,11 +1191,14 @@ export class MeetingSession {
         return send(this.endedEvent())
       }
       ended.minutes_file = file
-      console.log(`[minutes] wrote ${file}`)
+      // The bot's id, never the file: its name holds the meeting's key, and nothing deletes the log.
+      console.log(`[minutes] wrote the minutes for bot ${this.opts.botId}`)
     } catch (err) {
       if (this.leaving) return send(this.endedEvent())
+      // The owner's session hears why in full. The log has the error's code only: a file error's message names the
+      // file, and so the meeting's key.
       ended.minutes_error = (err as Error).message || String(err)
-      console.error('[minutes] could not write the minutes (the transcript is kept):', ended.minutes_error)
+      console.error(`[minutes] could not write the minutes for bot ${this.opts.botId} (the transcript is kept): ${errorCode(err)}`)
     }
     send(ended)
   }

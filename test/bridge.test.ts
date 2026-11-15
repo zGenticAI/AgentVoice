@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocketServer, WebSocket } from 'ws'
-import { LATE_QUESTIONS_KEPT, LEFT_NOTE, SessionBridge, type SessionAnswer } from '../src/bridge.ts'
+import { LATE_QUESTIONS_KEPT, LEFT_NOTE, SERVICE_FEATURES, SessionBridge, type SessionAnswer } from '../src/bridge.ts'
 
 test('a question reaches the session and its reply comes back', async () => {
   const wss = new WebSocketServer({ port: 0 })
@@ -44,7 +44,11 @@ function serve(bridge: SessionBridge) {
 async function link(port: number) {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`)
   const got: any[] = []
-  ws.on('message', raw => got.push(JSON.parse(raw.toString())))
+  // What the service says it can do, on every link, is not part of what these tests follow.
+  ws.on('message', raw => {
+    const msg = JSON.parse(raw.toString())
+    if (msg.type !== 'service') got.push(msg)
+  })
   await new Promise(r => ws.on('open', r))
   ws.send(JSON.stringify({ type: 'hello' }))
   await settle()
@@ -632,4 +636,97 @@ test("post_chat carries the meeting's key to the voice service, and its answer b
   assert.deepEqual(await acked(a, 'p2'), { type: 'ack', request_id: 'p2', ok: false, note: 'Alex is not in that meeting right now' })
   a.ws.close()
   wss.close()
+})
+
+// --- What the service can do, and a meeting's brief ----------------------------------------------------------
+
+/** A bridge served for one test, closed after it whether it passes or fails (an open server would keep the file running). */
+function served(t: { after: (fn: () => unknown) => void }, handlers: Partial<ConstructorParameters<typeof SessionBridge>[0]> = {}) {
+  const { wss, port } = serve(new SessionBridge({ ...quiet(), ...handlers }))
+  t.after(() => {
+    for (const ws of wss.clients) ws.terminate()
+    wss.close()
+  })
+  const linked = async () => {
+    const l = await link(port)
+    t.after(() => l.ws.terminate())
+    return l
+  }
+  return { port, linked }
+}
+
+test('every link hears first what the voice service can do', async t => {
+  const { port } = served(t)
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+  t.after(() => ws.terminate())
+  const first = new Promise(resolve => {
+    ws.once('message', raw => resolve(JSON.parse(raw.toString())))
+    setTimeout(() => resolve('nothing within 2 s'), 2000).unref()
+  })
+  assert.deepEqual(await first, { type: 'service', features: [...SERVICE_FEATURES] })
+  assert.deepEqual([...SERVICE_FEATURES], ['meeting_brief'])
+})
+
+test('a set_brief the voice service cannot save is acknowledged with why, and nothing is left to crash it', async t => {
+  const rejections: unknown[] = []
+  const onRejection = (r: unknown) => void rejections.push(r)
+  process.on('unhandledRejection', onRejection)
+  t.after(() => process.off('unhandledRejection', onRejection))
+  const { linked } = served(t, {
+    setBrief: markdown => {
+      if (markdown === 'fails') throw new Error("EISDIR: illegal operation on a directory, open 'data/brief.md'")
+    },
+  })
+  const a = await linked()
+  a.send({ type: 'set_brief', request_id: 's1', markdown: 'fails' })
+  a.send({ type: 'set_brief', request_id: 's2', markdown: '# Brief' })
+  assert.deepEqual(await acked(a, 's1'), { type: 'ack', request_id: 's1', ok: false, note: "EISDIR: illegal operation on a directory, open 'data/brief.md'" })
+  assert.deepEqual(await acked(a, 's2'), { type: 'ack', request_id: 's2', ok: true })
+  await settle()
+  assert.deepEqual(rejections, [])
+})
+
+test("join_meeting passes the meeting's brief on as it came, so the service can refuse one that is not text", async t => {
+  const briefs: unknown[] = []
+  const { linked } = served(t, { joinMeeting: async (_url, brief) => (briefs.push(brief), { note: 'joining', meeting: 'k1' }) })
+  const a = await linked()
+  a.send({ type: 'join_meeting', request_id: 'j1', meeting_url: 'https://zoom.us/j/1', brief: '# Acme' })
+  a.send({ type: 'join_meeting', request_id: 'j2', meeting_url: 'https://zoom.us/j/1' })
+  a.send({ type: 'join_meeting', request_id: 'j3', meeting_url: 'https://zoom.us/j/1', brief: 42 })
+  a.send({ type: 'join_meeting', request_id: 'j4', meeting_url: 'https://zoom.us/j/1', brief: null })
+  for (const id of ['j1', 'j2', 'j3', 'j4']) await acked(a, id)
+  assert.deepEqual(briefs, ['# Acme', undefined, 42, undefined])
+})
+
+test("get_brief gives the service's answer for a key that can be a meeting's, and unknown_meeting for anything else", async t => {
+  const asked: string[] = []
+  const { linked } = served(t, {
+    meetingBrief: meeting => {
+      asked.push(meeting)
+      if (meeting === 'k-throws') throw new Error('broken')
+      return meeting === 'k-own' ? { brief_for: 'this_meeting', text: '# Acme' } : { brief_for: 'shared' }
+    },
+  })
+  const a = await linked()
+  const brief = async (id: string, meeting: unknown) => {
+    a.send({ type: 'get_brief', request_id: id, meeting })
+    for (let i = 0; i < 40 && !a.got.some(m => m.request_id === id); i++) await settle(10)
+    const { type, request_id: _, ...rest } = a.got.find(m => m.request_id === id)
+    assert.equal(type, 'brief')
+    return rest
+  }
+  assert.deepEqual(await brief('b1', 'k-own'), { brief_for: 'this_meeting', text: '# Acme' })
+  assert.deepEqual(await brief('b2', 'k-other'), { brief_for: 'shared' })
+  assert.deepEqual(await brief('b3', 'k-throws'), { brief_for: 'unknown_meeting' })
+  for (const [i, key] of ['../brief.md', '', 'x'.repeat(101), 42, undefined].entries()) {
+    assert.deepEqual(await brief(`b${i + 4}`, key), { brief_for: 'unknown_meeting' }, String(key))
+  }
+  assert.deepEqual(asked, ['k-own', 'k-other', 'k-throws'], 'only keys that can be a meeting\'s reach the service')
+  assert.equal(a.got.some(m => m.type === 'question'), false)
+
+  // A voice service without the handler knows no meeting's brief.
+  const b = await served(t).linked()
+  b.send({ type: 'get_brief', request_id: 'x1', meeting: 'k-own' })
+  for (let i = 0; i < 40 && !b.got.some(m => m.request_id === 'x1'); i++) await settle(10)
+  assert.deepEqual(b.got.find(m => m.request_id === 'x1'), { type: 'brief', request_id: 'x1', brief_for: 'unknown_meeting' })
 })

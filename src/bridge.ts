@@ -9,7 +9,7 @@
 // 2. else the session that claimed last: the latest `at`, which is when that session last used
 //    join_meeting, reply or next_question. Sessions send it again when they relink, so which one
 //    wins does not depend on the order they reconnect in after the voice service restarts.
-//    get_transcript, set_brief, add_to_brief and post_chat never move the questions.
+//    get_transcript, get_brief, set_brief, add_to_brief and post_chat never move the questions.
 // 3. else, when no session has claimed, every linked session: the first reply wins.
 //
 // Alex waits 60 seconds for a reply, then tells the meeting it couldn't reach the owner's notes. It also stops
@@ -21,7 +21,19 @@ import { randomUUID } from 'node:crypto'
 import WebSocket from 'ws'
 import { identity } from './identity.ts'
 
+/**
+ * What this voice service can do, beyond what every version could: told to the channel on every link ('service'), and
+ * to the join CLI in the control /health. A newer channel or CLI refuses what an older service would quietly ignore.
+ * meeting_brief: a meeting's own brief (join_meeting's and /api/join's brief, and get_brief).
+ */
+export const SERVICE_FEATURES = ['meeting_brief'] as const
+
+/** What get_brief says of a meeting's brief: its own (with its text), the shared one, or none (no such meeting now). */
+export type BriefFor = { brief_for: 'this_meeting'; text: string } | { brief_for: 'shared' } | { brief_for: 'unknown_meeting' }
+
 export type ToSession =
+  // Sent first on every link. An older channel ignores it.
+  | { type: 'service'; features: string[] }
   | { type: 'question'; id: string; question: string; asked_by: string; meeting: string; context: string }
   | { type: 'meeting_started'; meeting: string }
   // transcript_file: '' once deleted at a participant's request. minutes_file: '' when there are no
@@ -37,6 +49,9 @@ export type ToSession =
       minutes_error?: string
     }
   | { type: 'transcript'; request_id: string; text: string }
+  // The answer to get_brief. unknown_meeting: the key is no meeting's this service is in now (or one that is over), so
+  // the channel gives no brief at all, never the shared one in its place.
+  | ({ type: 'brief'; request_id: string } & BriefFor)
   // meeting: for join_meeting, the key Alex's questions from that meeting will carry.
   // For a reply, ok is true when Alex was still waiting for it and will say it. late: Alex had stopped
   // waiting, and why says why: 'timeout' (it told the meeting it couldn't reach the owner's notes) or
@@ -59,7 +74,10 @@ export type FromSession =
   | { type: 'set_brief'; request_id: string; markdown: string }
   // Adds to what Alex answers from by itself, for one meeting (its key; the latest meeting if left out).
   | { type: 'add_to_brief'; request_id: string; text: string; meeting?: string }
-  | { type: 'join_meeting'; request_id: string; meeting_url: string }
+  // brief: the meeting's own brief, which it uses instead of the shared one (only to a service with 'meeting_brief').
+  | { type: 'join_meeting'; request_id: string; meeting_url: string; brief?: string }
+  // get_profile for one meeting: which brief it uses (answered with 'brief').
+  | { type: 'get_brief'; request_id: string; meeting: string }
 
 export interface SessionAnswer {
   spoken: string
@@ -81,6 +99,7 @@ export interface BridgeHandlers {
   transcript(maxChars?: number, meeting?: string): string
   /** Posts in the chat of the meeting with this key (else the latest), or refuses with a note. */
   postChat(message: string, meeting?: string): Promise<{ ok: boolean; note?: string }>
+  /** Saves the shared brief, or throws why not (too long, or it can't be written). */
   setBrief(markdown: string): void
   /**
    * Adds to what Alex answers from by itself in the meeting with this key (the latest meeting if none),
@@ -93,8 +112,13 @@ export interface BridgeHandlers {
    * is over). Without it, late answers are not kept.
    */
   lateAnswer?(meeting: string, question: string, answer: SessionAnswer): { ok: boolean; note?: string }
-  /** Sends Alex into a meeting. Resolves with a note for the session and the meeting's key, or throws with the reason. */
-  joinMeeting(meetingUrl: string): Promise<{ note: string; meeting?: string }>
+  /**
+   * Sends Alex into a meeting, with its own brief if given (as the session sent it: the handler refuses one that isn't
+   * text). Resolves with a note for the session and the meeting's key, or throws with the reason.
+   */
+  joinMeeting(meetingUrl: string, brief?: unknown): Promise<{ note: string; meeting?: string }>
+  /** Which brief the meeting with this key uses. Without it, every meeting is unknown_meeting. */
+  meetingBrief?(meeting: string): BriefFor
 }
 
 // The longest a claim can hold: next_question's longest wait (600 s) plus the assistant's grace period.
@@ -145,6 +169,8 @@ interface Link {
 }
 
 const isOpen = (link: Link) => link.ws.readyState === WebSocket.OPEN
+// What a meeting key can look like (they are random UUIDs): anything else is no meeting's.
+const MEETING_KEY = /^[\w-]{1,100}$/
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 
 export class SessionBridge {
@@ -190,6 +216,7 @@ export class SessionBridge {
     const link: Link = { ws, n: ++this.linked, at: 0, holdUntil: 0, seq: 0 }
     this.links.push(link)
     console.log(`[bridge] Claude Code session linked (${this.links.length} linked)`)
+    this.send(link, { type: 'service', features: [...SERVICE_FEATURES] })
     ws.on('message', data => void this.onMessage(link, data.toString()))
     ws.on('error', () => {}) // close follows
     ws.on('close', () => {
@@ -385,10 +412,18 @@ export class SessionBridge {
         this.send(link, { type: 'ack', request_id: msg.request_id, ok: result.ok, note: result.note })
         break
       }
-      case 'set_brief':
-        this.handlers.setBrief(String(msg.markdown ?? ''))
-        this.send(link, { type: 'ack', request_id: msg.request_id, ok: true })
+      case 'set_brief': {
+        // A brief that can't be saved (too long, or the file can't be written) is refused with why. A throw here would
+        // be an unhandled rejection, which stops the service, and every meeting with it, as a crash.
+        let result: { ok: boolean; note?: string } = { ok: true }
+        try {
+          this.handlers.setBrief(String(msg.markdown ?? ''))
+        } catch (err) {
+          result = { ok: false, note: (err as Error).message }
+        }
+        this.send(link, { type: 'ack', request_id: msg.request_id, ...result })
         break
+      }
       case 'add_to_brief': {
         // Like set_brief, it does not take the questions: a session getting ahead of them is not answering them.
         const meeting = typeof msg.meeting === 'string' && msg.meeting ? msg.meeting : undefined
@@ -406,11 +441,27 @@ export class SessionBridge {
         // The session that sends Alex into a meeting gets its questions.
         this.claim(link, Date.now(), link.holdUntil)
         try {
-          const { note, meeting } = await this.handlers.joinMeeting(String(msg.meeting_url ?? ''))
+          // Passed on as it came, so a brief that isn't text is refused rather than left out (the shared brief instead).
+          const brief = msg.brief ?? undefined
+          const { note, meeting } = await this.handlers.joinMeeting(String(msg.meeting_url ?? ''), brief)
           this.send(link, { type: 'ack', request_id: msg.request_id, ok: true, note, meeting })
         } catch (err) {
           this.send(link, { type: 'ack', request_id: msg.request_id, ok: false, note: (err as Error).message })
         }
+        break
+      }
+      case 'get_brief': {
+        // Read only, like get_transcript: it does not take the questions. Anything that goes wrong is unknown_meeting,
+        // so the session gets no brief rather than a wrong one.
+        let found: BriefFor = { brief_for: 'unknown_meeting' }
+        if (typeof msg.meeting === 'string' && MEETING_KEY.test(msg.meeting)) {
+          try {
+            found = this.handlers.meetingBrief?.(msg.meeting) ?? found
+          } catch {
+            // found stays unknown_meeting
+          }
+        }
+        this.send(link, { type: 'brief', request_id: msg.request_id, ...found })
         break
       }
     }

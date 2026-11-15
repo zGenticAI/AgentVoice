@@ -21,7 +21,8 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import { Brain } from './brain/brain.ts'
-import { SessionBridge } from './bridge.ts'
+import { type BriefFor, SERVICE_FEATURES, SessionBridge } from './bridge.ts'
+import { type BriefInUse, MAX_BRIEF_CHARS, SHARED_BRIEF_FILE, briefProblem, briefTooLong, readBrief } from './brief.ts'
 import { ROOT, config, publicUrlProblem, recallRegionProblem, retiredSettings } from './config.ts'
 import { FIXED_LINES } from './consent.ts'
 import { prepareControlSocket } from './control-socket.ts'
@@ -52,16 +53,14 @@ const RECONNECT_MS = 60_000
 // open: a connection that died on the way can stay so for many minutes. Every quarter of it the page is sent
 // {type: 'hb'} and a ping; the page, which can't see pings, counts the same silence from its side (public/agent.js).
 const PAGE_SILENCE_MS = 4000
-// The most /api/join reads of a request: it only carries a meeting link.
-const MAX_BODY_BYTES = 16_384
-
-function readBrief(file: string): string {
-  try {
-    return fs.readFileSync(file, 'utf8')
-  } catch {
-    return ''
-  }
-}
+// The most /api/join reads of a request: a meeting link, and the meeting's own brief, every character of which JSON
+// may write as six bytes (\u001f). The local token is checked before any of it is read.
+const MAX_BODY_BYTES = 16_384 + 6 * MAX_BRIEF_CHARS
+// The most one websocket message may hold. The bot page sends 80 ms frames of audio (2,560 bytes) and short controls;
+// the channel's largest message is a brief (MAX_BRIEF_CHARS, under 100 KB however JSON writes it). ws would otherwise
+// take up to 100 MiB from one message, so one link could make the service hold that much at once.
+const MAX_AUDIO_MESSAGE_BYTES = 64 * 1024
+const MAX_BRIDGE_MESSAGE_BYTES = 1024 * 1024
 
 class JoinError extends Error {}
 
@@ -127,6 +126,15 @@ function destroyOnError(socket: Duplex): () => void {
   const onError = () => socket.destroy()
   socket.on('error', onError)
   return () => socket.off('error', onError)
+}
+
+/**
+ * A page's connection has an 'error' listener from its first moment, whatever becomes of its session: an error nothing
+ * listens to (a message over MAX_AUDIO_MESSAGE_BYTES, a malformed frame) would take the service down, and every meeting
+ * with it. The connection closes after it, which is the page going; the session logs what failed.
+ */
+function heedErrors(ws: WebSocket): void {
+  ws.on('error', () => {})
 }
 
 /** Answers a websocket upgrade with a plain HTTP refusal, so the client can say why it was refused. */
@@ -318,12 +326,20 @@ interface Meeting<S> {
   timer?: NodeJS.Timeout
   /** MAX_MEETING_MINUTES, from when its page first connected, whether or not a page is connected when it runs out. */
   limit?: NodeJS.Timeout
+  /**
+   * Its own brief, given at the join, which it answers from instead of the shared one: undefined for a meeting that uses
+   * the shared one. In memory only (never in a file, nor in PENDING_BOTS_FILE), until its session is over.
+   */
+  brief?: string
+  /** Its session is over, or its bot is being asked to leave: get_brief says it has no brief, not even the shared one. */
+  over?: boolean
 }
 
 export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps: ServiceDeps<S>): Service<S> {
   const served = botFiles(cfg.agentPage ?? loadAgentPage('', identity).page)
-  const briefFile = path.join(cfg.dataDir, 'brief.md')
-  const brief = () => readBrief(briefFile)
+  const briefFile = path.join(cfg.dataDir, SHARED_BRIEF_FILE)
+  // The shared brief, read again at every answer, for the meetings without one of their own.
+  const sharedBrief = () => readBrief(briefFile)
   const pendingFile = path.join(cfg.dataDir, PENDING_BOTS_FILE)
   const backoff = cfg.leaveBackoffMs?.length ? cfg.leaveBackoffMs : LEAVE_BACKOFF_MS
   // Meetings started through /api/join or join_meeting, keyed by the random key in the bot page URL, until their
@@ -363,10 +379,29 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     clearTimeout(meeting.limit)
   }
 
+  /**
+   * The meeting is over for its brief: its session has ended (the session holds the copy its minutes use), or its bot is
+   * being asked to leave. Its own brief is let go (no page is let in then that could need it), and get_brief says it has
+   * none. Once its bot is out of the call, the meeting itself goes.
+   */
+  function dropBrief(meeting: Meeting<S>): void {
+    meeting.brief = undefined
+    meeting.over = true
+  }
+
+  /** Which brief the meeting with this key uses, for get_profile: never the shared one for a meeting that is over. */
+  function meetingBrief(key: string): BriefFor {
+    const meeting = meetings.get(key)
+    // A bot a run that crashed left behind is being asked to leave (recover), so it is over too.
+    if (!meeting || meeting.over) return { brief_for: 'unknown_meeting' }
+    return meeting.brief === undefined ? { brief_for: 'shared' } : { brief_for: 'this_meeting', text: meeting.brief }
+  }
+
   /** The bot is out of its call, or Recall says it can't be asked to leave: its place is free. */
   function gone(meeting: Meeting<S>): void {
     if (closed || meetings.get(meeting.key) !== meeting) return
     clearTimers(meeting)
+    // Its own brief goes with it.
     meetings.delete(meeting.key)
     save()
   }
@@ -395,6 +430,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     if (meeting.state === 'leaving') return
     meeting.state = 'leaving'
     clearTimers(meeting)
+    dropBrief(meeting)
     console.log(`[leave] bot ${meeting.botId}: ${why}, so it is asked to leave its call`)
     const attempt = async (n: number): Promise<void> => {
       if (await askToLeave(meeting)) return
@@ -465,6 +501,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     sessions.delete(session)
     if (meeting.session !== session) return
     meeting.session = undefined
+    // Before the check below: while the service stops, the meeting stays until its bot is out, with no brief meanwhile.
+    dropBrief(meeting)
     if (stopping) return
     const why = session.leftMeeting
       ? 'it was asked to leave the meeting, or removed from it'
@@ -498,12 +536,22 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     ws.once('close', () => clearInterval(beat))
   }
 
-  /** Creates a Recall bot that joins the meeting with the agent page as its camera and microphone. */
-  async function startBot(meetingUrl: unknown): Promise<{ bot_id: string; platform: recall.Platform; key: string }> {
+  /**
+   * Creates a Recall bot that joins the meeting with the agent page as its camera and microphone. brief: the meeting's
+   * own brief, which it then answers from instead of the shared one (undefined: the shared one).
+   */
+  async function startBot(
+    meetingUrl: unknown,
+    brief?: unknown,
+  ): Promise<{ bot_id: string; platform: recall.Platform; key: string; brief: BriefInUse }> {
     const platform = typeof meetingUrl === 'string' ? recall.meetingPlatform(meetingUrl) : null
     if (typeof meetingUrl !== 'string' || !platform) {
       throw new JoinError('Pass a Zoom, Google Meet or Microsoft Teams meeting link.')
     }
+    // Refused rather than joined with the shared brief, which may be another meeting's. null is JSON's way to leave it out.
+    const unfit = brief === undefined || brief === null ? '' : briefProblem(brief)
+    if (unfit) throw new JoinError(unfit)
+    const own = typeof brief === 'string' ? brief : undefined
     if (!cfg.agentPageToken) throw new JoinError('Set AGENT_PAGE_TOKEN in .env first.')
     // A page the bot can't load would leave it in the meeting, silent, until the page wait runs out or it is asked to leave.
     const unreachable = publicUrlProblem(cfg.publicUrl)
@@ -529,7 +577,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
       creating.delete(creation)
     }
     const pageWait = cfg.pageWaitMs ?? PAGE_WAIT_MS
-    const meeting: Meeting<S> = { key, botId: bot.id, platform, state: 'waiting', deadline: Date.now() + pageWait }
+    const meeting: Meeting<S> = { key, botId: bot.id, platform, state: 'waiting', deadline: Date.now() + pageWait, brief: own }
     meetings.set(key, meeting)
     save()
     // Stopped while Recall created it: stop() asks it to leave along with the others.
@@ -538,9 +586,16 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     meeting.timer = setTimeout(() => leave(meeting, 'its page never connected'), pageWait)
     meeting.timer.unref()
     // The bot's id is enough to find it in Recall. The meeting's link stays out of the log, which nothing deletes: for
-    // Google Meet even a link without its query string lets anyone join.
-    console.log(`[join] bot ${bot.id} is joining a ${recall.PLATFORM_NAMES[platform]} meeting`)
-    return { bot_id: bot.id, platform, key }
+    // Google Meet even a link without its query string lets anyone join. Nor does any of a brief go there.
+    console.log(`[join] bot ${bot.id} is joining a ${recall.PLATFORM_NAMES[platform]} meeting${own === undefined ? '' : ', with a brief of its own'}`)
+    return { bot_id: bot.id, platform, key, brief: own !== undefined ? 'meeting' : sharedBrief().trim() ? 'shared' : 'none' }
+  }
+
+  /** What the owner is told about the brief a meeting just joined uses. */
+  function briefNote(brief: BriefInUse): string {
+    if (brief === 'meeting') return `It answers from the brief given for this meeting, and no other meeting sees it.`
+    if (brief === 'shared') return `It answers from the shared brief (${briefFile}), read again at every answer.`
+    return `There is no brief (${briefFile} is empty, and none was given for this meeting): it answers from ${identity.owner}'s profile alone, and hands the rest to ${identity.owner}'s session.`
   }
 
   /** Asks the bots a run that crashed, or was killed, left in their calls to leave (from PENDING_BOTS_FILE). */
@@ -569,27 +624,38 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     // meeting the assistant is in; post_chat without a key is refused while it is in more than one (src/sessions.ts).
     ...sessionHandlers(sessions),
     setBrief: markdown => {
+      // Refused, not cut: its end often says what must not be shared. (An empty one clears the shared brief, as before.)
+      const tooLong = briefTooLong(markdown)
+      if (tooLong) throw new Error(tooLong)
       fs.mkdirSync(cfg.dataDir, { recursive: true, mode: 0o700 })
       // The brief says what must not be disclosed: readable by you only.
       fs.writeFileSync(briefFile, markdown, { mode: 0o600 })
       fs.chmodSync(briefFile, 0o600) // mode applies only when the file is created
     },
-    joinMeeting: async meetingUrl => {
-      const { bot_id, platform, key } = await startBot(meetingUrl)
+    joinMeeting: async (meetingUrl, brief) => {
+      const started = await startBot(meetingUrl, brief)
+      const { bot_id, platform, key } = started
       // The key is what this meeting's questions and events carry as "meeting".
-      return { note: `${identity.name} is joining the ${recall.PLATFORM_NAMES[platform]} meeting (bot ${bot_id}). ${joinTip()}`, meeting: key }
+      const note = `${identity.name} is joining the ${recall.PLATFORM_NAMES[platform]} meeting (bot ${bot_id}). ${briefNote(started.brief)} ${joinTip()}`
+      return { note, meeting: key }
     },
+    meetingBrief,
   })
 
-  const audioWss = new WebSocketServer({ noServer: true })
-  const bridgeWss = new WebSocketServer({ noServer: true })
+  // A message over the limit closes its connection (1009), without the service reading the rest of it.
+  const audioWss = new WebSocketServer({ noServer: true, maxPayload: MAX_AUDIO_MESSAGE_BYTES })
+  const bridgeWss = new WebSocketServer({ noServer: true, maxPayload: MAX_BRIDGE_MESSAGE_BYTES })
 
   /**
    * Starts the conversation for a page that connected to /audio. Null if it could not start: the page is told so, and
    * closed with a code that says not to come back.
    */
-  function startAudio(ws: WebSocket, opts: SessionOptions): S | null {
+  function startAudio(ws: WebSocket, opts: SessionOptions, meeting: Meeting<S>): S | null {
     let session: S
+    // A meeting's own brief is held by its session, for its answers and its minutes, across its page's reconnects: so
+    // set_brief, which changes the shared brief, never changes it, and it outlives the meeting's own copy.
+    const own = meeting.brief
+    const brief = own === undefined ? sharedBrief : () => own
     try {
       session = deps.startSession(ws, opts, { bridge, brief, reconnectMs: cfg.reconnectMs ?? RECONNECT_MS })
     } catch (err) {
@@ -654,6 +720,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
       handOver()
       // The callback runs before any other upgrade is handled, so two tries can't both get past the checks above.
       audioWss.handleUpgrade(req, socket, head, ws => {
+        heedErrors(ws)
         const replacing = meeting.page !== undefined
         clearTimeout(meeting.timer)
         meeting.state = 'live'
@@ -669,7 +736,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     // The callback runs before any other upgrade is handled, so two pages can't both get past the check above.
     handOver()
     audioWss.handleUpgrade(req, socket, head, ws => {
-      const session = startAudio(ws, { meetingKey: key, botId: meeting.botId, platform: recall.PLATFORM_NAMES[platform] })
+      heedErrors(ws)
+      const session = startAudio(ws, { meetingKey: key, botId: meeting.botId, platform: recall.PLATFORM_NAMES[platform] }, meeting)
       // Nothing will start for it later: a session that can't start is a setting to fix.
       if (!session) return leave(meeting, 'its meeting session could not start')
       clearTimeout(meeting.timer)
@@ -704,6 +772,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
         meetings: sessions.size,
         bot_meetings: liveMeetings(),
         max_meetings: cfg.maxMeetings,
+        // What this service can do, for a join CLI newer than it (src/bridge.ts).
+        features: [...SERVICE_FEATURES],
       }
       return send(res, 200, JSON.stringify(health), 'application/json')
     }
@@ -728,9 +798,10 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     // A form or a "simple" cross-site request can't send JSON without the browser asking first.
     if (!isJson(req)) return send(res, 415, 'Send JSON, with Content-Type: application/json.')
     try {
-      const { meetingUrl } = await readJson(req)
-      const { bot_id, platform } = await startBot(meetingUrl)
-      return send(res, 200, JSON.stringify({ bot_id, platform, tip: joinTip() }), 'application/json')
+      const { meetingUrl, brief } = await readJson(req)
+      const started = await startBot(meetingUrl, brief)
+      const { bot_id, platform } = started
+      return send(res, 200, JSON.stringify({ bot_id, platform, brief: started.brief, brief_note: briefNote(started.brief), tip: joinTip() }), 'application/json')
     } catch (err) {
       const status = err instanceof JoinError ? 400 : err instanceof BodyError ? err.status : 500
       return send(res, status, (err as Error).message)

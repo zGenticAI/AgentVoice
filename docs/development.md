@@ -31,15 +31,17 @@ The tests use fakes for Deepgram, ElevenLabs, Claude and Recall. The real test o
 | `src/name-check.ts`, `src/name-corpus.ts` | Whether the names work (checked at start-up), and how a name does on the sample meeting lines (`npm run check-name`) |
 | `src/brain/attention.ts` | Whether a line is for Alex: spoken to by name, with a question or a request, or only talked about; and which words are only backchannels |
 | `src/brain/additions.ts` | What your session adds to the brief during a meeting (`add_to_brief`, and its answers), in memory |
+| `src/brief.ts` | The brief's limit (16,000 characters, refused and never cut) and checks, and reading the shared brief. A meeting's own brief lives on its meeting in `src/server.ts`, in memory only |
 | `src/minutes.ts` | The minutes Claude writes after a meeting |
-| `src/bridge.ts`, `src/channel/server.ts` | The link to Claude Code (MCP channel), and whether Alex will say a reply or it came too late |
+| `src/bridge.ts`, `src/channel/server.ts` | The link to Claude Code (MCP channel), whether Alex will say a reply or it came too late, and what the service can do (`SERVICE_FEATURES`, sent first on every link and listed in the control `/health`) |
+| `src/cli/join.ts`, `src/cli/join-args.ts` | `npm run join`, and the arguments it takes (`--brief <file>`) |
 | `src/channel/questions.ts`, `.claude/agents/meeting-assistant.md` | Hands questions to the meeting-assistant agent through `next_question` |
-| `src/channel/profile-tool.ts` | `get_profile`: the owner's names, the brief and the profile, for the agent and the session |
+| `src/channel/profile-tool.ts` | `get_profile`: the owner's names, the brief a meeting uses (with its key: its own or the shared one, or none when it can't be had) and the profile, for the agent and the session |
 | `.claude/settings.json` | The files no Claude Code session in this folder may read (your own go in `.claude/settings.local.json`) |
 | `scripts/install-service.sh`, `scripts/agent-voice.plist`, `scripts/agent-voice.service` | Keeping the service running: launchd on macOS, systemd on Linux |
 | `src/recall.ts` | Recall.ai bot API, and how a bot left its call (read again while it finishes, and after its page drops) |
 | `src/consent.ts` | The consent wording Alex says and posts |
 | `public/`, `src/pages.ts` | The agent page (Alex's camera and microphone in the meeting) and its scripts: `agent.js` plays Alex's voice, and reconnects to the service by itself when the connection drops (`createLink`, tested on fake connections and timers); `agent.d.ts` only types `agent.js` for the tests, and is not served. The server puts the names in the page, and checks a page of your own (`AGENT_PAGE_FILE`) |
-| `data/` | Transcripts and minutes (deleted after 30 days), brief, the local token, the control socket, the bots not yet seen out of their calls (`pending-bots.json`), the audio of Alex's fixed lines (`tts-cache`), and the service's log under launchd or systemd (`agent-voice.log`). Readable only by you. Never committed. |
+| `data/` | Transcripts and minutes (deleted after 30 days), the shared brief, the local token, the control socket, the bots not yet seen out of their calls (`pending-bots.json`), the audio of Alex's fixed lines (`tts-cache`), and the service's log under launchd or systemd (`agent-voice.log`). Readable only by you. Never committed. |
 | `docs/` | These pages |
 | `.github/workflows/ci.yml` | CI: the typecheck and the tests, on Node 24 and 26, on Linux and macOS |
