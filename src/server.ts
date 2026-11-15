@@ -415,8 +415,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
 
   /**
    * MAX_MEETING_MINUTES is up: the assistant says so in the chat and leaves, whether its page is connected or away (the
-   * line goes through Recall). The bot is asked to leave once the session is done with it, even if it declines (it
-   * posts nothing once asked to leave).
+   * line goes through Recall). The bot is asked to leave once the session is done with it, even if it declines, unless
+   * it declines because it is leaving already ("Alex, please leave", or a removal): that leave is in charge.
    */
   function timeUp(meeting: Meeting<S>): void {
     meeting.timeUp = true
@@ -426,7 +426,11 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
       session
         .reachedTimeLimit(cfg.maxMeetingMinutes)
         .catch(err => console.error('[leave]', errorName(err)))
-        .finally(() => leave(meeting, why))
+        // A session that is leaving says its goodbye in full, then leaves the call and ends, and sessionOver (or
+        // pageGone, if its page goes first) makes sure the bot is out. Asking now would cut the goodbye.
+        .finally(() => {
+          if (!session.leftMeeting) leave(meeting, why)
+        })
     } else if (meeting.state === 'away') {
       leave(meeting, why)
     }
@@ -630,6 +634,11 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     // place of a later one.
     const attempt = count(url.searchParams.get('n'))
     if (meeting.state === 'live' || meeting.state === 'away') {
+      // The time limit: the bot leaves once its line is in the chat, so no page comes back meanwhile.
+      if (meeting.timeUp) {
+        console.warn(`[audio] refused bot ${meeting.botId}'s page: its meeting reached the time limit`)
+        return refuse(socket, 403, 'forbidden')
+      }
       // One page per meeting. Only the meeting's own page comes back to it, with the secret its session gave it in
       // 'ready'; it may then take the place of a connection that stopped answering. Any other page is someone else's.
       // (Until a page has sent the session anything, one without a secret may take over: its first 'ready' was lost.)

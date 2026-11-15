@@ -7,6 +7,7 @@ import WebSocket from 'ws'
 import { keyterms } from '../src/config.ts'
 import {
   FLUX_BACKLOG_BYTES,
+  FLUX_QUIET_MS,
   FLUX_RETRY_MS,
   type FluxSocket,
   FluxStream,
@@ -191,6 +192,101 @@ test("no reconnect is tried while no audio comes (the page is away), and no 'los
   assert.deepEqual(f.lost, [], 'nobody was unheard for 5 s')
 })
 
+test('audio kept while there was no stream goes once the audio stops, so it is never sent ahead of audio that comes much later', t => {
+  const tick = fakeTime(t)
+  const f = flux()
+  f.last().open()
+  f.last().drop(1011)
+  // People are talking, and the tries fail: at once, then after 500 ms.
+  for (let i = 1; i <= 6; i++) f.stream.send(frame(i))
+  tick(0)
+  f.last().fail()
+  for (let i = 7; i <= 9; i++) f.stream.send(frame(i))
+  tick(500)
+  f.last().fail()
+  // The page went just then, and comes back 50 s later: the next try is due 1 s after its audio.
+  tick(50_000)
+  assert.equal(f.sockets.length, 3, 'nothing is tried meanwhile')
+  for (let i = 200; i < 216; i++) {
+    f.stream.send(frame(i))
+    tick(80)
+  }
+  assert.equal(f.sockets.length, 4)
+  f.last().open()
+  assert.deepEqual(
+    f.last().audio().map(b => b[0]),
+    Array.from({ length: 16 }, (_, i) => 200 + i),
+    'only what was said since the page came back: not the start of a sentence from 50 s before, joined to it',
+  )
+  assert.deepEqual(f.lost, [])
+})
+
+test('an open stream that sends nothing for 5 s while audio goes to it is let go like a drop: its turn is delivered, and another opens with the audio since', t => {
+  const tick = fakeTime(t)
+  const warned = () => (console.warn as unknown as { mock: { calls: { arguments: unknown[] }[] } }).mock.calls.map(c => String(c.arguments[0]))
+  const f = flux()
+  assert.equal(FLUX_QUIET_MS, 5000)
+  f.last().open()
+  // A stream that answers about every 0.25 s of audio, as Flux does, silence included, is kept however long it runs.
+  for (let at = 0; at < 600_000; at += 80) {
+    f.stream.send(frame(1))
+    tick(80)
+    if (at % 240 === 0) f.last().turn('Update', '')
+  }
+  assert.equal(f.sockets.length, 1)
+  assert.equal(f.last().terminated, false)
+  // Then its connection dies without closing (this computer changed network, say): nothing more comes from it, while
+  // the page's frames go on to it.
+  f.last().turn('StartOfTurn', 'Alex, please')
+  f.last().turn('Update', 'Alex, please leave')
+  for (let i = 0; i < 63; i++) {
+    f.stream.send(frame(i))
+    tick(80)
+  }
+  assert.equal(f.last().terminated, false, 'not before 5 s')
+  assert.equal(f.last().audio().length, 7500 + 63)
+  f.stream.send(frame(63)) // 5040 ms after Deepgram last sent anything
+  assert.equal(f.sockets[0].terminated, true)
+  assert.deepEqual(f.turns.at(-1), { type: 'TurnInfo', event: 'EndOfTurn', turn_index: 0, transcript: 'Alex, please leave', trigger: 'dropped' })
+  assert.deepEqual(warned(), ['[stt] Deepgram sent nothing for 5 s: opening another stream'])
+  // It had been open long enough: the next stream is tried at once, and gets the audio since.
+  tick(0)
+  assert.equal(f.sockets.length, 2)
+  assert.deepEqual(f.liveAtConnect, [0, 0])
+  f.stream.send(frame(64))
+  f.last().open()
+  assert.deepEqual(f.last().audio().map(b => b[0]), [63, 64])
+  // What the old one says late is not heard.
+  f.sockets[0].turn('EndOfTurn', 'Alex, please leave.')
+  assert.equal(f.turns.filter(turn => turn.event === 'EndOfTurn').length, 1)
+  assert.deepEqual(f.events, ['open', 'open'])
+  assert.deepEqual(f.lost, [])
+})
+
+test('an open stream is not let go for its quiet while no audio goes to it (the page is away), nor as soon as audio comes again', t => {
+  const tick = fakeTime(t)
+  const f = flux()
+  f.last().open()
+  f.stream.send(frame(1))
+  f.last().turn('Update', '')
+  tick(600_000) // the page is away: Deepgram has nothing to answer
+  assert.equal(f.last().terminated, false)
+  // The page is back: the stream has 5 s from now to answer.
+  for (let i = 0; i < 62; i++) {
+    f.stream.send(frame(i))
+    tick(80)
+  }
+  assert.equal(f.last().terminated, false)
+  f.last().turn('Update', '')
+  for (let i = 0; i < 62; i++) {
+    f.stream.send(frame(i))
+    tick(80)
+  }
+  assert.equal(f.sockets.length, 1)
+  assert.equal(f.last().terminated, false, 'it answered')
+  assert.deepEqual(f.events, ['open'])
+})
+
 test("a refused key or account (401, 402, 403), a bad request (400) or address (404) is final: 'lost' at once, never retried, later audio dropped", t => {
   const tick = fakeTime(t)
   for (const status of [400, 401, 402, 403, 404]) {
@@ -289,7 +385,12 @@ test("down for 5 s while audio comes in: 'lost' once; open again: 'open'", t => 
       f.stream.send(frame(at))
       tick(80)
       const socket = f.last()
-      if (socket.gone || opened.has(socket)) continue
+      if (socket.gone) continue
+      // An open stream answers about every 0.25 s of audio.
+      if (opened.has(socket)) {
+        socket.turn('Update', '')
+        continue
+      }
       if (tries === 'fail') {
         socket.fail()
       } else {

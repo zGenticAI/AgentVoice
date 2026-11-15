@@ -304,15 +304,26 @@ test('a line closed short while paused counts what the page holds of it, which p
 })
 
 test('a closed line whose audio is held is still followed when the next line begins', () => {
-  const { playback, at } = follow()
-  const a = playback.begin('a', A)
-  playback.sent(a, 400)
-  playback.close(a, true)
-  at(100)
-  playback.pause()
-  at(5000)
-  playback.begin('b', 'Next.')
-  assert.deepEqual(playback.following.map(p => p.line), ['a', 'b'])
+  // All of it went out while the page was paused (a sentence streamed during a talk-over pause): it has played none of
+  // it yet, so no run of it is recent.
+  const held = follow()
+  held.playback.pause()
+  const a = held.playback.begin('a', A)
+  held.playback.sent(a, 400)
+  held.playback.close(a, true)
+  held.at(100)
+  held.playback.begin('b', 'Next.')
+  assert.deepEqual(held.playback.following.map(p => p.line), ['a', 'b'])
+  // Part of it played, then the page paused, and the next line begins longer than KEEP_MS after that part.
+  const played = follow()
+  const c = played.playback.begin('c', A)
+  played.playback.sent(c, 400) // 50-450
+  played.playback.close(c, true)
+  played.at(100)
+  played.playback.pause()
+  played.at(100 + KEEP_MS + 1000)
+  played.playback.begin('d', 'Next.')
+  assert.deepEqual(played.playback.following.map(p => p.line), ['c', 'd'])
 })
 
 test('audio of no line (the goodbye) is held and resumed too', () => {

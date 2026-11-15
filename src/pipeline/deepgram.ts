@@ -26,6 +26,10 @@ export const FLUX_BACKLOG_BYTES = 64_000
 export const FLUX_OPEN_TIMEOUT_MS = 5000
 // After CloseStream, Deepgram sends what it still has, then closes the stream. It is cut if that takes longer.
 export const FLUX_CLOSE_WAIT_MS = 1000
+// An open stream that has sent nothing for this long while audio went to it is taken as dropped, and another is opened.
+// Flux answers about every 0.25 s of audio, silence included, so this is a connection that died without closing (a
+// network change on this computer, say), which TCP would only give up on after many minutes.
+export const FLUX_QUIET_MS = 5000
 // Audio counts as coming in when some arrived this recently (the page sends a frame every 80 ms).
 const AUDIO_FLOWING_MS = 1000
 // A stream that drops with no audio for this long was probably closed for lack of it: no warning in the log.
@@ -107,6 +111,7 @@ export interface FluxTiming {
   stableMs: number
   backlogBytes: number
   closeWaitMs: number
+  quietMs: number
 }
 
 export interface FluxOptions {
@@ -124,9 +129,9 @@ type State = 'connecting' | 'open' | 'down' | 'final' | 'closing' | 'closed'
 
 /**
  * One meeting's speech recognition. It keeps a stream open for as long as audio comes in, opening another when one
- * drops, with only one socket at a time: Deepgram counts streams at once per project, and a secondary project
- * allows only one. Nothing it logs holds what was said, the address or the key: only states, codes, statuses and
- * Deepgram's own error text.
+ * drops or goes quiet (FLUX_QUIET_MS), with only one socket at a time: Deepgram counts streams at once per project,
+ * and a secondary project allows only one. Nothing it logs holds what was said, the address or the key: only states,
+ * codes, statuses and Deepgram's own error text.
  */
 export class FluxStream extends EventEmitter<FluxEvents> {
   private readonly url: string
@@ -135,7 +140,8 @@ export class FluxStream extends EventEmitter<FluxEvents> {
   private state: State = 'connecting'
   // The one socket the stream listens to. Events from any other (one it gave up on) are ignored.
   private ws: FluxSocket | null = null
-  // The newest audio that came in while there was no stream, at most timing.backlogBytes of it.
+  // The newest audio that came in while there was no stream, at most timing.backlogBytes of it, and none from before a
+  // gap in the audio.
   private backlog: Buffer[] = []
   private backlogBytes = 0
   // Tries since a stream last stayed open: which wait comes next.
@@ -147,6 +153,9 @@ export class FluxStream extends EventEmitter<FluxEvents> {
   private closeSaid = false
   private openedAt = 0
   private audioAt = -Infinity
+  // When the open stream last sent anything, or audio started coming in again after a gap (with no audio, Deepgram has
+  // nothing to answer).
+  private heardAt = 0
   // The turn someone is in the middle of, with its words so far: in memory only, never logged.
   private turn: { index: number; text: string } | null = null
 
@@ -162,6 +171,7 @@ export class FluxStream extends EventEmitter<FluxEvents> {
       stableMs: FLUX_STABLE_MS,
       backlogBytes: FLUX_BACKLOG_BYTES,
       closeWaitMs: FLUX_CLOSE_WAIT_MS,
+      quietMs: FLUX_QUIET_MS,
       ...opts.timing,
     }
     this.connect =
@@ -174,7 +184,15 @@ export class FluxStream extends EventEmitter<FluxEvents> {
   send(chunk: Buffer): void {
     // Deepgram refuses audio after CloseStream, and the page keeps sending until the bot drops.
     if (this.state === 'closing' || this.state === 'closed' || this.state === 'final') return
-    this.audioAt = Date.now()
+    const now = Date.now()
+    if (now - this.audioAt > AUDIO_FLOWING_MS) {
+      // Audio comes in again after a gap (the page went, and came back). What was kept from before it is not sent ahead
+      // of what comes now: joined to it with no pause, Flux could hear the two as one turn.
+      this.dropBacklog()
+      this.heardAt = now
+    }
+    this.audioAt = now
+    if (this.state === 'open' && now - this.heardAt >= this.timing.quietMs) this.stalled()
     if (this.state === 'open') return this.ws?.send(chunk)
     // Whole chunks, so the samples stay aligned.
     this.backlog.push(chunk)
@@ -256,6 +274,7 @@ export class FluxStream extends EventEmitter<FluxEvents> {
   private opened(ws: FluxSocket): void {
     this.state = 'open'
     this.openedAt = Date.now()
+    this.heardAt = this.openedAt
     console.log('[stt] connected to Deepgram')
     for (const chunk of this.backlog) ws.send(chunk)
     this.dropBacklog()
@@ -266,6 +285,7 @@ export class FluxStream extends EventEmitter<FluxEvents> {
   }
 
   private message(ws: FluxSocket, data: WebSocket.RawData): void {
+    this.heardAt = Date.now()
     let msg: { type?: unknown; code?: unknown; description?: unknown } | null
     try {
       msg = JSON.parse(data.toString())
@@ -339,6 +359,17 @@ export class FluxStream extends EventEmitter<FluxEvents> {
       else console.warn(line)
     }
     this.gone('down')
+  }
+
+  /**
+   * The open stream has sent nothing for timing.quietMs while audio went to it: its connection is taken as dead. It is
+   * let go like one that dropped (the turn in progress ends on its last words), and another is opened.
+   */
+  private stalled(): void {
+    const ws = this.ws
+    console.warn(`[stt] Deepgram sent nothing for ${this.timing.quietMs / 1000} s: opening another stream`)
+    this.gone('down')
+    ws?.terminate()
   }
 
   /** The current socket has closed or been let go: the stream is down until another opens, or over for good. */

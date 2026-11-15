@@ -497,6 +497,9 @@ export class MeetingSession {
       // How much it got is not known: it is taken to have played what it had until it was last heard.
       this.playback.stop(this.droppedAt)
       if (this.consent === 'sent') this.consent = 'due'
+      // No count before any page has sent anything: the page's first 'ready' was lost (see resumes), and with it all of
+      // Alex's voice that went out before it. Its count starts at 0 on this connection, and so does ours.
+      if (got === undefined && !this.pageSpoke) this.pageBytes = 0
     }
     this.droppedAt = 0
     this.wire(ws)
@@ -506,6 +509,11 @@ export class MeetingSession {
     if (this.clearOnReturn) {
       this.clearOnReturn = false
       this.clearPage()
+    } else if (this.playback.playsUntil <= this.clock()) {
+      // By what went out, the page has nothing left to play. A clear or a pause sent into a connection that had died
+      // without closing (noticed only seconds later) never reached it, and it plays on: this stops it. A page that has
+      // played it all has nothing to clear.
+      this.control({ type: 'clear' })
     }
     // At once, so nothing still playing ahead of it (the end of an answer) can be paused or stopped meanwhile.
     if (this.consent === 'due' && this.greetDue) this.greet()
@@ -838,6 +846,8 @@ export class MeetingSession {
    */
   private audible(): boolean {
     if (!this.attached() || this.leaving || this.ended || this.greeting) return false
+    // The end of a consent line the page had all of when it came back from a drop: the drop stopped the greeting early.
+    if (Date.now() < this.consentPlaysUntil) return false
     return this.speaking || this.playback.paused || this.playback.playsUntil - this.clock() > TAIL_MS
   }
 

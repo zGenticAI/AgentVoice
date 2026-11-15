@@ -254,7 +254,7 @@ test('the page plays a pause the way the service reckons it does (src/pipeline/p
   p.pause()
   model.pause()
   send(400)
-  at(1000)
+  at(600) // before the queue would have ended (1050): what was held plays from now + LEAD, not after the old queue
   p.resume()
   model.resume()
   at(1200)
@@ -271,7 +271,7 @@ test('the page plays a pause the way the service reckons it does (src/pipeline/p
     else runs.push([start, end])
   }
   assert.deepEqual(runs, line.runs)
-  assert.deepEqual(runs, [[50, 300], [1050, 2500]])
+  assert.deepEqual(runs, [[50, 300], [650, 2100]])
 })
 
 test('the meeting audio goes out in frames of 1280 samples, in order, however the worklet splits it', () => {

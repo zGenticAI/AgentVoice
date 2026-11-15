@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { MeetingSession } from '../src/pipeline/session.ts'
 import { PAGE_LEAD_MS } from '../src/pipeline/playback.ts'
-import { CHECKING_LINE, JOIN_LINE } from '../src/consent.ts'
+import { CHECKING_LINE, JOIN_LINE, LEAVE_LINE } from '../src/consent.ts'
 import type { BrainEvent } from '../src/brain/brain.ts'
 
 class FakeSocket extends EventEmitter {
@@ -72,7 +72,7 @@ test('a cough heard as "Uh" pauses the page; the turn ending with nothing that c
   s.session.transcript.delete()
 })
 
-test('a StartOfTurn with no words yet (Flux always sends one) pauses, like any unsure start', async () => {
+test('a StartOfTurn with no words (Flux says it never sends one) still pauses, like any unsure start', async () => {
   const s = start([[{ kind: 'say', text: A }]], { [A]: 2000 })
   s.flux.turn('EndOfTurn', 'Alex, when does the pilot run?')
   await settle()
@@ -281,16 +281,22 @@ test('a pause under way when the consent line is due ends first, so the consent 
 })
 
 test('"Alex, please leave" as the speech that paused Alex: he leaves, nothing is kept, and the goodbye is not paused', async () => {
-  const s = start([[{ kind: 'say', text: A }]], { [A]: 2000 })
+  // A goodbye that plays for 3 s, and a bot that stays until well after 'Bye' is heard over it.
+  const s = start([[{ kind: 'say', text: A }]], { [A]: 2000, [LEAVE_LINE]: 3000 }, { leaveDelayMs: 500 })
   s.flux.turn('EndOfTurn', 'Alex, when does the pilot run?')
   await settle()
   s.at(500)
   s.flux.turn('StartOfTurn', 'Alex')
   s.flux.turn('EndOfTurn', 'Alex, please leave.')
   await settle()
+  const before = s.ws.kinds().length
+  s.at(1000) // the page still plays the goodbye, and the bot has not left
+  assert.equal(s.ws.readyState, 1)
   s.flux.turn('StartOfTurn', 'Bye')
-  await settle()
+  s.flux.turn('Update', 'Bye')
+  await settle(600)
   assert.deepEqual(s.ws.kinds().filter(k => k !== 'clear'), ['pause'])
+  assert.deepEqual(s.ws.kinds().slice(before), [], 'nothing pauses or stops the goodbye')
   assert.deepEqual(s.session.transcript.lines, [])
 })
 

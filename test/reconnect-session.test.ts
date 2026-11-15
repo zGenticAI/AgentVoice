@@ -223,7 +223,8 @@ test('while the page is away nothing is sent to it, and words already heard are 
   const page = s.back(s.ws.audioBytes())
   s.flux.said('Thanks.')
   await settle()
-  assert.deepEqual(page.kinds(), ['ready', 'hearing'])
+  // A page back with nothing left to play, by what went out to it, is told to clear (it changes nothing then).
+  assert.deepEqual(page.kinds(), ['ready', 'hearing', 'clear'])
   assert.deepEqual(s.answered, ['Alex, when does the pilot run?'])
   assert.deepEqual(s.alex(), [A])
   s.session.end()
@@ -242,7 +243,7 @@ test('an answer cut by a drop: on return the transcript keeps only the audio the
   const page = s.back(bytes(1000))
   assert.deepEqual(s.alex(), [`The pilot starts in… (cut off)`], 'the line the page never got goes')
   assert.equal(page.audioBytes(), 0)
-  assert.deepEqual(page.kinds(), ['ready', 'hearing'])
+  assert.deepEqual(page.kinds(), ['ready', 'hearing', 'clear'])
   assert.deepEqual(s.spoken, [A, 'Then the review.'])
   s.session.end()
   s.session.transcript.delete()
@@ -250,19 +251,18 @@ test('an answer cut by a drop: on return the transcript keeps only the audio the
 
 test('an answer still going out when the page drops stops there: ElevenLabs is stopped, and the line keeps what the page got', async () => {
   let stopped: AbortSignal | undefined
+  // ElevenLabs has made 400 ms of the line, and is still making the rest when the page drops.
   const speak = async function* (_text: string, signal?: AbortSignal) {
     stopped = signal
-    for (let i = 0; i < 20 && !signal?.aborted; i++) {
-      yield Buffer.alloc(bytes(100))
-      await settle(5)
-    }
+    for (let i = 0; i < 4; i++) yield Buffer.alloc(bytes(100))
+    await new Promise(r => signal?.addEventListener('abort', r, { once: true }))
   }
   const s = start({ answers: [[{ kind: 'say', text: A }]], speak })
   s.flux.said('Alex, when does the pilot run?')
-  await settle(22)
+  await settle()
+  assert.equal(s.ws.audioBytes(), bytes(400))
   s.ws.drop()
   const sent = s.ws.audioBytes()
-  assert.ok(sent > 0 && sent < bytes(2000), `${sent} bytes went out`)
   assert.equal(stopped?.aborted, true)
   await settle(40)
   s.at(9000)
@@ -309,7 +309,7 @@ test('a drop while paused cuts the line where the page paused, and coming back t
   await settle(60) // longer than the pause would have lasted
   assert.deepEqual(s.alex(), ['The pilot starts in… (cut off)'])
   assert.deepEqual(s.ws.kinds(), ['ready', 'pause'], 'no resume to the old connection')
-  assert.deepEqual(page.kinds(), ['ready', 'hearing'], 'nor to the new one')
+  assert.deepEqual(page.kinds(), ['ready', 'hearing', 'clear'], 'nor to the new one, which has nothing left to play')
   s.session.end()
   s.session.transcript.delete()
 })
@@ -328,7 +328,7 @@ test('Start, Update and EndOfTurn arriving after a drop pause nothing and change
   s.at(5000)
   const page = s.back(s.ws.audioBytes())
   await settle(40)
-  assert.deepEqual(page.kinds(), ['ready', 'hearing'], 'nor once the page is back')
+  assert.deepEqual(page.kinds(), ['ready', 'hearing', 'clear'], 'nor once the page is back: only the clear of a page with nothing left to play')
   assert.deepEqual(s.alex(), [A], 'played in full through the drop')
   assert.deepEqual(s.answered, ['Alex, when does the pilot run?'])
   s.session.end()
@@ -368,6 +368,46 @@ test('"Alex, never mind" while the page is away is honoured once it is back: it 
   s.session.transcript.delete()
 })
 
+test('a clear sent into a connection that died without closing is sent again once the page is back, when the service notices first', async () => {
+  const s = start({ answers: [[{ kind: 'say', text: A }]], voice: { [A]: 2000 } })
+  s.flux.said('Alex, when does the pilot run?')
+  await settle()
+  s.at(300)
+  s.ws.frame() // last heard from: its connection dies now, though it still looks open here
+  s.at(1000)
+  s.flux.said('Alex, never mind.')
+  assert.deepEqual(s.ws.kinds(), ['ready', 'clear'], 'into the dead connection: the page never gets it, and plays on')
+  const heard = s.alex()
+  assert.deepEqual(heard, ['The pilot starts in… (cut off)'])
+  s.at(4300)
+  s.ws.drop() // cut off at last, for its silence
+  s.at(4500)
+  const page = s.back(s.ws.audioBytes())
+  assert.deepEqual(page.kinds(), ['ready', 'hearing', 'clear'], 'what it still plays stops')
+  assert.deepEqual(s.alex(), heard)
+  s.session.end()
+  s.session.transcript.delete()
+})
+
+test('a pause and a clear sent into a connection that died without closing are made up for when the page comes back first', async () => {
+  const s = start({ answers: [[{ kind: 'say', text: A }]], voice: { [A]: 2000 } })
+  s.flux.said('Alex, when does the pilot run?')
+  await settle()
+  s.at(300)
+  s.ws.frame()
+  s.at(500)
+  s.flux.turn('StartOfTurn', 'Uh')
+  s.flux.turn('Update', 'Uh hold on what')
+  assert.deepEqual(s.ws.kinds(), ['ready', 'pause', 'clear'])
+  s.at(1000)
+  // The page gave up on that connection, and is back with all of the answer, before the service has noticed.
+  const page = s.back(bytes(2000))
+  assert.equal(s.ws.terminated, true)
+  assert.deepEqual(page.kinds(), ['ready', 'hearing', 'clear'])
+  s.session.end()
+  s.session.transcript.delete()
+})
+
 test('the consent line cut by a drop is said again in full on return, still protected: talk-over and never-mind leave it be, and a question waits for it', async () => {
   let consents = 0
   let release = () => {}
@@ -396,6 +436,9 @@ test('the consent line cut by a drop is said again in full on return, still prot
   s.at(1000)
   const page = s.back(bytes(500))
   assert.deepEqual(spoken, [JOIN_LINE, JOIN_LINE], 'said again at once')
+  // The page has nothing left to play of the first try, so it is told to clear: before any of the second goes out.
+  assert.deepEqual(page.kinds(), ['ready', 'hearing', 'clear'])
+  assert.equal(page.audioBytes(), 0)
   // The transcript keeps what the meeting heard of the first try, then all of the second.
   assert.deepEqual(s.alex(), ['Hello… (cut off)', JOIN_LINE])
   s.at(1100)
@@ -404,12 +447,80 @@ test('the consent line cut by a drop is said again in full on return, still prot
   s.flux.said('Alex, never mind.')
   s.flux.said('Alex, when is the review?')
   await settle()
-  assert.deepEqual(page.kinds(), ['ready', 'hearing'], 'not paused, stopped or cleared')
+  assert.deepEqual(page.kinds(), ['ready', 'hearing', 'clear'], 'not paused, stopped or cleared')
   assert.deepEqual(s.answered, [], 'the question waits for the end of the consent line')
   await settle(400)
   assert.deepEqual(s.answered, ['Alex, when is the review?'])
   assert.deepEqual(spoken, [JOIN_LINE, JOIN_LINE, 'Friday.'])
   assert.equal(page.audioBytes(), bytes(400))
+  s.session.end()
+  s.session.transcript.delete()
+})
+
+test('a consent line the page had all of when it came back still plays to the end: talking over it neither pauses nor clears it', async () => {
+  const s = start({ voice: { [JOIN_LINE]: 1000 }, extra: { greetDelayMs: 0 } })
+  await settle(30)
+  // All of it went out, and the page plays it until 1050. Its connection drops, and it is back at once, with all of it.
+  s.ws.frame()
+  s.ws.drop()
+  const page = s.back(bytes(1000))
+  await settle() // the greeting the drop stopped has ended
+  s.at(50)
+  s.flux.turn('StartOfTurn', 'Hm')
+  s.flux.turn('EndOfTurn', '')
+  s.flux.turn('StartOfTurn', 'Wait')
+  s.flux.turn('Update', 'Wait who is')
+  s.flux.said('Wait, who is this?')
+  await settle()
+  assert.deepEqual(page.kinds(), ['ready', 'hearing'], 'not paused, stopped or cleared')
+  assert.deepEqual(s.alex(), [JOIN_LINE])
+  assert.deepEqual(s.spoken, [JOIN_LINE], 'heard in full, so not said again')
+  s.session.end()
+  s.session.transcript.delete()
+})
+
+test('an answer to a question asked over the end of a consent line the page had all of when it came back plays after it, and talking over the answer leaves the line whole', async () => {
+  const s = start({ answers: [[{ kind: 'say', text: 'Friday.' }]], voice: { [JOIN_LINE]: 1000 }, extra: { greetDelayMs: 0 } })
+  await settle(30)
+  s.ws.frame()
+  s.ws.drop()
+  const page = s.back(bytes(1000))
+  await settle()
+  s.at(50)
+  s.flux.said('Alex, when is the review?')
+  await settle()
+  assert.equal(page.audioBytes(), bytes(100), 'the answer goes out, and plays after the consent line')
+  s.flux.turn('StartOfTurn', 'Wait wait')
+  s.flux.said('Wait, wait.')
+  await settle()
+  assert.deepEqual(page.kinds(), ['ready', 'hearing'])
+  assert.deepEqual(s.alex(), [JOIN_LINE, 'Friday.'])
+  s.session.end()
+  s.session.transcript.delete()
+})
+
+test("a page whose first 'ready' was lost had none of the voice that went out before it: once it has taken over, coming back cuts nothing it heard, and the consent line is not said a third time", async () => {
+  const s = start({ answers: [[{ kind: 'say', text: 'Friday.' }]], voice: { [JOIN_LINE]: 300 }, extra: { greetDelayMs: 0 } })
+  await settle()
+  // The consent line went out on the first connection, whose 'ready' never reached the page: it never had any of it.
+  assert.equal(s.ws.audioBytes(), bytes(300))
+  assert.equal(s.session.resumes(''), true)
+  const page = new FakeSocket()
+  s.session.attach(page as any, {})
+  assert.deepEqual(s.spoken, [JOIN_LINE, JOIN_LINE], 'said again, to the page that hears it')
+  s.flux.said('Alex, when is the review?') // answered once the consent line has played
+  await settle(500)
+  page.frame()
+  assert.equal(page.audioBytes(), bytes(400))
+  assert.deepEqual(s.alex(), [JOIN_LINE, 'Friday.'])
+  // A blip later on: the page comes back having had all of it.
+  s.at(5000)
+  page.drop()
+  const again = s.back(page.audioBytes())
+  await settle()
+  assert.deepEqual(s.spoken, [JOIN_LINE, JOIN_LINE, 'Friday.'], 'not a third time: the page had all of it')
+  assert.deepEqual(s.alex(), [JOIN_LINE, 'Friday.'], 'and nothing it heard is cut')
+  assert.deepEqual(again.kinds(), ['ready', 'hearing', 'clear'])
   s.session.end()
   s.session.transcript.delete()
 })
@@ -532,7 +643,7 @@ test('Recall saying the bot has left after the page went ends the session at onc
   await settle()
   assert.equal(t.over(), false, 'still in the call: the session waits for its page')
   const page = t.back(0)
-  assert.deepEqual(page.kinds(), ['ready', 'hearing'])
+  assert.deepEqual(page.kinds(), ['ready', 'hearing', 'clear'])
   page.drop()
   assert.equal(probes.length, 3, 'asked again at the next drop')
   t.back(0)
@@ -703,7 +814,7 @@ test("\"can't hear the meeting\" is sent again after 'ready' on return while spe
   assert.deepEqual(page.controls().at(-1), { type: 'hearing' })
   page.drop()
   const again = s.back(0)
-  assert.deepEqual(again.kinds(), ['ready', 'hearing'], 'hearing again: no error, and any error the page still shows goes')
+  assert.deepEqual(again.kinds(), ['ready', 'hearing', 'clear'], 'hearing again: no error, and any error the page still shows goes')
   s.session.end()
   s.session.transcript.delete()
 })
@@ -753,10 +864,13 @@ test("a page dropping and coming back logs nothing a meeting said, nor its key o
   for (const name of ['log', 'warn', 'error', 'info'] as const) {
     t.mock.method(console, name, (...args: unknown[]) => void logged.push(args.map(String).join(' ')))
   }
+  let probes = 0
   const s = start({
     answers: [[{ kind: 'say', text: A }]],
     voice: { [A]: 2000 },
-    botLeftCall: async () => ({ kind: 'ended', sub_code: 'call_ended_by_host' }),
+    // Still in the call at the first drop, so the page comes back; gone from it at the second.
+    botLeftCall: async (_id, { signal } = {}) =>
+      ++probes === 1 ? new Promise<null>(resolve => signal!.addEventListener('abort', () => resolve(null))) : { kind: 'ended', sub_code: 'call_ended_by_host' },
     extra: { sttHoldMs: 5, reconnectMs: 60_000 },
   })
   const rejoin = s.secret()
@@ -767,7 +881,15 @@ test("a page dropping and coming back logs nothing a meeting said, nor its key o
   s.flux.turn('Update', 'Hold on, Lisbon budget')
   s.flux.said('Hold on, Lisbon budget is secret.')
   await settle()
+  assert.equal(s.over(), false)
+  const page = s.back(s.ws.audioBytes())
+  page.frame()
+  s.flux.said('Lisbon in March, then.')
+  await settle()
+  page.drop()
+  await settle()
   t.mock.restoreAll()
+  assert.equal(probes, 2)
   assert.equal(s.over(), true)
   assert.ok(logged.length > 0)
   for (const line of logged) {
