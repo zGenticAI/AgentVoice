@@ -263,6 +263,33 @@ test('an open stream that sends nothing for 5 s while audio goes to it is let go
   assert.deepEqual(f.lost, [])
 })
 
+test('a quiet stream whose cut turn closes the stream (a leave said as it died) keeps nothing and tries nothing more', t => {
+  const tick = fakeTime(t)
+  const f = flux()
+  // The turn a leave ends on makes the session close the stream, from inside the send that noticed the quiet.
+  f.stream.on('turn', turn => {
+    if (turn.event === 'EndOfTurn') f.stream.close()
+  })
+  f.last().open()
+  f.last().turn('StartOfTurn', 'Alex, please')
+  f.last().turn('Update', 'Alex, please leave')
+  for (let i = 0; i < 64; i++) {
+    f.stream.send(frame(i))
+    tick(80)
+  }
+  assert.equal(f.sockets[0].terminated, true)
+  assert.equal(f.turns.at(-1)?.trigger, 'dropped')
+  const kept = f.stream as unknown as { backlogBytes: number; deafTimer: unknown }
+  assert.equal(kept.backlogBytes, 0, 'the frame that noticed the quiet is not kept')
+  assert.equal(kept.deafTimer, null, 'no timer is left on a closed stream')
+  tick(60_000)
+  f.stream.send(frame(99))
+  tick(60_000)
+  assert.equal(f.sockets.length, 1, 'and no stream is tried again')
+  assert.deepEqual(f.lost, [])
+  assert.equal(f.events.filter(e => e === 'close').length, 1)
+})
+
 test('an open stream is not let go for its quiet while no audio goes to it (the page is away), nor as soon as audio comes again', t => {
   const tick = fakeTime(t)
   const f = flux()

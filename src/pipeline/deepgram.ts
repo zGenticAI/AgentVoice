@@ -192,7 +192,11 @@ export class FluxStream extends EventEmitter<FluxEvents> {
       this.heardAt = now
     }
     this.audioAt = now
-    if (this.state === 'open' && now - this.heardAt >= this.timing.quietMs) this.stalled()
+    if (this.state === 'open' && now - this.heardAt >= this.timing.quietMs) {
+      this.stalled()
+      // The turn it ended may have closed the stream (a leave closes it): then nothing more is kept or retried.
+      if ((this.state as State) !== 'down') return
+    }
     if (this.state === 'open') return this.ws?.send(chunk)
     // Whole chunks, so the samples stay aligned.
     this.backlog.push(chunk)
@@ -401,7 +405,7 @@ export class FluxStream extends EventEmitter<FluxEvents> {
     this.tries++
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null
-      if (this.state !== 'down') return
+      if ((this.state as State) !== 'down') return
       try {
         this.dial()
       } catch (err) {

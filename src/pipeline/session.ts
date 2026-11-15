@@ -103,6 +103,9 @@ const STOP_WORDS_FINAL = 1
 // turn whole. Then it is ended on the words heard so far (ForceEndTurn): Deepgram drops a turn left open when it closes
 // a stream that gets no audio (after about 10 s).
 const STT_HOLD_MS = 3000
+// A clear or a pause sent this long before the page was last heard from may still have been lost in a drop: the way to
+// the page can die a little before the way from it. About one heartbeat.
+const STOP_LOST_MARGIN_MS = 1000
 /**
  * How the session closes the page's connection, so the page knows not to come back: the meeting's session is over
  * (asked to leave or removed, the meeting ended, the time limit, the service stopping), or could not start. Any other
@@ -256,6 +259,9 @@ export class MeetingSession {
   private botEnding: recall.BotEnding | null = null
   // "Alex, never mind" was said while the page was away, still playing what it had: it is told to clear once it is back.
   private clearOnReturn = false
+  // When the page was last told to clear or pause (by the clock), 0 if never. One sent into a connection that had died
+  // without closing never reached it, so it is sent again once the page is back (see attach).
+  private stopSentAt = 0
   // The consent line: due (not said, or said again once the page is back, since it did not hear all of it), saying,
   // sent (all of it went out to the page, ending at consentEnd of pageBytes) or heard (the page came back having had
   // all of it). greetDue: the time to say it has come.
@@ -501,6 +507,9 @@ export class MeetingSession {
       // Alex's voice that went out before it. Its count starts at 0 on this connection, and so does ours.
       if (got === undefined && !this.pageSpoke) this.pageBytes = 0
     }
+    // A clear or a pause sent after the page was last heard from, or just before (the way back from it can die first),
+    // may never have reached it.
+    const stopMayBeLost = this.stopSentAt > 0 && this.stopSentAt >= this.droppedAt - STOP_LOST_MARGIN_MS
     this.droppedAt = 0
     this.wire(ws)
     this.control({ type: 'ready', sampleRate: SAMPLE_RATE, rejoin: this.rejoin })
@@ -509,10 +518,11 @@ export class MeetingSession {
     if (this.clearOnReturn) {
       this.clearOnReturn = false
       this.clearPage()
-    } else if (this.playback.playsUntil <= this.clock()) {
-      // By what went out, the page has nothing left to play. A clear or a pause sent into a connection that had died
-      // without closing (noticed only seconds later) never reached it, and it plays on: this stops it. A page that has
-      // played it all has nothing to clear.
+    } else if (stopMayBeLost && this.playback.playsUntil <= this.clock()) {
+      // By what went out, the page has nothing left to play, but a clear or a pause sent into a connection that had died
+      // without closing (noticed only seconds later) may never have reached it, and it plays on: this stops it. Only
+      // then: the page can run behind what went out (a stall the connection lived through), and a clear sent on every
+      // return could cut what it still plays, the end of a consent line it had all of.
       this.control({ type: 'clear' })
     }
     // At once, so nothing still playing ahead of it (the end of an answer) can be paused or stopped meanwhile.
@@ -892,6 +902,7 @@ export class MeetingSession {
   private pausePage(): void {
     if (this.pauseTimer) return
     this.control({ type: 'pause' })
+    this.stopSentAt = this.clock()
     this.playback.pause()
     this.pauseTimer = setTimeout(() => this.resumePage(), this.deps.pauseMaxMs ?? PAUSE_MAX_MS)
     this.pauseTimer.unref()
@@ -932,6 +943,7 @@ export class MeetingSession {
   private clearPage(): void {
     this.dropPause()
     this.control({ type: 'clear' })
+    this.stopSentAt = this.clock()
     this.playback.stop()
   }
 
