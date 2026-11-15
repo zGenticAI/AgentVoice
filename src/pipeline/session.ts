@@ -7,7 +7,7 @@ import { BriefAdditions } from '../brain/additions.ts'
 import type { Brain } from '../brain/brain.ts'
 import { attention, endsOnQuestion, isFillerOnly, wordsThatCount } from '../brain/attention.ts'
 import { isCancelRequest, isLeaveReply, isLeaveRequest } from '../brain/text.ts'
-import type { SessionAnswer, SessionBridge, ToSession } from '../bridge.ts'
+import type { LineVerdict, SessionAnswer, SessionBridge, ToSession } from '../bridge.ts'
 import { CHECKING_LINES, JOIN_LINE, LEAVE_LINE, PROGRESS_LINE, REFUSAL_LINE, SESSION_OFFLINE_LINE } from '../consent.ts'
 import { PARTICIPANT_LABEL, identity } from '../identity.ts'
 import { type MinutesInput, writeMinutes } from '../minutes.ts'
@@ -17,6 +17,7 @@ import { type Line, Transcript } from '../transcript.ts'
 import { FluxStream, SAMPLE_RATE } from './deepgram.ts'
 import { Playback } from './playback.ts'
 import { synthesize } from './tts.ts'
+import { type Outcome, type Reading, type Verdict, Verdicts } from './verdicts.ts'
 
 export interface SessionOptions {
   /** The random key in the bot page's URL, for the meeting this session is part of. */
@@ -288,6 +289,9 @@ export class MeetingSession {
   // Until when (epoch ms) the next thing said goes to Alex without the name: after Alex ended an answer
   // on a question, or someone said just "Alex?". 0 when no window is open.
   private awaitingUntil = 0
+  // Which window awaitingUntil is for: the reply to a question Alex ended on, or the line after a call. Only for
+  // why_not_answered.
+  private windowKind: 'reply' | 'called' = 'called'
   // While Alex says the consent line: it is said in full, whoever talks meanwhile, and a question asked
   // during it is answered once it is over. Only leaving, removal or the end of the session stop it. Null
   // once it has all gone out to the page.
@@ -327,6 +331,9 @@ export class MeetingSession {
   private readonly sttClosed: Promise<void>
   // Speech recognition said it can't hear the meeting: the page shows so until a stream opens again.
   private deaf = false
+  // What Alex did with the latest lines, and why, for the owner's why_not_answered. In memory only, never logged,
+  // and gone with the transcript.
+  private readonly verdicts = new Verdicts()
 
   constructor(
     ws: WebSocket,
@@ -611,6 +618,7 @@ export class MeetingSession {
       if (this.calledDuringConsent) {
         this.calledDuringConsent = false
         this.awaitingUntil = Math.max(Date.now(), this.consentPlaysUntil) + (this.deps.calledWindowMs ?? CALLED_WINDOW_MS)
+        this.windowKind = 'called'
       }
     })
     this.greeting = greeting
@@ -633,16 +641,33 @@ export class MeetingSession {
    * nothing of that meeting is kept, and once this session has ended.
    */
   addToBrief(text: string): { ok: boolean; note?: string } {
-    if (this.leaving) {
-      const removed = this.records.left === 'removed'
-      return { ok: false, note: `${identity.name} has been ${removed ? 'removed from' : 'asked to leave'} this meeting` }
-    }
-    if (this.ended) return { ok: false, note: `${identity.name} is no longer in this meeting` }
+    const refused = this.refusal()
+    if (refused) return refused
     const { added, dropped } = this.additions.add(text)
     if (!added) return { ok: false, note: 'there was nothing to add' }
     if (!dropped) return { ok: true }
     const older = `${dropped} older addition${dropped === 1 ? ' was' : 's were'}`
     return { ok: true, note: `${older} dropped, to keep ${identity.name}'s answers quick.` }
+  }
+
+  /** Why a request from the owner's session about this meeting is refused: Alex was asked to leave or removed, or the session is over. */
+  private refusal(): { ok: false; note: string } | null {
+    if (this.leaving) {
+      const removed = this.records.left === 'removed'
+      return { ok: false, note: `${identity.name} has been ${removed ? 'removed from' : 'asked to leave'} this meeting` }
+    }
+    if (this.ended) return { ok: false, note: `${identity.name} is no longer in this meeting` }
+    return null
+  }
+
+  /**
+   * For the owner's why_not_answered: what Alex did with the latest lines of this meeting, and why, newest last.
+   * Refused once Alex was asked to leave or removed (they went with the transcript), and once the session has ended.
+   */
+  whyNotAnswered(lines: number): { ok: boolean; lines?: LineVerdict[]; note?: string } {
+    const refused = this.refusal()
+    if (refused && this.leaving) return { ok: false, note: `${refused.note}, so nothing of it is kept` }
+    return refused ?? { ok: true, lines: this.verdicts.latest(lines) }
   }
 
   /**
@@ -664,56 +689,97 @@ export class MeetingSession {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg))
   }
 
+  /**
+   * Hears a line someone said. Every way out records what Alex did with it for why_not_answered (verdict, below), so a
+   * new return needs one too, except where nothing of the meeting may be kept: once Alex is leaving, for a request to
+   * leave, and once the session has ended.
+   */
   private async onUtterance(text: string): Promise<void> {
-    // Once someone has asked Alex to leave, nothing more is recorded or answered.
+    // Once someone has asked Alex to leave, nothing more is recorded or answered. No verdict: nothing is kept.
     if (this.leaving) return
     // "Um" on its own is someone thinking, not talking: it doesn't answer, open or use up anything.
     const filler = isFillerOnly(text)
     // An open window takes the next real thing anyone says, and only that: whoever it was for, it closes
     // (below, once the line is known not to be a leave request).
     const awaiting = !filler && Date.now() < this.awaitingUntil
+    // The window this line finds, open or not, for why_not_answered: a line that isn't filler closes it, so one that
+    // is set and not open has run out.
+    const window = this.awaitingUntil ? { kind: this.windowKind, until: this.awaitingUntil } : null
     // A request to leave, by name; or in an open window, where a line goes to Alex without it, a plain
     // "Please leave the meeting."
     if (isLeaveRequest(text) || (awaiting && isLeaveReply(text))) {
       // Speech recognition's last words can arrive after the page has gone. There is nobody left to
       // say goodbye to then, but the request still holds: the records go, and there are no minutes.
+      // No verdict: the leave clears them all (stopRecording).
       if (this.ended) return this.forget()
       return this.leave()
     }
     this.transcript.add(PARTICIPANT_LABEL, text, 'participant')
-    // Words that arrive after the session ended are recorded, but never answered.
+    // Words that arrive after the session ended are recorded, but never answered. No verdict: end() cleared them.
     if (this.ended) return
+    // What Alex does with the line, and why, for why_not_answered. A window it found closed is told only for a line
+    // the rules left alone (one still open would have taken it, whatever it was), and not for filler, which leaves a
+    // window as it is, nor a line heard with the page away, which nothing would have taken.
+    const verdict = (reading: Reading, outcome: Outcome = 'nothing'): Verdict => {
+      const closed = window && outcome === 'nothing' && reading !== 'filler' && reading !== 'page_away' && Date.now() >= window.until
+      return this.verdicts.add({
+        text,
+        reading,
+        outcome,
+        duringConsent: this.greeting !== null,
+        window: closed ? { kind: window.kind, closedMs: Date.now() - window.until } : undefined,
+      })
+    }
     if (!filler) {
       this.awaitingUntil = 0
       this.calledDuringConsent = false
     }
     // "Alex, never mind" stops what Alex is doing, and is not a question for it. In an open window the name may
     // be left out ("Never mind."), so the line is also read as if it had been said with the name.
-    if (isCancelRequest(text) || (awaiting && isCancelRequest(`${identity.name}, ${text}`))) return this.cancel()
+    if (isCancelRequest(text) || (awaiting && isCancelRequest(`${identity.name}, ${text}`))) {
+      verdict('cancel', 'stopped')
+      return this.cancel()
+    }
     // Words heard while the page is away (said just before it dropped) are kept, but not answered: Alex could not say
-    // the answer, and the meeting may have moved on by the time the page is back.
-    if (!this.ws) return
+    // the answer, and the meeting may have moved on by the time the page is back. With its verdict.
+    if (!this.ws) return void verdict('page_away')
     const how = attention(text)
     const addressed = how === 'asked' || awaiting
     if (!addressed && how === 'called') {
       this.awaitingUntil = Date.now() + (this.deps.calledWindowMs ?? CALLED_WINDOW_MS)
+      this.windowKind = 'called'
       this.calledDuringConsent = this.greeting !== null
     }
-    if (!addressed) return
+    // Not for Alex: with its verdict.
+    if (!addressed) return void verdict(filler ? 'filler' : how)
+    // For Alex: its verdict follows what comes of it, to the end of the turn.
+    const heard = verdict(how === 'asked' ? 'asked' : window?.kind === 'reply' ? 'reply' : 'after_call', this.greeting ? 'waiting' : 'answering')
     this.questions.push(text)
     const line = ++this.lineCount
     if (this.greeting) {
       // The consent line is said in full: a question asked during it is answered once it is over, unless
-      // Alex was asked to leave meanwhile, or something said since has taken its place.
+      // Alex was asked to leave meanwhile, or something said since has taken its place (or the page went).
       await this.greeting
-      if (line !== this.lineCount || this.leaving || this.ended) return
+      if (line !== this.lineCount || this.leaving || this.ended) return void (heard.outcome = 'replaced')
+      heard.outcome = 'answering'
     }
     await this.runTurn(async signal => {
       this.lastSaid = ''
-      await this.answer(text, signal)
+      try {
+        await this.answer(text, signal, heard)
+      } catch (err) {
+        if (!signal.aborted) heard.outcome = 'failed'
+        throw err
+      } finally {
+        if (signal.aborted) heard.outcome = 'cut_off'
+        else if (heard.outcome === 'answering') heard.outcome = 'nothing'
+      }
       // An answer that ends on a question hands the turn back, so the reply needn't say "Alex". Not when
       // someone talked over it: they have moved on.
-      if (!signal.aborted && endsOnQuestion(this.lastSaid)) this.awaitingUntil = Date.now() + (this.deps.replyWindowMs ?? REPLY_WINDOW_MS)
+      if (!signal.aborted && endsOnQuestion(this.lastSaid)) {
+        this.awaitingUntil = Date.now() + (this.deps.replyWindowMs ?? REPLY_WINDOW_MS)
+        this.windowKind = 'reply'
+      }
     })
   }
 
@@ -760,13 +826,20 @@ export class MeetingSession {
     }
   }
 
-  private async answer(latest: string, signal: AbortSignal): Promise<void> {
+  /** Answers a line. heard: its verdict for why_not_answered, which follows what Alex does with it. */
+  private async answer(latest: string, signal: AbortSignal, heard: Verdict): Promise<void> {
     const events = this.deps.brain.respond({ transcript: this.transcript.recent(), latest, brief: this.deps.brief(), additions: this.additions.text(), signal })
     for await (const event of events) {
       if (signal.aborted) return
-      if (event.kind === 'say') await this.say(event.text, signal)
-      else if (event.kind === 'refused') await this.say(REFUSAL_LINE, signal)
-      else if (event.kind === 'ask_session') {
+      if (event.kind === 'say') {
+        heard.outcome = 'answered'
+        await this.say(event.text, signal)
+      } else if (event.kind === 'refused') {
+        heard.outcome = 'refused'
+        await this.say(REFUSAL_LINE, signal)
+      } else if (event.kind === 'ask_session') {
+        heard.outcome = 'handed'
+        heard.handed = true
         // The question goes first, so the owner's session is already on it while Alex says it is checking. The
         // turn's signal goes with it: when the meeting moves on (Alex is talked over, told never mind, asked
         // something else or to leave, or its page goes), the bridge stops waiting at once, tells the owner's
@@ -794,9 +867,11 @@ export class MeetingSession {
         if (answer) this.keepAnswer(event.question, answer)
         if (signal.aborted) return
         if (!answer) {
+          heard.outcome = 'no_session_answer'
           await this.say(SESSION_OFFLINE_LINE, signal)
           continue
         }
+        heard.outcome = 'session_answered'
         // The detail goes to the chat as Alex starts saying the answer, and the turn doesn't wait for Recall
         // to post it: an answer that ends on a question opens the reply window as soon as it has been said,
         // so a prompt "yes please" is not missed while the chat message is on its way.
@@ -1013,6 +1088,7 @@ export class MeetingSession {
     this.questions = []
     this.transcript.delete()
     this.additions.clear()
+    this.verdicts.clear()
   }
 
   /**
@@ -1078,6 +1154,8 @@ export class MeetingSession {
   end(): void {
     if (this.ended) return
     this.ended = true
+    // why_not_answered is for a live meeting only.
+    this.verdicts.clear()
     this.stopWaiting()
     // Nothing more goes to the page, a resume included.
     this.watching = false

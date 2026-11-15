@@ -8,6 +8,7 @@ The notable changes in each version. The project follows [Semantic Versioning](h
 
 - A code of conduct: the Contributor Covenant 2.1.
 - A brief for one meeting: `npm run join -- "<link>" --brief <file>`, or `join_meeting`'s `brief`. That meeting answers, and its minutes are written, from it instead of the shared brief (`data/brief.md`), and no other meeting sees it, even when `set_brief` changes the shared brief meanwhile. It is kept in the voice service's memory only, until the meeting is over. `get_profile` takes the meeting's key, and gives that meeting's brief; when it can't be had (the meeting is over, say) it gives none, never the shared one in its place. The join note says which brief the meeting uses. The control `/health` and the bridge now say what the service can do (`features`), so a newer `npm run join` or channel refuses a brief to an older service, which would ignore it.
+- Ask your Claude Code session why the assistant didn't answer something: the channel's new `why_not_answered` tool gives, for the latest lines of a live meeting (10, or up to 50), what the assistant did with each and why, by its attention rules. It is kept in memory only, never in a file or the log, goes when the meeting ends or at once on "please leave" or a removal, and only your session can read it. The meeting-assistant agent doesn't get it.
 
 ### Changed
 

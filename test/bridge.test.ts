@@ -664,7 +664,7 @@ test('every link hears first what the voice service can do', async t => {
     setTimeout(() => resolve('nothing within 2 s'), 2000).unref()
   })
   assert.deepEqual(await first, { type: 'service', features: [...SERVICE_FEATURES] })
-  assert.deepEqual([...SERVICE_FEATURES], ['meeting_brief'])
+  assert.deepEqual([...SERVICE_FEATURES], ['meeting_brief', 'why_not_answered'])
 })
 
 test('a set_brief the voice service cannot save is acknowledged with why, and nothing is left to crash it', async t => {

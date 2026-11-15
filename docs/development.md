@@ -20,8 +20,9 @@ The tests use fakes for Deepgram, ElevenLabs, Claude and Recall. The real test o
 | --- | --- |
 | `src/server.ts` | HTTP and websocket server: the public and control listeners, the agent page, `/audio` (its heartbeat, and a page coming back with its secret), `/bridge`, `/api/join`, the limits on meetings, getting bots out of their calls, and stopping in order |
 | `src/network.ts`, `src/local-token.ts`, `src/control-socket.ts` | Who may reach what: the `Origin` and token checks, the local token, the data folder's permissions, and the control socket |
-| `src/sessions.ts` | Which meeting a request from your session is for (`get_transcript`, `add_to_brief`, `post_chat`, a late answer) |
+| `src/sessions.ts` | Which meeting a request from your session is for (`get_transcript`, `add_to_brief`, `post_chat`, `why_not_answered`, a late answer) |
 | `src/pipeline/session.ts` | One conversation: speech to text, deciding when to answer, pausing and stopping when talked over, speaking, and carrying on while the page is away (`test/reconnect-session.test.ts`) |
+| `src/pipeline/verdicts.ts` | What Alex did with the latest lines of a meeting, and why, for `why_not_answered` (`test/why-not-answered.test.ts`): in memory only, gone with the transcript |
 | `src/pipeline/playback.ts` | How much of each line the page had played when Alex was cut off, through pauses and drops (what a page that came back says it never got), so the transcript keeps only what was heard |
 | `src/pipeline/deepgram.ts`, `tts.ts` | Deepgram Flux and ElevenLabs streaming clients. The Flux stream opens again by itself when Deepgram drops it, and says when it can't hear |
 | `src/pipeline/line-cache.ts` | Alex's fixed lines, made once per voice and kept in `data/tts-cache`, sent as fast as it speaks them |

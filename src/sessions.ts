@@ -1,7 +1,8 @@
 // What the owner's Claude Code session reaches in the voice service's live sessions through the bridge:
-// a meeting's transcript, its brief additions, its chat, and an answer that came too late to be said.
+// a meeting's transcript, its brief additions, its chat, an answer that came too late to be said, and what
+// Alex did with its latest lines (why_not_answered).
 // Kept apart from server.ts so it can be tested without starting the service.
-import type { BridgeHandlers, SessionAnswer } from './bridge.ts'
+import type { BridgeHandlers, LineVerdict, SessionAnswer } from './bridge.ts'
 import { identity } from './identity.ts'
 
 const NAME = identity.name
@@ -16,6 +17,8 @@ export interface LiveSession {
   /** Refused, with a note, once Alex was asked to leave or removed, or the session has ended. */
   addToBrief(text: string): { ok: boolean; note?: string }
   postChat(message: string): Promise<boolean>
+  /** What Alex did with the latest lines, and why. Refused, with a note, once Alex was asked to leave or removed, or the session has ended. */
+  whyNotAnswered(lines: number): { ok: boolean; lines?: LineVerdict[]; note?: string }
 }
 
 /**
@@ -48,7 +51,7 @@ export function lateAnswerText(question: string, answer: SessionAnswer): string 
   )
 }
 
-type SessionHandlers = Required<Pick<BridgeHandlers, 'transcript' | 'postChat' | 'addToBrief' | 'lateAnswer'>>
+type SessionHandlers = Required<Pick<BridgeHandlers, 'transcript' | 'postChat' | 'addToBrief' | 'lateAnswer' | 'whyNotAnswered'>>
 
 /** The bridge handlers that act on the live sessions (server.ts adds setBrief and joinMeeting). */
 export function sessionHandlers(sessions: Iterable<LiveSession>): SessionHandlers {
@@ -79,6 +82,11 @@ export function sessionHandlers(sessions: Iterable<LiveSession>): SessionHandler
       const session = findSession(sessions, meeting)
       if (!session) return { ok: false, note: `${NAME} is not in ${meeting ? 'that meeting' : 'a meeting'} right now` }
       return session.addToBrief(text)
+    },
+    whyNotAnswered: (lines, meeting) => {
+      const session = findSession(sessions, meeting)
+      if (!session) return { ok: false, note: `${NAME} is not in ${meeting ? 'that meeting' : 'a meeting'} right now` }
+      return { ...session.whyNotAnswered(lines), meeting: session.opts.meetingKey }
     },
     lateAnswer: (meeting, question, answer) => {
       // Only the meeting it was asked in, through the same path as add_to_brief, so it is refused as that

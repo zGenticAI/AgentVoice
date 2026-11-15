@@ -9,7 +9,7 @@
 // 2. else the session that claimed last: the latest `at`, which is when that session last used
 //    join_meeting, reply or next_question. Sessions send it again when they relink, so which one
 //    wins does not depend on the order they reconnect in after the voice service restarts.
-//    get_transcript, get_brief, set_brief, add_to_brief and post_chat never move the questions.
+//    get_transcript, get_brief, why_not_answered, set_brief, add_to_brief and post_chat never move the questions.
 // 3. else, when no session has claimed, every linked session: the first reply wins.
 //
 // Alex waits 60 seconds for a reply, then tells the meeting it couldn't reach the owner's notes. It also stops
@@ -25,8 +25,9 @@ import { identity } from './identity.ts'
  * What this voice service can do, beyond what every version could: told to the channel on every link ('service'), and
  * to the join CLI in the control /health. A newer channel or CLI refuses what an older service would quietly ignore.
  * meeting_brief: a meeting's own brief (join_meeting's and /api/join's brief, and get_brief).
+ * why_not_answered: what Alex did with the latest lines of a meeting, and why.
  */
-export const SERVICE_FEATURES = ['meeting_brief'] as const
+export const SERVICE_FEATURES = ['meeting_brief', 'why_not_answered'] as const
 
 /** What get_brief says of a meeting's brief: its own (with its text), the shared one, or none (no such meeting now). */
 export type BriefFor = { brief_for: 'this_meeting'; text: string } | { brief_for: 'shared' } | { brief_for: 'unknown_meeting' }
@@ -52,6 +53,9 @@ export type ToSession =
   // The answer to get_brief. unknown_meeting: the key is no meeting's this service is in now (or one that is over), so
   // the channel gives no brief at all, never the shared one in its place.
   | ({ type: 'brief'; request_id: string } & BriefFor)
+  // For why_not_answered: the latest lines of a meeting, newest last, each with what Alex did with it and why. ok is
+  // false, with a note, when there is no such meeting, or Alex was asked to leave it or removed (nothing is kept).
+  | { type: 'verdicts'; request_id: string; ok: boolean; meeting?: string; lines?: LineVerdict[]; note?: string }
   // meeting: for join_meeting, the key Alex's questions from that meeting will carry.
   // For a reply, ok is true when Alex was still waiting for it and will say it. late: Alex had stopped
   // waiting, and why says why: 'timeout' (it told the meeting it couldn't reach the owner's notes) or
@@ -71,6 +75,8 @@ export type FromSession =
   // max_chars: only the latest lines, up to that many characters (500 to 60,000; 12,000 if left out).
   // meeting: that meeting's key; without it, the latest meeting Alex is in.
   | { type: 'get_transcript'; request_id: string; max_chars?: number; meeting?: string }
+  // lines: how many of the latest lines (1 to 50; 10 if left out). meeting: as for get_transcript.
+  | { type: 'why_not_answered'; request_id: string; lines?: number; meeting?: string }
   | { type: 'set_brief'; request_id: string; markdown: string }
   // Adds to what Alex answers from by itself, for one meeting (its key; the latest meeting if left out).
   | { type: 'add_to_brief'; request_id: string; text: string; meeting?: string }
@@ -78,6 +84,20 @@ export type FromSession =
   | { type: 'join_meeting'; request_id: string; meeting_url: string; brief?: string }
   // get_profile for one meeting: which brief it uses (answered with 'brief').
   | { type: 'get_brief'; request_id: string; meeting: string }
+
+/**
+ * One of the latest lines of a meeting, for why_not_answered: when it was said ("hh:mm:ss", UTC, as the transcript
+ * file has it), what was said (untrusted meeting text, as in the transcript), what Alex did with it, how it read it
+ * (the attention rules' verdict, or the session's own check: see src/pipeline/verdicts.ts), and why, in plain words.
+ */
+export interface LineVerdict {
+  at: string
+  seconds_ago: number
+  line: string
+  did: string
+  read: string
+  why: string
+}
 
 export interface SessionAnswer {
   spoken: string
@@ -113,6 +133,11 @@ export interface BridgeHandlers {
    */
   lateAnswer?(meeting: string, question: string, answer: SessionAnswer): { ok: boolean; note?: string }
   /**
+   * What Alex did with the latest lines of the meeting with this key (the latest meeting if none), and why. Live
+   * only, from memory. Without it, why_not_answered is refused as if Alex were in no meeting.
+   */
+  whyNotAnswered?(lines: number, meeting?: string): { ok: boolean; meeting?: string; lines?: LineVerdict[]; note?: string }
+  /**
    * Sends Alex into a meeting, with its own brief if given (as the session sent it: the handler refuses one that isn't
    * text). Resolves with a note for the session and the meeting's key, or throws with the reason.
    */
@@ -126,6 +151,9 @@ export const MAX_HOLD_MS = 11 * 60_000
 // What get_transcript's max_chars may ask for: enough to follow the talk, at most a hand-off's worth.
 export const TRANSCRIPT_MIN_CHARS = 500
 export const TRANSCRIPT_MAX_CHARS = 60_000
+// How many of a meeting's latest lines why_not_answered gives, unless asked for another number, and the most it keeps.
+export const WHY_LINES = 10
+export const WHY_MAX_LINES = 50
 // How long, and how many, questions Alex stopped waiting for are remembered, so a late answer can still be
 // kept. In memory only, and a meeting's words go at once when it ends with its transcript deleted (a leave
 // or removal).
@@ -398,6 +426,20 @@ export class SessionBridge {
         const maxChars = asked === undefined ? undefined : Math.min(TRANSCRIPT_MAX_CHARS, Math.max(TRANSCRIPT_MIN_CHARS, asked))
         const meeting = typeof msg.meeting === 'string' && msg.meeting ? msg.meeting : undefined
         this.send(link, { type: 'transcript', request_id: msg.request_id, text: this.handlers.transcript(maxChars, meeting) })
+        break
+      }
+      case 'why_not_answered': {
+        // Like get_transcript, it does not take the questions: finding out why a line was ignored is not answering.
+        const asked = typeof msg.lines === 'number' && Number.isFinite(msg.lines) ? Math.round(msg.lines) : WHY_LINES
+        const lines = Math.min(WHY_MAX_LINES, Math.max(1, asked))
+        const meeting = typeof msg.meeting === 'string' && msg.meeting ? msg.meeting : undefined
+        let result: { ok: boolean; meeting?: string; lines?: LineVerdict[]; note?: string }
+        try {
+          result = this.handlers.whyNotAnswered?.(lines, meeting) ?? { ok: false, note: `${identity.name} is not in a meeting right now` }
+        } catch (err) {
+          result = { ok: false, note: (err as Error).message }
+        }
+        this.send(link, { type: 'verdicts', request_id: msg.request_id, ...result })
         break
       }
       case 'post_chat': {
