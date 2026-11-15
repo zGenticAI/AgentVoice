@@ -19,7 +19,7 @@ import path from 'node:path'
 import type { Duplex } from 'node:stream'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { type WebSocket, WebSocketServer } from 'ws'
+import { WebSocket, WebSocketServer } from 'ws'
 import { Brain } from './brain/brain.ts'
 import { SessionBridge } from './bridge.ts'
 import { ROOT, config, publicUrlProblem, recallRegionProblem, retiredSettings } from './config.ts'
@@ -31,7 +31,7 @@ import { checkNameAtStartup } from './name-check.ts'
 import { hasLocalToken, sameSecret } from './network.ts'
 import { loadAgentPage } from './pages.ts'
 import { LineCache } from './pipeline/line-cache.ts'
-import { MeetingSession, PAGE_ERRORS, type SessionOptions, endSessions } from './pipeline/session.ts'
+import { MeetingSession, PAGE_CLOSE, PAGE_ERRORS, type SessionOptions, endSessions } from './pipeline/session.ts'
 import { PROFILE } from './profile.ts'
 import * as recall from './recall.ts'
 import { type LiveSession, sessionHandlers } from './sessions.ts'
@@ -44,9 +44,14 @@ const BOT_SCRIPTS = ['agent.js', 'pcm-worklet.js']
 // How long a meeting waits for its bot's page before the bot is asked to leave. Recall gives up on a waiting room
 // after 10 minutes, so a page that has not connected by then never will.
 const PAGE_WAIT_MS = 15 * 60_000
-// After a meeting's page disconnects, a page reconnecting for it is still let in for this long; then its bot is
-// made sure to be out of the call.
+// After a meeting's page drops, its session waits this long for the page to come back (with the secret its 'ready'
+// gave it); then the session ends, and its bot is made sure to be out of the call. A minute covers a tunnel or a router
+// restarting.
 const RECONNECT_MS = 60_000
+// A page not heard from for this long (no audio, no answer to a ping) has dropped, though its socket may still look
+// open: a connection that died on the way can stay so for many minutes. Every quarter of it the page is sent
+// {type: 'hb'} and a ping; the page, which can't see pings, counts the same silence from its side (public/agent.js).
+const PAGE_SILENCE_MS = 4000
 // The most /api/join reads of a request: it only carries a meeting link.
 const MAX_BODY_BYTES = 16_384
 
@@ -180,6 +185,12 @@ function requestUrl(req: http.IncomingMessage): URL | null {
   return URL.parse(req.url ?? '/', 'http://localhost')
 }
 
+/** A count in a URL (decimal digits only), or undefined if it is not one. */
+function count(value: string | null): number | undefined {
+  if (!value || !/^\d{1,15}$/.test(value)) return undefined
+  return Number(value)
+}
+
 /** Resolves when work settles, or after ms, whichever is first. */
 function within(work: Promise<unknown>, ms: number): Promise<void> {
   return new Promise(resolve => {
@@ -211,8 +222,10 @@ export interface ServiceConfig {
   maxMeetingMinutes: number
   /** How long a meeting waits for its bot's page before its bot is asked to leave (ms). Tests make it short. */
   pageWaitMs?: number
-  /** How long a meeting's key stays valid after its page disconnects, for a page that reconnects (ms). */
+  /** How long a meeting's session waits for its page to come back after it drops (ms). */
   reconnectMs?: number
+  /** How long a page may go unheard before its connection counts as dropped (ms); it is sent a heartbeat every quarter of it. */
+  pageSilenceMs?: number
   /** The waits between tries to get a bot out of its call (ms); the last one repeats until it is out. */
   leaveBackoffMs?: readonly number[]
   /** How long stop() waits for Recall: for the bots it is still creating, then for its answers to leave_call (ms). */
@@ -225,6 +238,12 @@ export interface ServiceSession extends LiveSession {
   reachedTimeLimit(minutes: number): Promise<void>
   /** Someone asked the assistant to leave the meeting, or removed it: no page is let in for it again. */
   readonly leftMeeting?: boolean
+  /** Resolves once the session has ended, however it ended. */
+  readonly over: Promise<void>
+  /** Whether a page coming back with this secret (from its 'ready') is the meeting's own: never once it has ended or is leaving. */
+  resumes(secret: string): boolean
+  /** The meeting's page came back (or replaces a connection that stopped answering); got: the voice bytes it says it had. */
+  attach(ws: WebSocket, from: { got?: number }): void
 }
 
 export interface ServiceDeps<S extends ServiceSession> {
@@ -232,8 +251,11 @@ export interface ServiceDeps<S extends ServiceSession> {
   createBot(plan: recall.BotPlan): Promise<{ id: string }>
   /** Asks a bot to leave its call (recall.leaveCall). A RecallError says Recall's answer; any other error, no answer. */
   leaveCall(botId: string): Promise<void>
-  /** Starts the conversation for a page that connected to /audio (a MeetingSession, unless a test passes a fake). */
-  startSession(ws: WebSocket, opts: SessionOptions, ctx: { bridge: SessionBridge; brief: () => string }): S
+  /**
+   * Starts the conversation for a page that connected to /audio (a MeetingSession, unless a test passes a fake). It
+   * waits reconnectMs for a page that drops to come back.
+   */
+  startSession(ws: WebSocket, opts: SessionOptions, ctx: { bridge: SessionBridge; brief: () => string; reconnectMs: number }): S
 }
 
 export interface Service<S extends ServiceSession> {
@@ -276,12 +298,16 @@ interface Meeting<S> {
   /** None for a bot a run that crashed left behind: no page is let in for it. */
   platform?: recall.Platform
   /**
-   * waiting: its bot's page has not connected yet. live: the page is connected. away: it went, and may come back
-   * within the reconnect window. leaving: the bot is being asked to leave its call, and no page is let in.
+   * waiting: its bot's page has not connected yet. live: the page is connected. away: it dropped, and may come back to
+   * its session within the reconnect window. leaving: the bot is being asked to leave its call, and no page is let in.
    */
   state: 'waiting' | 'live' | 'away' | 'leaving'
-  /** The session of its connected page. */
+  /** Its session, from its page's first connection until the session is over. */
   session?: S
+  /** Its page's connection while live. */
+  page?: WebSocket
+  /** The attempt number (n) the page gave for that connection: one that comes back must give a greater one. */
+  attempt?: number
   /** When its page first connected (epoch ms): the time limit counts from then, across reconnects. */
   startedAt?: number
   /** It reached MAX_MEETING_MINUTES: its bot leaves, and no page is let in for it again. */
@@ -387,30 +413,89 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     void attempt(0)
   }
 
-  /** MAX_MEETING_MINUTES is up: the assistant says so in the chat and leaves. With no page connected, the bot just leaves. */
+  /**
+   * MAX_MEETING_MINUTES is up: the assistant says so in the chat and leaves, whether its page is connected or away (the
+   * line goes through Recall). The bot is asked to leave once the session is done with it, even if it declines, unless
+   * it declines because it is leaving already ("Alex, please leave", or a removal): that leave is in charge.
+   */
   function timeUp(meeting: Meeting<S>): void {
     meeting.timeUp = true
-    if (meeting.state === 'live' && meeting.session) {
-      // Its page closes once the session has ended, and then the bot is asked to leave (pageGone).
-      meeting.session.reachedTimeLimit(cfg.maxMeetingMinutes).catch(err => console.error('[leave]', errorName(err)))
+    const why = `it reached the ${cfg.maxMeetingMinutes}-minute limit for one meeting`
+    const session = meeting.session
+    if (session && (meeting.state === 'live' || meeting.state === 'away')) {
+      session
+        .reachedTimeLimit(cfg.maxMeetingMinutes)
+        .catch(err => console.error('[leave]', errorName(err)))
+        // A session that is leaving says its goodbye in full, then leaves the call and ends, and sessionOver (or
+        // pageGone, if its page goes first) makes sure the bot is out. Asking now would cut the goodbye.
+        .finally(() => {
+          if (!session.leftMeeting) leave(meeting, why)
+        })
     } else if (meeting.state === 'away') {
-      leave(meeting, `it reached the ${cfg.maxMeetingMinutes}-minute limit for one meeting while its page was away`)
+      leave(meeting, why)
     }
   }
 
-  /** The meeting's page disconnected. */
-  function pageGone(meeting: Meeting<S>, session: S): void {
-    if (meeting.session !== session || meeting.state !== 'live') return
-    meeting.session = undefined
+  /**
+   * The meeting's page connection closed. Not the one it has now (a connection the page replaced): nothing. Otherwise
+   * the page is away: its session carries on, and the page may come back to it within the window. If it doesn't, the
+   * session ends and the bot leaves.
+   */
+  function pageGone(meeting: Meeting<S>, ws: WebSocket): void {
+    if (meeting.page !== ws) return
+    meeting.page = undefined
+    if (meeting.state !== 'live') return
     meeting.state = 'away'
-    if (stopping) return // stop() asks its bot to leave
+    const session = meeting.session
+    if (!session || stopping) return // stop() asks its bot to leave, and endSessions ends the session
     if (meeting.timeUp) return leave(meeting, 'it reached the time limit for one meeting')
     // "Alex, please leave", or a removal: nothing more of the meeting, so no page for it either.
     if (session.leftMeeting) return leave(meeting, 'it was asked to leave the meeting, or removed from it')
-    // The session asked the bot to leave as it ended, once; a page may still come back for the meeting while the bot
-    // is in the call. If none has by the end of the window, the service makes sure the bot is out.
-    meeting.timer = setTimeout(() => leave(meeting, 'its page went and did not come back'), cfg.reconnectMs ?? RECONNECT_MS)
+    const windowMs = cfg.reconnectMs ?? RECONNECT_MS
+    console.log(`[audio] bot ${meeting.botId}'s page dropped: it has ${Math.round(windowMs / 1000)} s to come back`)
+    meeting.timer = setTimeout(() => {
+      session.end()
+      leave(meeting, 'its page went and did not come back')
+    }, windowMs)
     meeting.timer.unref()
+  }
+
+  /** The meeting's session is over: its bot leaves (stop() asks every bot when the service is stopping). */
+  function sessionOver(meeting: Meeting<S>, session: S): void {
+    sessions.delete(session)
+    if (meeting.session !== session) return
+    meeting.session = undefined
+    if (stopping) return
+    const why = session.leftMeeting
+      ? 'it was asked to leave the meeting, or removed from it'
+      : meeting.timeUp
+        ? 'it reached the time limit for one meeting'
+        : 'its meeting session ended'
+    leave(meeting, why)
+  }
+
+  /**
+   * Watches a page's connection: every quarter of pageSilenceMs it sends {type: 'hb'} and a ping, and a page that has
+   * sent nothing and answered no ping for pageSilenceMs is cut off, which is the page going (pageGone).
+   */
+  function watch(ws: WebSocket, botId: string): void {
+    const silenceMs = cfg.pageSilenceMs ?? PAGE_SILENCE_MS
+    let heard = Date.now()
+    const alive = () => void (heard = Date.now())
+    ws.on('message', alive)
+    ws.on('pong', alive)
+    const beat = setInterval(() => {
+      if (Date.now() - heard > silenceMs) {
+        console.warn(`[audio] bot ${botId}'s page went silent: its connection is dropped`)
+        // Its close stops the heartbeat.
+        return ws.terminate()
+      }
+      if (ws.readyState !== WebSocket.OPEN) return
+      ws.send(JSON.stringify({ type: 'hb' }))
+      ws.ping()
+    }, silenceMs / 4)
+    beat.unref()
+    ws.once('close', () => clearInterval(beat))
   }
 
   /** Creates a Recall bot that joins the meeting with the agent page as its camera and microphone. */
@@ -499,19 +584,22 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
   const audioWss = new WebSocketServer({ noServer: true })
   const bridgeWss = new WebSocketServer({ noServer: true })
 
-  /** Starts the conversation for a page that connected to /audio. Null if it could not start. */
+  /**
+   * Starts the conversation for a page that connected to /audio. Null if it could not start: the page is told so, and
+   * closed with a code that says not to come back.
+   */
   function startAudio(ws: WebSocket, opts: SessionOptions): S | null {
     let session: S
     try {
-      session = deps.startSession(ws, opts, { bridge, brief })
+      session = deps.startSession(ws, opts, { bridge, brief, reconnectMs: cfg.reconnectMs ?? RECONNECT_MS })
     } catch (err) {
       console.error('[audio]', (err as Error).message)
       ws.send(JSON.stringify({ type: 'error', message: PAGE_ERRORS.start }))
-      ws.close()
+      ws.close(PAGE_CLOSE.cannotStart, 'cannot start')
       return null
     }
+    // Live until it is over, whether its page is connected or away.
     sessions.add(session)
-    ws.on('close', () => sessions.delete(session))
     console.log(`[audio] session started for bot ${opts.botId}`)
     return session
   }
@@ -542,20 +630,53 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
       console.warn('[audio] refused a bot page for a meeting this service did not start, or one that is over')
       return refuse(socket, 403, 'forbidden')
     }
-    // One page per meeting. The bot's page only reconnects once its first connection has gone, so a second
-    // one at the same time is someone else's.
-    if (meeting.state === 'live') {
-      console.warn(`[audio] refused a second page for bot ${meeting.botId}: its page is connected`)
-      return refuse(socket, 409, 'this meeting already has its page')
+    // Which try of the page this is: each one counts up, so a try the page gave up on that arrives late can't take the
+    // place of a later one.
+    const attempt = count(url.searchParams.get('n'))
+    if (meeting.state === 'live' || meeting.state === 'away') {
+      // The time limit: the bot leaves once its line is in the chat, so no page comes back meanwhile.
+      if (meeting.timeUp) {
+        console.warn(`[audio] refused bot ${meeting.botId}'s page: its meeting reached the time limit`)
+        return refuse(socket, 403, 'forbidden')
+      }
+      // One page per meeting. Only the meeting's own page comes back to it, with the secret its session gave it in
+      // 'ready'; it may then take the place of a connection that stopped answering. Any other page is someone else's.
+      // (Until a page has sent the session anything, one without a secret may take over: its first 'ready' was lost.)
+      const session = meeting.session
+      if (!session || !session.resumes(url.searchParams.get('rejoin') ?? '')) {
+        console.warn(`[audio] refused a page for bot ${meeting.botId} without its meeting's secret: the meeting has its page`)
+        return refuse(socket, 409, 'this meeting already has its page')
+      }
+      if (attempt === undefined || attempt <= (meeting.attempt ?? -1)) {
+        console.warn(`[audio] refused an earlier try of bot ${meeting.botId}'s page: a later one has connected`)
+        return refuse(socket, 409, 'this meeting already has its page')
+      }
+      handOver()
+      // The callback runs before any other upgrade is handled, so two tries can't both get past the checks above.
+      audioWss.handleUpgrade(req, socket, head, ws => {
+        const replacing = meeting.page !== undefined
+        clearTimeout(meeting.timer)
+        meeting.state = 'live'
+        meeting.page = ws
+        meeting.attempt = attempt
+        watch(ws, meeting.botId)
+        ws.on('close', () => pageGone(meeting, ws))
+        session.attach(ws, { got: count(url.searchParams.get('got')) })
+        console.log(`[audio] bot ${meeting.botId}'s page ${replacing ? 'came back, replacing a connection that had stopped answering' : 'came back'}`)
+      })
+      return
     }
     // The callback runs before any other upgrade is handled, so two pages can't both get past the check above.
     handOver()
     audioWss.handleUpgrade(req, socket, head, ws => {
       const session = startAudio(ws, { meetingKey: key, botId: meeting.botId, platform: recall.PLATFORM_NAMES[platform] })
-      if (!session) return
+      // Nothing will start for it later: a session that can't start is a setting to fix.
+      if (!session) return leave(meeting, 'its meeting session could not start')
       clearTimeout(meeting.timer)
       meeting.state = 'live'
       meeting.session = session
+      meeting.page = ws
+      meeting.attempt = attempt
       if (meeting.startedAt === undefined) {
         // MAX_MEETING_MINUTES caps what one meeting can cost: from when its page first connected, whether or not a
         // page is connected when it runs out.
@@ -565,7 +686,9 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
         meeting.limit.unref()
         save()
       }
-      ws.on('close', () => pageGone(meeting, session))
+      watch(ws, meeting.botId)
+      ws.on('close', () => pageGone(meeting, ws))
+      void session.over.then(() => sessionOver(meeting, session))
     })
   }
 
@@ -795,14 +918,16 @@ async function main(): Promise<void> {
     {
       createBot: recall.createBot,
       leaveCall: recall.leaveCall,
-      startSession: (ws, opts, { bridge, brief }) => new MeetingSession(ws, opts, { brain, bridge, brief, speak: lines.speak }),
+      startSession: (ws, opts, { bridge, brief, reconnectMs }) =>
+        new MeetingSession(ws, opts, { brain, bridge, brief, speak: lines.speak, reconnectMs }),
     },
   )
 
-  // launchd or systemd stops or restarts the service with SIGTERM (and SIGKILL 20 s later). End the meetings first: the assistant
-  // leaves calls it could no longer hear (the bot page does not reconnect), the owner's session hears that each meeting ended,
-  // with its minutes if they are written within 10 s, and bots still joining are asked to leave. A crash does the
-  // same, so no bot is left silent in a call, then exits with 1.
+  // launchd or systemd stops or restarts the service with SIGTERM (and SIGKILL 20 s later). End the meetings first, those
+  // whose page is away included: the assistant leaves calls it could no longer hear (a page can't come back to a service
+  // that has stopped), the owner's session hears that each meeting ended, with its minutes if they are written within
+  // 10 s, and bots still joining are asked to leave. A crash does the same, so no bot is left silent in a call, then
+  // exits with 1.
   const stop = stopper(service, { endSessions: sessions => endSessions(sessions, 10_000), exit: code => process.exit(code) })
   process.once('SIGTERM', () => stop('SIGTERM'))
   process.once('SIGINT', () => stop('SIGINT'))

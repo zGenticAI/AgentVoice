@@ -127,8 +127,28 @@ function nameSets(agent: AgentName): NameSets {
 
 const NO_NAMES: NameSets = { names: new Set(), misheard: new Set(), leave: new Set() }
 
-// The sounds of someone thinking. Not "mm-hmm", "uh-huh", "yeah" or "ok": those are answers.
+// The sounds of someone thinking. Not "mm-hmm", "uh-huh", "yeah" or "ok": those are answers. (While the assistant is
+// talking they are only backchannels, below: no reason for it to stop. Once it has finished, they still answer it.)
 const FILLER = /^(?:u+h*m+|u+h+|e+r+m*|h+m+|a+h+)$/
+
+// While someone else talks, the sounds and short words people make to show they are listening, or to give way:
+// "mm-hm", "uh-huh", "yeah", "okay", "right", "sure", "I see", "oh, sorry, go ahead", a laugh. Said over the assistant,
+// a line of only these (and the fillers above) is no reason for it to stop talking. Not "no", "wait", "stop", "thanks"
+// or the name: those are someone taking the floor. Sounds as speech recognition spells them, drawn out or not: "mm",
+// "mhm", "mmhmm" ("mm-hmm" is "mm" and "hmm"), "huh" ("uh-huh"), "nuh" ("nuh-uh"), "aha", "ha", "haha", "heh", "oh",
+// "ooh", "wow", "whoa". None of these words are in GRAMMAR_WORDS: a name that is one of them only makes the assistant
+// stop more readily (the name always counts), while refusing them would refuse names that work today, such as True.
+const BACKCHANNEL_SOUND = /^(?:m+(?:h+m+)?|h+u+h+|n+u+h+|a+h+a+|(?:h+a+)+h*|h+e+h+(?:e+h*)*|o+h+|w+o+w+|w+h+o+a+)$/
+const BACKCHANNEL_WORDS = new Set([
+  'yeah', 'yea', 'yah', 'ya', 'yep', 'yup', 'yes', 'ok', 'okay', 'right', 'alright', 'sure', 'cool', 'nice', 'great', 'good',
+  'fine', 'true', 'totally', 'exactly', 'absolutely', 'definitely', 'indeed', 'gotcha', 'interesting', 'really', 'perfect',
+  'awesome', 'sorry', 'agreed', 'correct', 'oops',
+])
+// Phrases that are a backchannel only as a whole: "I see", but not "I" or "see" on their own.
+const BACKCHANNEL_PHRASES = [
+  'i see', 'got it', 'all right', 'of course', 'fair enough', 'makes sense', 'that makes sense', 'sounds good', 'go on',
+  'go ahead', 'carry on', 'keep going', "that's right", "that's true", 'my bad', 'oh well',
+].map(p => p.split(' '))
 
 // Words that can come before the name and still leave it a call: "Hey Alex", "So, Alex", "Um, Alex".
 const CALL_WORDS = new Set(['hey', 'ok', 'okay', 'so', 'well', 'right', 'alright', 'and', 'but', 'also', 'now', 'oh'])
@@ -1038,12 +1058,43 @@ export function isFillerOnly(text: string): boolean {
   return wordsOf(text, NO_NAMES).every(isFiller)
 }
 
+/**
+ * How many words of a line said over the assistant are someone taking the floor: every word but the fillers and
+ * backchannels above, and the name always. A backchannel phrase counts nothing as a whole ("that makes sense"). A
+ * partial line (speech recognition is partway through the turn) stops counting at a phrase it may be partway through:
+ * "that makes" counts nothing yet, and 2 once the line has ended there.
+ */
+function wordsThatCountOf(text: string, sets: NameSets, partial: boolean): number {
+  const words = wordsOf(text, sets)
+  let count = 0
+  for (let i = 0; i < words.length; ) {
+    const word = words[i]
+    if (word.name) {
+      count++
+      i++
+      continue
+    }
+    const phrase = BACKCHANNEL_PHRASES.find(p => matches(words, i, p))
+    if (phrase) {
+      i += phrase.length
+      continue
+    }
+    const left = words.length - i
+    if (partial && BACKCHANNEL_PHRASES.some(p => p.length > left && matches(words, i, p.slice(0, left)))) break
+    if (!isFiller(word) && !BACKCHANNEL_SOUND.test(word.text) && !BACKCHANNEL_WORDS.has(word.text)) count++
+    i++
+  }
+  return count
+}
+
 /** The attention rules for one assistant's names. */
 export interface AttentionRules {
   /** Whether a line is for the assistant, and if not, why not. */
   attention(text: string): Attention
   /** For the leave rule (text.ts): what was said to the assistant right after its name, each time it was said to it. */
   saidAfterName(text: string): string[]
+  /** For talking over the assistant (session.ts): how many words count as taking the floor (see wordsThatCountOf()). */
+  wordsThatCount(text: string, partial?: boolean): number
 }
 
 /** The attention rules for these names. Pure: the tests and npm run check-name make them for any name. */
@@ -1052,6 +1103,7 @@ export function makeAttention(agent: AgentName): AttentionRules {
   return {
     attention: text => attentionOf(text, sets),
     saidAfterName: text => saidAfterNameOf(text, sets),
+    wordsThatCount: (text, partial = false) => wordsThatCountOf(text, sets, partial),
   }
 }
 
@@ -1061,6 +1113,11 @@ const RULES = makeAttention(identity)
 /** Decides whether a line of the meeting is for the assistant, and if not, why not. */
 export function attention(text: string): Attention {
   return RULES.attention(text)
+}
+
+/** How many words of a line said over the assistant count as taking the floor; partial while the turn goes on. */
+export function wordsThatCount(text: string, partial = false): number {
+  return RULES.wordsThatCount(text, partial)
 }
 
 /** For the leave rule (text.ts): what was said to the assistant right after its name (see saidAfterNameOf()). */

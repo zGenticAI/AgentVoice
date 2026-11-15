@@ -3,6 +3,9 @@
 // out how much of a line had played when it stopped. A line stops short when the page is told to clear (someone talked
 // over the assistant or told it never mind) or goes, and when the rest of its audio never went out (a new question
 // stopped the answer, or ElevenLabs failed partway). The transcript then keeps only the words the meeting heard.
+// The page can also be paused while someone talks over the assistant, and resumed: what it held then plays later, and
+// a clear while paused cuts the line where the page paused. When the page's connection drops, the page plays on what
+// it has, and says when it comes back how much of the audio it got: what never reached it is taken off (lost).
 
 /** The page starts a piece this long after it arrives, unless the piece before it is still playing (public/agent.js). */
 export const PAGE_LEAD_MS = 50
@@ -16,6 +19,11 @@ export const MS_PER_CHAR = 70
 export const CUT_OFF = '(cut off)'
 // Rounding in the sums of milliseconds: a line whose audio has all played, to within this, was heard in full.
 const ROUNDING_MS = 1
+/**
+ * How long a line stays followed after the page has played it: longer than a dead connection takes to be noticed and
+ * the page to come back (about 4 s, then its tries), so what it says it got can still correct the lines sent meanwhile.
+ */
+export const KEEP_MS = 15_000
 
 // How long a character takes to say, in letters: a figure or a sign is said as a word or more ("18%" is "eighteen
 // percent", "$4.2M" is "four point two million dollars"), so a line full of them takes longer than its length says.
@@ -74,12 +82,19 @@ export interface Playing<L> {
  * Follows the page's playback of the assistant's lines, the way the page schedules it, and tells the transcript when a
  * line was not heard to the end (amend: its new text, or '' when none of it was heard). Times are this computer's: a
  * piece arrives at the page and the page's clear arrives a network delay after they went out, the same delay for both,
- * so it cancels out. Only timings are kept here, and the lines while they may still be playing: nothing is logged.
+ * so it cancels out. Pause and resume go on the same socket as the audio, so the same holds for them: on pause the page
+ * stops where it is and holds the rest of each piece, and what arrives meanwhile; on resume it plays what it held from
+ * PAGE_LEAD_MS on, back to back, gaps dropped. This copies that. Only timings are kept here, and the lines while they
+ * may still be playing: nothing is logged.
  */
 export class Playback<L> {
   // When the page will have played everything sent to it so far (epoch ms), 0 once it has nothing queued.
   private head = 0
   private lines: Playing<L>[] = []
+  // Pieces of audio no followed line has (the goodbye, or a line no longer followed), by when the page plays them.
+  private others: [number, number][] = []
+  // While the page is paused: what it holds, in the order it will play it, and whose it is (null: no followed line).
+  private held: { playing: Playing<L> | null; ms: number }[] | null = null
 
   /** amend: changes a line in the transcript, or takes it out (''). clock: the time (epoch ms), Date.now unless a test passes one. */
   constructor(
@@ -87,10 +102,13 @@ export class Playback<L> {
     private readonly clock: () => number = Date.now,
   ) {}
 
-  /** A line starts going out to the page. Lines the page has played to the end stop being followed. */
+  /** A line starts going out to the page. Lines the page played to the end more than KEEP_MS ago stop being followed. */
   begin(line: L, text: string): Playing<L> {
-    const now = this.clock()
-    this.lines = this.lines.filter(p => !(p.closed && (p.runs.at(-1)?.[1] ?? 0) <= now))
+    const kept = this.clock() - KEEP_MS
+    // Not a line a paused page still holds some of: it plays on resume.
+    const holds = (p: Playing<L>) => this.held?.some(h => h.playing === p) ?? false
+    this.lines = this.lines.filter(p => !(p.closed && (p.runs.at(-1)?.[1] ?? 0) <= kept && !holds(p)))
+    this.others = this.others.filter(([, end]) => end > kept)
     const playing: Playing<L> = { line, text, shown: text, runs: [], sentMs: 0, closed: false, complete: false }
     this.lines.push(playing)
     return playing
@@ -98,13 +116,56 @@ export class Playback<L> {
 
   /** `ms` of audio went out to the page just now: a piece of `playing`'s line, or of audio no line is kept for (null). */
   sent(playing: Playing<L> | null, ms: number): void {
+    const followed = playing && this.lines.includes(playing) ? playing : null
+    if (followed) followed.sentMs += ms
+    if (this.held) this.held.push({ playing: followed, ms })
+    else this.place(followed, ms)
+  }
+
+  // Where the page plays a piece that arrives now: straight after what it has queued, or PAGE_LEAD_MS from now.
+  private place(playing: Playing<L> | null, ms: number): void {
     const start = Math.max(this.head, this.clock() + PAGE_LEAD_MS)
     this.head = start + ms
-    if (!playing || !this.lines.includes(playing)) return
-    playing.sentMs += ms
-    const last = playing.runs.at(-1)
+    const runs = playing ? playing.runs : this.others
+    const last = runs.at(-1)
     if (last && last[1] === start) last[1] = this.head
-    else playing.runs.push([start, this.head])
+    else runs.push([start, this.head])
+  }
+
+  /**
+   * The page was told to pause just now: it stops where it is and holds the rest, and what arrives meanwhile, until it
+   * is told to resume or to clear. What it played up to now stays heard. Pausing again changes nothing.
+   */
+  pause(): void {
+    if (this.held) return
+    const at = this.clock()
+    const pieces: { playing: Playing<L> | null; start: number; ms: number }[] = []
+    const cut = (runs: [number, number][], playing: Playing<L> | null): [number, number][] => {
+      const played: [number, number][] = []
+      for (const [start, end] of runs) {
+        if (end > at) pieces.push({ playing, start, ms: end - Math.max(start, at) })
+        if (start < at) played.push([start, Math.min(end, at)])
+      }
+      return played
+    }
+    for (const p of this.lines) p.runs = cut(p.runs, p)
+    cut(this.others, null)
+    this.others = []
+    this.held = pieces.sort((a, b) => a.start - b.start).map(({ playing, ms }) => ({ playing, ms }))
+    this.head = 0
+  }
+
+  /** The page was told to resume just now: it plays what it held from PAGE_LEAD_MS on, back to back. */
+  resume(): void {
+    const held = this.held
+    if (!held) return
+    this.held = null
+    for (const { playing, ms } of held) this.place(playing && this.lines.includes(playing) ? playing : null, ms)
+  }
+
+  /** Whether the page is paused: from pause() until resume(), a stop or a reset. */
+  get paused(): boolean {
+    return this.held !== null
   }
 
   /**
@@ -121,29 +182,68 @@ export class Playback<L> {
   }
 
   /**
-   * The page stopped playing just now: it was told to clear, or it has gone. Each line it had not played to the end
-   * keeps only the words heard by then; a line not one word of which was heard goes. Nothing is followed after this.
+   * The page stopped playing at `at`, just now unless given: it was told to clear, or it has gone (when it was last
+   * heard from). Each line it had not played to the end keeps only the words heard by then (paused, by when it paused);
+   * a line not one word of which was heard goes. A clear ends a pause, and what the page held is not heard. Nothing is
+   * followed after this.
    */
-  stop(): void {
-    const at = this.clock()
+  stop(at = this.clock()): void {
     const lines = this.lines
     this.lines = []
     this.head = 0
+    this.others = []
+    this.held = null
     for (const playing of lines) this.settle(playing, at)
+  }
+
+  /**
+   * The page never got the last `ms` of the audio that went out to it: its connection dropped, and it said when it came
+   * back how much it had. That much is taken off the end of what the page plays, newest first, whatever it was for (a
+   * line, or audio no line is kept for). Each closed line then keeps only the words of what is left, and a line none of
+   * whose audio arrived goes.
+   */
+  lost(ms: number): void {
+    let left = ms
+    // What a paused page holds came after everything it played.
+    while (this.held?.length && left > 0) {
+      const last = this.held.at(-1)!
+      const cut = Math.min(left, last.ms)
+      last.ms -= cut
+      left -= cut
+      if (last.ms <= 0) this.held.pop()
+    }
+    // Pieces play in the order they went out, so the newest audio is the run that starts last.
+    const runs = [...this.lines.flatMap(p => p.runs), ...this.others].sort((a, b) => b[0] - a[0])
+    for (const run of runs) {
+      if (left <= 0) break
+      const cut = Math.min(left, run[1] - run[0])
+      run[1] -= cut
+      left -= cut
+    }
+    const kept = (r: [number, number][]) => r.filter(([start, end]) => end > start)
+    for (const p of this.lines) p.runs = kept(p.runs)
+    this.others = kept(this.others)
+    this.head = Math.max(0, ...[...this.lines.flatMap(p => p.runs), ...this.others].map(([, end]) => end))
+    for (const p of this.lines) if (p.closed) this.settle(p, Infinity)
   }
 
   /** The page was cleared with no transcript left to correct (the assistant is leaving): forgets every line. */
   reset(): void {
     this.lines = []
     this.head = 0
+    this.others = []
+    this.held = null
   }
 
   /**
    * When the page will have played everything sent to it so far (by the clock), or earlier when that is already over:
    * how long the consent line and the goodbye are still heard for. 0 after a stop or a reset, until audio goes out.
+   * Paused, when it would if it resumed now (0 when it holds nothing).
    */
   get playsUntil(): number {
-    return this.head
+    if (!this.held) return this.head
+    const ms = this.held.reduce((sum, h) => sum + h.ms, 0)
+    return ms ? this.clock() + PAGE_LEAD_MS + ms : 0
   }
 
   /** Lines the page may still be playing, for tests. */
@@ -152,7 +252,9 @@ export class Playback<L> {
   }
 
   private settle(playing: Playing<L>, at: number): void {
-    const played = playing.runs.reduce((sum, [start, end]) => sum + Math.max(0, Math.min(end, at) - start), 0)
+    // The audio a paused page holds plays when it resumes: a line closed short counts it (at is Infinity then).
+    const held = at === Infinity ? (this.held ?? []).reduce((sum, h) => sum + (h.playing === playing ? h.ms : 0), 0) : 0
+    const played = held + playing.runs.reduce((sum, [start, end]) => sum + Math.max(0, Math.min(end, at) - start), 0)
     if (playing.complete && played >= playing.sentMs - ROUNDING_MS) return
     // A line whose audio did not all go out is longer than what was sent: about this long, at least.
     const whole = playing.complete ? playing.sentMs : Math.max(playing.sentMs, spokenLength(playing.text) * MS_PER_CHAR)

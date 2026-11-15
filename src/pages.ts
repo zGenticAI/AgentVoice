@@ -8,7 +8,12 @@
 // A page of your own (AGENT_PAGE_FILE) keeps the contract the default page keeps:
 // - it imports startAgent from /agent.js and calls it, which streams the meeting's audio to the service and plays
 //   the assistant's voice (the only other file the page may load from the service is /pcm-worklet.js, which
-//   agent.js loads itself);
+//   agent.js loads itself). agent.js also pauses and resumes the voice when someone talks over the assistant, and
+//   reconnects to the service by itself when its connection drops: the page needs nothing for either. onState tells
+//   the page what to show: 'listening' (paused included), 'speaking', 'reconnecting', 'disconnected' (it has stopped
+//   trying: the meeting's session is over, or the connection didn't come back within 75 s), or 'error: ' and the
+//   service's fixed words (PAGE_ERRORS in src/pipeline/session.ts). A page must never reload or navigate, on
+//   'disconnected' or anything else: a page loaded again has lost the secret that lets it back into the meeting;
 // - it says the assistant is an AI where the meeting can see it, with the word "AI" in its visible text, as the
 //   consent line, the chat notice and the participant list do. That is not a setting.
 // The service reads the page once, when it starts (loadAgentPage): it checks both, refuses a page that breaks either,

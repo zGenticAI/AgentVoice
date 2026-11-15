@@ -32,3 +32,12 @@ The bot's camera in the meeting is `public/agent.html`: the assistant's name, "S
 - it says "AI" in its visible text, as the consent line, the chat notice and the participant list do.
 
 The service checks both when it starts, and refuses a page that breaks either; `npm run check` checks it too. Start from a copy of `public/agent.html`. The public port never says why a request failed, so a page's path never reaches the meeting or the internet.
+
+`startAgent({ onState })` tells the page what to show, which `public/agent.html` writes at the bottom of the page:
+- `'listening'`, also while Alex is paused because someone talks over it;
+- `'speaking'`, while Alex's voice plays;
+- `'reconnecting'`: the page's connection to the service dropped, and `agent.js` is getting it back by itself (the default page shows "Reconnecting…"). Alex's voice the page already had plays on meanwhile, as `'speaking'`;
+- `'disconnected'`: it has stopped trying, because the meeting's session is over or the connection didn't come back within 75 seconds;
+- `'error: '` followed by fixed words, while Alex is not speaking and the connection is up: "couldn't answer that" (until Alex speaks again), "can't hear the meeting" (until speech recognition is back), or "can't start" (the meeting's session could not start, and `'disconnected'` follows).
+
+A page must never reload or navigate, on `'disconnected'` or anything else: `agent.js` reconnects by itself, and a page loaded again has lost the secret that lets it back into the meeting, so the bot would leave the call about a minute later.
