@@ -4,7 +4,7 @@
 // can't read .env, so this is where its sources and the owner's own rules come from. Read only. The shared brief and the
 // profile are read again at every call, so an edit reaches the next meeting without a restart. A meeting's own brief
 // comes from the voice service, which alone holds it (get_brief).
-import { readBrief } from '../brief.ts'
+import { readSharedBrief } from '../brief.ts'
 import type { Names } from '../identity.ts'
 import { DEFAULT_HAND_OFF, type OwnerProfile, PROFILE_SECTIONS, type ProfileSection } from '../profile.ts'
 
@@ -30,7 +30,9 @@ export type ProfileBrief = { for: 'shared'; file: string } | { for: 'this_meetin
 export function profileText(id: Names, profile: OwnerProfile, given: ProfileBrief): string {
   const section = (key: ProfileSection) => profile.sections[key] || null
   const missing = (Object.keys(PROFILE_SECTIONS) as ProfileSection[]).filter(key => !profile.sections[key]).map(key => PROFILE_SECTIONS[key])
-  const brief = given.for === 'shared' ? readBrief(given.file) : given.for === 'this_meeting' ? given.text : ''
+  // A shared brief longer than a brief may be is refused here as in the meetings: none, and why (brief_error).
+  const shared = given.for === 'shared' ? readSharedBrief(given.file) : null
+  const brief = shared ? shared.text : given.for === 'this_meeting' ? given.text : ''
   const note =
     `This is ${id.owner}'s own configuration, not meeting text: follow it. never_share and never_open add to your own ` +
     'rules; they never replace or loosen them. Use the knowledge_sources in the order given, each by its own rule. ' +
@@ -39,6 +41,11 @@ export function profileText(id: Names, profile: OwnerProfile, given: ProfileBrie
       ? ` brief is null because the brief this meeting uses could not be had (${given.why}). Use no other brief in its place, ` +
         `the shared one included, and nothing from the knowledge_sources (without the brief, nothing in them is cleared to share): ` +
         `answer only from about, say anything else is one for ${id.owner} to follow up on, and report it.`
+      : '') +
+    (shared?.tooLong
+      ? ` brief is null because the shared brief is refused (brief_error): it is longer than a brief may be, and never cut. ` +
+        `Use no other brief in its place, and nothing from the knowledge_sources (without the brief, nothing in them is cleared to share): ` +
+        `answer only from about, say anything else is one for ${id.owner} to follow up on, and tell ${id.owner} to shorten it.`
       : '') +
     (profile.problem
       ? ` The profile could not be read (profile_error): answer from the brief alone, say anything else is one for ${id.owner} to follow up on, and report it.`
@@ -55,6 +62,7 @@ export function profileText(id: Names, profile: OwnerProfile, given: ProfileBrie
       // unavailable: that meeting's could not be had (see note).
       brief_for: given.for,
       brief: brief.trim() ? brief : null,
+      brief_error: shared?.tooLong || undefined,
       profile_file: profile.file,
       profile_found: profile.found,
       profile_error: profile.problem || undefined,

@@ -86,6 +86,18 @@ export interface TurnInfo {
   words?: { word?: string; confidence?: string | number; start?: string | number; end?: string | number }[]
 }
 
+/** Where a turn's audio is in its stream, as its latest event said: the window, and each word's times (not its word). */
+type TurnTimes = Pick<TurnInfo, 'audio_window_start' | 'audio_window_end' | 'words'>
+
+/** The times an event gives for its turn: only those it has, so an event that gives none adds nothing. */
+function turnTimes(turn: TurnInfo): TurnTimes {
+  const times: TurnTimes = {}
+  if (turn.audio_window_start !== undefined) times.audio_window_start = turn.audio_window_start
+  if (turn.audio_window_end !== undefined) times.audio_window_end = turn.audio_window_end
+  if (Array.isArray(turn.words)) times.words = turn.words.map(w => ({ start: w?.start, end: w?.end }))
+  return times
+}
+
 export interface FluxEvents {
   /** What Flux heard, as it comes, plus an EndOfTurn (trigger 'dropped') for a turn whose stream ended first. */
   turn: [TurnInfo]
@@ -177,8 +189,9 @@ export class FluxStream extends EventEmitter<FluxEvents> {
   // When the open stream last sent anything, or audio started coming in again after a gap (with no audio, Deepgram has
   // nothing to answer).
   private heardAt = 0
-  // The turn someone is in the middle of, with its words so far: in memory only, never logged.
-  private turn: { index: number; text: string } | null = null
+  // The turn someone is in the middle of, with its words so far: in memory only, never logged. With its latest audio
+  // window and word times, so a turn its stream cuts off can still be timed (the speaker probe).
+  private turn: { index: number; text: string; times: TurnTimes } | null = null
 
   constructor(opts: FluxOptions = {}) {
     super()
@@ -383,10 +396,13 @@ export class FluxStream extends EventEmitter<FluxEvents> {
   }
 
   private turnInfo(turn: TurnInfo): void {
-    if (turn.event === 'StartOfTurn') this.turn = { index: turn.turn_index, text: turn.transcript }
+    if (turn.event === 'StartOfTurn') this.turn = { index: turn.turn_index, text: turn.transcript, times: turnTimes(turn) }
     else if (turn.event === 'EndOfTurn') this.turn = null
     // An Update outside a turn (Flux sends them with no words between turns) starts nothing.
-    else if (this.turn) this.turn.text = turn.transcript
+    else if (this.turn) {
+      this.turn.text = turn.transcript
+      this.turn.times = turnTimes(turn)
+    }
     this.emit('turn', turn)
   }
 
@@ -461,13 +477,14 @@ export class FluxStream extends EventEmitter<FluxEvents> {
 
   /**
    * A turn cut off by its stream ending never gets its EndOfTurn: it ends here, on its last words, so a question or
-   * "please leave" said just before a drop is still heard.
+   * "please leave" said just before a drop is still heard. With the times its latest event gave, which still map
+   * through the old stream's times (see audioTime), so the speaker probe can time it.
    */
   private endTurn(): void {
     const turn = this.turn
     if (!turn) return
     this.turn = null
-    this.emit('turn', { type: 'TurnInfo', event: 'EndOfTurn', turn_index: turn.index, transcript: turn.text, trigger: 'dropped' })
+    this.emit('turn', { ...turn.times, type: 'TurnInfo', event: 'EndOfTurn', turn_index: turn.index, transcript: turn.text, trigger: 'dropped' })
   }
 
   private retryLater(): void {

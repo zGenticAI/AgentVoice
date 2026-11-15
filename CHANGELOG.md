@@ -13,7 +13,7 @@ The notable changes in each version. The project follows [Semantic Versioning](h
 
 ### Changed
 
-- Briefs are limited to 16,000 characters, `set_brief` included: a longer one is refused, never cut, since its end usually says what must not be shared. Before, `set_brief` took anything.
+- Briefs are limited to 16,000 characters, `set_brief` included: a longer one is refused, never cut, since its end usually says what must not be shared. A `data/brief.md` edited by hand past the limit is not used at all until it is shortened: meetings without a brief of their own answer as if there were none, and the join note, the service log (its length only) and `get_profile` say why. Before, `set_brief` took anything, and the shared brief was used however long it was.
 - One websocket message may hold at most 1 MiB on the bridge and 64 KiB from the bot page; a larger one closes its connection. Before, ws's default of 100 MiB applied.
 - Talking over the assistant pauses it first. It stops only for words, and carries on after a cough, a laugh, or "mm-hm", "yeah", "okay", "right" or "I see". It can now be talked over until the bot page has played the end of an answer. Before, it stopped at the first sound Deepgram turned into a word, and only while the answer was still going out to the page.
 - The transcript says what the meeting heard the assistant say. When it is talked over, told never mind, or asked something new partway through an answer, when its page goes, or when ElevenLabs fails partway through a line, the line keeps only the words the bot page had played, ending in "(cut off)", and a line it never got to is left out. The minutes and the next answers go by it. Before, the transcript had every line in full as soon as the assistant started it.
@@ -31,6 +31,7 @@ The notable changes in each version. The project follows [Semantic Versioning](h
 
 - A `set_brief` whose file couldn't be written (a full disk, say) stopped the service as a crash, ending every meeting. It is now refused, with why.
 - The `[minutes]` log lines named the minutes file, whose name holds the meeting's key, and a failure's message, which can name it too. They now name the bot, and a failure's code only; the owner's session still hears the reason in full.
+- The `[retention]` log line gave a failure's message, which names the file it could not delete, and so the meeting's key. It now gives counts and the error's code only. One file the sweep can't delete no longer stops it: the others still go, and the next sweep tries again.
 - A refused Deepgram connection (a wrong key, no credit left) no longer piles up the meeting's audio in memory for the rest of the meeting, and is not tried again.
 
 ## 0.1.0

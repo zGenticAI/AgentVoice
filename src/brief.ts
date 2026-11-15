@@ -16,7 +16,7 @@ export const MAX_BRIEF_CHARS = 16_000
 /** The shared brief's file name, in the data folder. */
 export const SHARED_BRIEF_FILE = 'brief.md'
 
-/** Which brief a meeting uses: its own, the shared one, or none (the shared one was empty when it joined). */
+/** Which brief a meeting uses: its own, the shared one, or none (the shared one was empty or refused when it joined). */
 export type BriefInUse = 'meeting' | 'shared' | 'none'
 
 /** A brief's text, or '' when there is none. */
@@ -26,6 +26,17 @@ export function readBrief(file: string): string {
   } catch {
     return ''
   }
+}
+
+/**
+ * The shared brief as meetings use it: its text, or none and why (tooLong) when it is longer than a brief may be.
+ * set_brief refuses a longer one, but data/brief.md can be edited by hand, so it is checked as it is read: refused,
+ * never cut, like any other brief.
+ */
+export function readSharedBrief(file: string): { text: string; tooLong: string } {
+  const text = readBrief(file)
+  const tooLong = briefTooLong(text)
+  return tooLong ? { text: '', tooLong } : { text, tooLong: '' }
 }
 
 /** Why this can't be a meeting's brief, or '' if it can. */

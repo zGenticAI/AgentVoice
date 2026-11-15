@@ -58,6 +58,8 @@ export interface Verdict {
   readonly duringConsent: boolean
   /** It went to the owner's session. */
   handed: boolean
+  /** Its answer was stopped by the consent line coming due: it was asked just before the line. */
+  byConsent?: boolean
   /** For a line not taken: a window that had closed less than CLOSED_WINDOW_SHOWN_MS before it. */
   readonly window?: ClosedWindow
 }
@@ -94,7 +96,9 @@ const OUTCOMES: Record<Outcome, (v: Verdict) => string> = {
   session_answered: () => `${HANDED}, and said its answer.`,
   no_session_answer: () => `${HANDED}, but no answer came in time (or no session was linked), so ${NAME} said it couldn't reach ${OWNER}'s notes.`,
   cut_off: v =>
-    `${NAME} stopped before it finished: it was talked over, told never mind, asked something else, or its page went.` +
+    (v.byConsent
+      ? `${NAME} stopped before it finished: the consent line came due as it answered, and took its place. The line was not answered after it.`
+      : `${NAME} stopped before it finished: it was talked over, told never mind, asked something else, or its page went.`) +
     (v.handed ? ` It had handed the question to ${OWNER}'s session: an answer that came after is kept, so asking again gets it at once.` : ''),
   replaced: () =>
     'Asked during the consent line, and dropped before the line was over: something said after it took its place (another question, or never mind), ' +

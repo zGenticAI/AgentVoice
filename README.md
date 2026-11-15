@@ -163,7 +163,7 @@ See [Ports and security](docs/security.md). To report a vulnerability, see [SECU
 
 - Meetings in English only, and macOS and Linux only.
 - One owner per install, and one Claude Code session takes the questions.
-- A meeting's own brief is set when Alex joins, and can't be replaced during the meeting: the session adds to it with `add_to_brief`. A brief is at most 16,000 characters.
+- A meeting's own brief is set when Alex joins, and can't be replaced during the meeting: the session adds to it with `add_to_brief`. A brief is at most 16,000 characters: a longer one is refused, never cut, `data/brief.md` edited by hand included.
 - Alex hears the meeting but doesn't see it: it can't see shared screens or video, and doesn't read the meeting chat.
 - Everyone but Alex is "Speaker" in the transcript and the minutes, so it doesn't know who said what.
 - It misses some lines on purpose, rather than answer remarks that weren't for it. It also can't tell a colleague with the same name from itself.

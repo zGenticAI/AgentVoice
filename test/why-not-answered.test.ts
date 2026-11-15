@@ -47,6 +47,9 @@ class FakeFlux extends EventEmitter {
   endTurn(text: string) {
     this.emit('turn', { type: 'TurnInfo', event: 'EndOfTurn', turn_index: 0, transcript: text })
   }
+  startTurn(text = '') {
+    this.emit('turn', { type: 'TurnInfo', event: 'StartOfTurn', turn_index: 0, transcript: text })
+  }
 }
 
 let meetings = 0
@@ -63,6 +66,12 @@ interface SetupOptions {
   reconnectMs?: number
   /** How long the consent line takes to go out (ms). */
   consentMs?: number
+  /** How long an answer plays on the page (ms): all of it goes out at once, as ElevenLabs sends faster than it plays. */
+  answerMs?: number
+  /** How long Claude takes to start answering (ms). */
+  replyMs?: number
+  /** ElevenLabs fails partway through each answer. */
+  speakFails?: boolean
 }
 
 /** A session on a fake page, Flux and Recall, ended after the test even if it fails. */
@@ -72,6 +81,7 @@ function setup(t: Ctx, reply: Reply, opts: SetupOptions = {}) {
   const meetingKey = `why-${process.pid}-${++meetings}`
   const brain = {
     async *respond({ latest }: { latest: string }): AsyncGenerator<BrainEvent> {
+      if (opts.replyMs) await sleep(opts.replyMs)
       const said = reply(latest)
       yield said === null ? { kind: 'ask_session', question: latest } : typeof said === 'string' ? { kind: 'say', text: said } : said
     },
@@ -83,7 +93,9 @@ function setup(t: Ctx, reply: Reply, opts: SetupOptions = {}) {
     flux: () => flux as any,
     speak: async function* (text: string) {
       if (text === JOIN_LINE && opts.consentMs) await sleep(opts.consentMs)
-      yield Buffer.from([0, 1])
+      // 16 kHz 16-bit: 32 bytes a millisecond.
+      yield text !== JOIN_LINE && opts.answerMs ? Buffer.alloc(opts.answerMs * 32) : Buffer.from([0, 1])
+      if (text !== JOIN_LINE && opts.speakFails) throw new Error('ElevenLabs: busy')
     },
     recall: {
       sendChat: async () => {},
@@ -241,6 +253,55 @@ test('a line heard with the page away is not answered, and says so', async t => 
   assert.deepEqual(s.verdicts(), ['asked/answered', 'page_away/nothing'])
   assert.match(s.why(1).lines![0].why, /bot page was reconnecting/)
   assert.doesNotMatch(s.why(1).lines![0].why, /but that closed/, 'with the page away, no window would have taken it')
+})
+
+test('an answer the page is still playing when its turn has ended is cut off when talked over or told never mind, as the transcript says', async t => {
+  const answer = 'The pilot starts in March, and the rollout follows in May.'
+  const s = setup(t, () => answer, { answerMs: 5000 })
+  s.flux.endTurn('Alex, when does the pilot start?')
+  await settle()
+  assert.deepEqual(s.verdicts(), ['asked/answered'], 'all of it has gone out, and the turn is over: the page plays on')
+  s.flux.startTurn()
+  s.flux.endTurn('Hold on, that is wrong.')
+  await settle()
+  assert.deepEqual(s.verdicts(), ['asked/cut_off', 'no_name/nothing'])
+  assert.match(s.why(2).lines![0].why, /stopped before it finished: it was talked over, told never mind/)
+  assert.ok(!s.session.transcript.recent().includes(answer), 'the transcript has only what the meeting heard')
+
+  const u = setup(t, () => answer, { answerMs: 5000 })
+  u.flux.endTurn('Alex, when does the pilot start?')
+  await settle()
+  u.flux.endTurn('Alex, never mind.')
+  await settle()
+  assert.deepEqual(u.verdicts(), ['asked/cut_off', 'cancel/stopped'])
+
+  // An answer ElevenLabs failed partway through says so, and a clear after does not make it a cut off one.
+  t.mock.method(console, 'error', () => {})
+  const v = setup(t, () => answer, { answerMs: 5000, speakFails: true })
+  v.flux.endTurn('Alex, when does the pilot start?')
+  await settle()
+  assert.deepEqual(v.verdicts(), ['asked/failed'])
+  v.flux.endTurn('Alex, never mind.')
+  await settle()
+  assert.deepEqual(v.verdicts(), ['asked/failed', 'cancel/stopped'])
+
+  // One the page played to the end stays answered, whatever is said after.
+  const w = setup(t, () => answer, { answerMs: 20 })
+  w.flux.endTurn('Alex, when does the pilot start?')
+  await sleep(150)
+  w.flux.endTurn('Alex, never mind.')
+  await settle()
+  assert.deepEqual(w.verdicts(), ['asked/answered', 'cancel/stopped'])
+})
+
+test('a question asked just before the consent line, whose answer the line stops, says the consent line took its place', async t => {
+  const s = setup(t, () => 'Yes, I can hear you.', { greetDelayMs: 100, replyMs: 150 })
+  s.flux.endTurn('Hi Alex, can you hear us?')
+  await sleep(300)
+  assert.deepEqual(s.verdicts(), ['asked/cut_off'])
+  const { why } = s.why(1).lines![0]
+  assert.match(why, /stopped before it finished: the consent line came due as it answered, and took its place\. The line was not answered after it\./)
+  assert.doesNotMatch(why, /talked over/)
 })
 
 test('a turn that fails says so, and one Claude declines says so', async t => {
@@ -402,7 +463,7 @@ async function fakeService(t: Ctx, dir: string, features: string[] | null) {
       ws.send(JSON.stringify({ type: 'verdicts', request_id: msg.request_id, ...answer }))
     })
   })
-  return { socketPath, got }
+  return { socketPath, got, wss }
 }
 
 /** The real channel server as a subprocess, on a data folder and a socket of the test's. */
@@ -450,6 +511,13 @@ test('why_not_answered in the channel: the lines as JSON with the untrusted note
     [{ lines: 3, meeting: 'k1' }, { lines: undefined, meeting: undefined }, { lines: undefined, meeting: 'k-left' }],
   )
   assert.equal(service.got.some(m => m.type === 'claim'), false, 'not a claim')
+  // A tool that claims the questions says so only when the link comes back (the voice service restarted): drop it.
+  const hellos = service.got.filter(m => m.type === 'hello').length
+  for (const ws of service.wss.clients) ws.terminate()
+  await until(() => service.got.filter(m => m.type === 'hello').length > hellos, 500)
+  assert.ok(service.got.filter(m => m.type === 'hello').length > hellos, 'linked again')
+  await sleep(300)
+  assert.equal(service.got.some(m => m.type === 'claim'), false, 'not a claim, even after a relink')
 })
 
 test('why_not_answered says to restart a voice service older than the channel, rather than wait for it', { timeout: 30_000 }, async t => {

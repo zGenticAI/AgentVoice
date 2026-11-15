@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { type TestContext, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -6,6 +6,7 @@ import path from 'node:path'
 import { MINUTES_MAX_TOKENS, MINUTES_TIMEOUT_MS, type MinutesClient, type MinutesInput, minutesFile, minutesThinking, writeMinutes } from '../src/minutes.ts'
 import { MINUTES_DIR, PROBE_DIR, RECORD_DIRS, TRANSCRIPTS_DIR, sweepOldRecords } from '../src/transcript.ts'
 import { config } from '../src/config.ts'
+import { sweep } from '../src/server.ts'
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'alex-minutes-'))
 
@@ -139,7 +140,7 @@ test('the retention sweep deletes old minutes and transcripts, and keeps recent 
   }
   fs.mkdirSync(path.join(minutes, 'a-folder'))
   fs.utimesSync(path.join(minutes, 'a-folder'), old, old)
-  assert.equal(sweepOldRecords(now, [transcripts, minutes]), 2)
+  assert.deepEqual(sweepOldRecords(now, [transcripts, minutes]), { removed: 2, failed: 0, code: '' })
   assert.deepEqual(fs.readdirSync(minutes).sort(), ['a-folder', 'new.md'])
   assert.deepEqual(fs.readdirSync(transcripts), ['new.md'])
 })
@@ -156,9 +157,38 @@ test("the retention sweep covers the minutes and the speaker probe's measurement
     return file
   })
   try {
-    assert.equal(sweepOldRecords(2_000_000 + config.retentionDays * 86_400_000), 3)
+    assert.equal(sweepOldRecords(2_000_000 + config.retentionDays * 86_400_000).removed, 3)
     for (const file of planted) assert.equal(fs.existsSync(file), false, `${file} is swept`)
   } finally {
     for (const file of planted) fs.rmSync(file, { force: true })
   }
+})
+
+test("a file the retention sweep can't delete is logged by its error's code only, never by its name, which holds the meeting's key; the others still go", (t: TestContext) => {
+  const transcripts = tmp()
+  const probe = tmp()
+  const old = (Date.now() - (config.retentionDays + 1) * 86_400_000) / 1000
+  const stuck = path.join(transcripts, '2026-10-25-14-02-SECRETKEY123.md')
+  const others = [path.join(transcripts, '2026-10-25-15-00-OTHERKEY456.md'), path.join(probe, '2026-10-25-14-02-SECRETKEY123.json')]
+  for (const file of [stuck, ...others]) {
+    fs.writeFileSync(file, 'old')
+    fs.utimesSync(file, old, old)
+  }
+  // As a read-only disk or an immutable file would: Node's message names the file.
+  const rmSync = fs.rmSync
+  t.mock.method(fs, 'rmSync', (file: fs.PathLike, opts?: fs.RmOptions) => {
+    if (file === stuck) throw Object.assign(new Error(`EPERM: operation not permitted, unlink '${stuck}'`), { code: 'EPERM', path: stuck })
+    return rmSync(file, opts)
+  })
+  const logged: string[] = []
+  for (const level of ['log', 'warn', 'error'] as const) t.mock.method(console, level, (...args: unknown[]) => void logged.push(args.map(String).join(' ')))
+  sweep(Date.now(), [transcripts, probe])
+  t.mock.restoreAll()
+  assert.deepEqual(fs.readdirSync(transcripts), [path.basename(stuck)])
+  assert.deepEqual(fs.readdirSync(probe), [], "the speaker probe's folder is swept all the same")
+  assert.deepEqual(logged, [
+    `[retention] deleted 2 transcript, minutes and speaker-probe files older than ${config.retentionDays} days`,
+    `[retention] could not delete 1 file older than ${config.retentionDays} days (EPERM): the next sweep, within the hour, tries again`,
+  ])
+  for (const line of logged) assert.ok(!/SECRETKEY|OTHERKEY/.test(line) && !line.includes(transcripts), line)
 })

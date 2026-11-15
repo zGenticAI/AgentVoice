@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import { Brain } from './brain/brain.ts'
 import { type BriefFor, SERVICE_FEATURES, SessionBridge } from './bridge.ts'
-import { type BriefInUse, MAX_BRIEF_CHARS, SHARED_BRIEF_FILE, briefProblem, briefTooLong, readBrief } from './brief.ts'
+import { type BriefInUse, MAX_BRIEF_CHARS, SHARED_BRIEF_FILE, briefProblem, briefTooLong, readSharedBrief } from './brief.ts'
 import { ROOT, config, publicUrlProblem, recallRegionProblem, retiredSettings } from './config.ts'
 import { FIXED_LINES } from './consent.ts'
 import { prepareControlSocket } from './control-socket.ts'
@@ -39,7 +39,7 @@ import * as recall from './recall.ts'
 import { type LiveSession, sessionHandlers } from './sessions.ts'
 import { MAX_RECALL_MESSAGE_BYTES, RecallEvents } from './speakers/connection.ts'
 import { PROBE_OFF, PROBE_ON, SpeakerProbe } from './speakers/probe.ts'
-import { sweepOldRecords } from './transcript.ts'
+import { RECORD_DIRS, sweepOldRecords } from './transcript.ts'
 
 const PUBLIC_DIR = path.join(ROOT, 'public')
 // What the meeting bot loads through the tunnel, besides the agent page: its scripts.
@@ -360,8 +360,19 @@ interface Meeting<S> {
 export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps: ServiceDeps<S>): Service<S> {
   const served = botFiles(cfg.agentPage ?? loadAgentPage('', identity).page)
   const briefFile = path.join(cfg.dataDir, SHARED_BRIEF_FILE)
-  // The shared brief, read again at every answer, for the meetings without one of their own.
-  const sharedBrief = () => readBrief(briefFile)
+  // The shared brief, read again at every answer and for the minutes, for the meetings without one of their own. One
+  // edited by hand to more than a brief may hold is refused, never cut (its end often says what must not be shared):
+  // those meetings answer as with no brief until it is shortened. The log says so once for each length it has, with
+  // the count only.
+  let refusedSaid = ''
+  const sharedBrief = () => {
+    const { text, tooLong } = readSharedBrief(briefFile)
+    if (tooLong && tooLong !== refusedSaid) {
+      console.error(`[brief] the shared brief (${SHARED_BRIEF_FILE}) is refused, so meetings without a brief of their own answer as with none. ${tooLong}`)
+    }
+    refusedSaid = tooLong
+    return text
+  }
   const pendingFile = path.join(cfg.dataDir, PENDING_BOTS_FILE)
   const backoff = cfg.leaveBackoffMs?.length ? cfg.leaveBackoffMs : LEAVE_BACKOFF_MS
   // Meetings started through /api/join or join_meeting, keyed by the random key in the bot page URL, until their
@@ -647,6 +658,10 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
   function briefNote(brief: BriefInUse): string {
     if (brief === 'meeting') return `It answers from the brief given for this meeting, and no other meeting sees it.`
     if (brief === 'shared') return `It answers from the shared brief (${briefFile}), read again at every answer.`
+    const { tooLong } = readSharedBrief(briefFile)
+    if (tooLong) {
+      return `There is no brief: the shared brief (${briefFile}) is refused. ${tooLong} Until then, it answers from ${identity.owner}'s profile alone, and hands the rest to ${identity.owner}'s session.`
+    }
     return `There is no brief (${briefFile} is empty, and none was given for this meeting): it answers from ${identity.owner}'s profile alone, and hands the rest to ${identity.owner}'s session.`
   }
 
@@ -1035,13 +1050,18 @@ export function stopper<S>(
 
 // --- The service itself (npm start, launchd, systemd) ----------------------------------------------------
 
-// At start and then hourly, since the service runs for weeks: the chat notice promises the deletion.
-function sweep(): void {
+/**
+ * At start and then hourly, since the service runs for weeks: the chat notice promises the deletion. The log has counts
+ * and an error's code only: the files' names hold their meetings' keys, and nothing deletes the log.
+ */
+export function sweep(now = Date.now(), dirs: readonly string[] = RECORD_DIRS): void {
   try {
-    const removed = sweepOldRecords()
+    const { removed, failed, code } = sweepOldRecords(now, dirs)
     if (removed) console.log(`[retention] deleted ${removed} transcript, minutes and speaker-probe files older than ${config.retentionDays} days`)
+    if (failed) console.error(`[retention] could not delete ${failed} file${failed === 1 ? '' : 's'} older than ${config.retentionDays} days (${code}): the next sweep, within the hour, tries again`)
   } catch (err) {
-    console.error('[retention]', (err as Error).message)
+    const code = (err as NodeJS.ErrnoException)?.code
+    console.error(`[retention] the sweep failed (${typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'error'})`)
   }
 }
 

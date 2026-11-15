@@ -396,6 +396,8 @@ test("Recall's connection is pinged, and cut once it has been silent too long", 
   const silent = await recallLink(s.publicPort, recallPath(s.eventsOf(1).key, s.eventsOf(1).token), { autoPong: false })
   assert.deepEqual(await closedWithin(silent), { code: 1006, reason: '' }, 'cut off')
   assert.ok(pings >= 3, `${pings} pings`)
+  // Past the answering one's own deadline too, and a ping after it: only its pongs keep it open.
+  await wait(300)
   assert.equal(answers.ws.readyState, WebSocket.OPEN, 'one that answers stays')
   const closing = s.service.close()
   assert.deepEqual(await closedWithin(answers), { code: 1006, reason: '' }, "closing the service cuts Recall's connections")

@@ -17,8 +17,8 @@ class FakeDeepgram extends EventEmitter {
   open() {
     this.emit('open')
   }
-  turn(event: string, transcript: string) {
-    this.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event, turn_index: 0, transcript })), false)
+  turn(event: string, transcript: string, more: object = {}) {
+    this.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event, turn_index: 0, transcript, ...more })), false)
   }
   drop(code = 1011) {
     this.emit('close', code, Buffer.from(''))
@@ -73,27 +73,51 @@ test('with trackAudio, a point of the stream maps to when its audio came in, tak
   assert.equal(stream.streamSeconds(), 0.32)
 })
 
-test("a turn cut off by its stream dropping still maps through that stream's times; the next stream counts from 0", t => {
+test("a turn cut off by its stream dropping ends with its latest times, which map through that stream's; the next stream counts from 0", t => {
   const tick = fakeTime(t)
   const { stream, last } = flux(true)
   last().open()
-  stream.send(frame())
-  tick(80)
-  stream.send(frame())
-  last().turn('StartOfTurn', 'Alpha here')
-  let mapped: number | null = null
-  stream.on('turn', (turn: TurnInfo) => {
-    if (turn.trigger === 'dropped') mapped = stream.audioTime(0.16)
+  // 1.6 s of the stream, a frame every 80 ms: second s of it came in at 999,920 + s * 1000 (each piece as its last sample).
+  for (let i = 0; i < 20; i++) {
+    stream.send(frame())
+    tick(80)
+  }
+  last().turn('StartOfTurn', 'Alpha here', { audio_window_start: 0.4, audio_window_end: 0.8, words: [{ word: 'Alpha', start: 0.48, end: 0.8 }] })
+  last().turn('Update', 'Alpha here is', {
+    audio_window_start: '0.4',
+    audio_window_end: '1.2',
+    words: [{ word: 'Alpha', confidence: 0.9, start: 0.48, end: 0.8 }, { word: 'here', start: '0.8', end: '1.12' }],
   })
+  const dropped: TurnInfo[] = []
+  stream.on('turn', (turn: TurnInfo) => void (turn.trigger === 'dropped' && dropped.push(turn)))
   last().drop()
-  assert.equal(mapped, 1_000_080)
+  // The Update's times, and only times: its words are in the transcript already.
+  assert.deepEqual(dropped, [
+    {
+      type: 'TurnInfo',
+      event: 'EndOfTurn',
+      turn_index: 0,
+      transcript: 'Alpha here is',
+      trigger: 'dropped',
+      audio_window_start: '0.4',
+      audio_window_end: '1.2',
+      words: [{ start: 0.48, end: 0.8 }, { start: '0.8', end: '1.12' }],
+    },
+  ])
+  // As MeetingSession.measure reads it: the first word's start and the last word's end, else the audio window.
+  const [turn] = dropped
+  const at = (seconds: unknown) => stream.audioTime(Number(seconds))
+  assert.equal(at(turn.words?.[0]?.start), 1_000_400)
+  assert.equal(at(turn.words?.at(-1)?.end), 1_001_040)
+  assert.equal(at(turn.audio_window_start), 1_000_320)
+  assert.equal(at(turn.audio_window_end), 1_001_120)
   // The next audio opens another stream: its times start again.
   tick(1000)
   stream.send(frame())
   tick(0)
   assert.equal(stream.audioTime(0.16), null)
   last().open()
-  assert.equal(stream.audioTime(0.08), 1_001_080)
+  assert.equal(stream.audioTime(0.08), 1_002_600)
   assert.equal(stream.streamSeconds(), 0.08)
 })
 

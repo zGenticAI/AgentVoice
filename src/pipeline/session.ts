@@ -341,6 +341,10 @@ export class MeetingSession {
   // What Alex did with the latest lines, and why, for the owner's why_not_answered. In memory only, never logged,
   // and gone with the transcript.
   private readonly verdicts = new Verdicts()
+  // The verdict of the line each answer's turn is for (by the turn's signal), and of the line each of Alex's lines
+  // answers: a line the page stops short marks its verdict cut_off, even once its turn is over (see the Playback).
+  private readonly turnVerdicts = new WeakMap<AbortSignal, Verdict>()
+  private readonly lineVerdicts = new WeakMap<Line, Verdict>()
 
   constructor(
     ws: WebSocket,
@@ -350,7 +354,14 @@ export class MeetingSession {
     this.over = new Promise(resolve => (this.resolveOver = resolve))
     this.transcript = new Transcript(opts.meetingKey)
     this.clock = deps.clock ?? Date.now
-    this.playback = new Playback((line, text) => this.transcript.amend(line, text), this.clock)
+    // A line of an answer that the meeting did not hear to the end (talked over, told never mind, its page gone) was cut
+    // off, even when its turn had ended: ElevenLabs sends an answer faster than the page plays it. Not one that failed:
+    // that says more.
+    this.playback = new Playback((line, text) => {
+      this.transcript.amend(line, text)
+      const heard = this.lineVerdicts.get(line)
+      if (heard && heard.outcome !== 'failed') heard.outcome = 'cut_off'
+    }, this.clock)
     this.recall = deps.recall ?? recall
     // The speaker probe needs to know when the audio of each word came in: nothing of it is kept otherwise.
     this.flux = deps.flux ? deps.flux() : new FluxStream(deps.speakerProbe ? { trackAudio: true } : undefined)
@@ -603,6 +614,10 @@ export class MeetingSession {
     // A pause under way ends first (the page plays what it held), so the consent line never waits behind a paused page.
     this.endWatch()
     this.consent = 'saying'
+    // An answer still going to a line asked just before the line came due: the consent line takes its place (runTurn
+    // stops it), and why_not_answered says that, not one of the other ways an answer is cut off.
+    const replaced = this.turn && !this.turn.signal.aborted ? this.turnVerdicts.get(this.turn.signal) : undefined
+    if (replaced) replaced.byConsent = true
     const greeting = this.runTurn(async signal => {
       const complete = await this.say(JOIN_LINE, signal)
       // Not when it was stopped: by then the timings may already be the goodbye's.
@@ -774,6 +789,7 @@ export class MeetingSession {
     }
     await this.runTurn(async signal => {
       this.lastSaid = ''
+      this.turnVerdicts.set(signal, heard)
       try {
         await this.answer(text, signal, heard)
       } catch (err) {
@@ -900,6 +916,9 @@ export class MeetingSession {
     const line = this.transcript.add(identity.name, text, 'agent')
     // Not once the transcript is gone (the goodbye): there is nothing to correct.
     const playing = line ? this.playback.begin(line, text) : null
+    // The line it answers, if any (not the consent line): told if the page stops this one short.
+    const heard = this.turnVerdicts.get(signal)
+    if (line && heard) this.lineVerdicts.set(line, heard)
     // Whether every piece of the line went out to the page.
     let complete = false
     // When the turn stops (a new question, say), the line keeps the words its audio got to at once, before the next
@@ -966,9 +985,12 @@ export class MeetingSession {
     })
   }
 
-  /** Tells the speaker probe until when Alex's voice will play, as it goes out or plays on after a pause. */
+  /**
+   * Tells the speaker probe until when Alex's voice will play, as it goes out or plays on after a pause. Not while the
+   * page is paused: what goes out then is held, and plays only if the page resumes (resumePage tells the probe then).
+   */
   private alexPlays(): void {
-    if (!this.leaving) this.deps.speakerProbe?.agentAudio(this.clock(), this.playback.playsUntil)
+    if (!this.leaving && !this.playback.paused) this.deps.speakerProbe?.agentAudio(this.clock(), this.playback.playsUntil)
   }
 
   /** Tells the speaker probe Alex's voice stopped: the page was paused or cleared. */

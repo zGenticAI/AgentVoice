@@ -95,6 +95,7 @@ function setup(
     speak?: (text: string, signal?: AbortSignal) => AsyncGenerator<Buffer>
     meetingKey?: string
     clock?: () => number
+    reconnectMs?: number
   } = {},
 ) {
   const ws = new FakeSocket()
@@ -121,6 +122,7 @@ function setup(
       sttFlushMs: 20,
       leaveDelayMs: 0,
       clock: o.clock,
+      reconnectMs: o.reconnectMs,
       speakerProbe: o.probe as never,
     },
   )
@@ -198,6 +200,62 @@ test('a pause for a cough is an end of Alex\'s voice for the probe, and playing 
   session.end()
   await settle()
   session.transcript.delete()
+})
+
+/** Alex's voice as the probe has it: each stretch it plays, start to end (epoch ms). */
+const alexOf = (probe: SpeakerProbe) => (probe as unknown as { state: { alex: { start: number; end: number }[] } }).state.alex.map(a => ({ ...a }))
+
+test("what goes out while the page is paused is not Alex's voice unless the page resumes: after a resume, a clear or a drop, it stopped at the pause", async t => {
+  // 4 s of voice sent in 0.6 s, as ElevenLabs sends faster than the page plays: much of it goes out while paused.
+  const fast = async function* (_text: string, signal?: AbortSignal) {
+    for (let i = 0; i < 40 && !signal?.aborted; i++) {
+      yield Buffer.alloc(3200)
+      await settle(15)
+    }
+  }
+  const meeting = (reconnectMs?: number) => {
+    const probe = new SpeakerProbe({ platform: 'zoom', botName: 'Alex', dir: tempDir(t) })
+    const s = setup({ probe, events: [{ kind: 'say', text: 'A long answer about the rollout.' }], speak: fast, reconnectMs })
+    t.after(() => (s.session.end(), s.session.transcript.delete()))
+    return { ...s, probe }
+  }
+  /** Alex answers, then someone coughs over it: the page pauses, and more goes out for 200 ms. When it paused. */
+  const paused = async (m: ReturnType<typeof meeting>) => {
+    m.flux.turn('EndOfTurn', 'Alex, tell me about the rollout')
+    await until(() => alexOf(m.probe).length > 0)
+    await settle(60)
+    const from = Date.now()
+    m.flux.turn('StartOfTurn', 'mm')
+    const to = Date.now()
+    await settle(200)
+    const [only, ...more] = alexOf(m.probe)
+    assert.deepEqual(more, [], 'nothing more while paused')
+    assert.ok(only.end >= from && only.end <= to, `it stopped at the pause, not ${only.end - to} ms after it`)
+    return to
+  }
+
+  // Resumed: up to the pause, then again from the resume.
+  const resumed = meeting()
+  const pause = await paused(resumed)
+  const resumedAt = Date.now()
+  resumed.flux.turn('EndOfTurn', 'mm-hm')
+  const [before, after] = alexOf(resumed.probe)
+  assert.ok(before.end <= pause)
+  assert.ok(after && after.start >= resumedAt && after.end > after.start, 'its voice again once the page plays on')
+
+  // Cleared while paused (words after the cough): it stopped at the pause, not at the clear.
+  const cleared = meeting()
+  const clearPause = await paused(cleared)
+  cleared.flux.turn('Update', 'Wait, hold on')
+  assert.ok(alexOf(cleared.probe).every(a => a.end <= clearPause), JSON.stringify(alexOf(cleared.probe)))
+
+  // The page drops while paused: it played nothing after the pause.
+  const dropped = meeting(60_000)
+  const dropPause = await paused(dropped)
+  dropped.ws.readyState = 3
+  dropped.ws.emit('close', 1006, Buffer.from(''))
+  await settle(100)
+  assert.ok(alexOf(dropped.probe).every(a => a.end <= dropPause), JSON.stringify(alexOf(dropped.probe)))
 })
 
 test('"Alex, please leave" discards what the probe measured, tells it nothing more, and never writes its file', async () => {

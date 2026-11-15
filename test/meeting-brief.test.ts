@@ -209,6 +209,22 @@ test("get_profile gives a meeting's own brief, the shared one, or none, and neve
   assert.match(none.note, /answer only from about, say anything else is one for Sam to follow up on/)
 })
 
+test('get_profile refuses a shared brief edited by hand past the limit, never cutting it, and says why and what to do instead', t => {
+  const dir = tempDir(t)
+  const file = path.join(dir, 'brief.md')
+  fs.writeFileSync(file, `# Shared\n${'x'.repeat(MAX_BRIEF_CHARS)}\nNever share the price.`)
+  const view = JSON.parse(profileText(identity, loadProfile(), { for: 'shared', file }))
+  assert.deepEqual([view.brief, view.brief_for, view.brief_file], [null, 'shared', file], 'none of it, not the start of it')
+  assert.match(view.brief_error, /The brief is 16032 characters, more than the 16000 a brief may have: shorten it \(it is never cut/)
+  assert.match(view.note, /the shared brief is refused \(brief_error\).*Use no other brief in its place.*answer only from about.*tell Sam to shorten it/)
+  // At the limit it is the brief, with no error.
+  fs.writeFileSync(file, 'x'.repeat(MAX_BRIEF_CHARS))
+  const fits = JSON.parse(profileText(identity, loadProfile(), { for: 'shared', file }))
+  assert.equal(fits.brief.length, MAX_BRIEF_CHARS)
+  assert.equal(fits.brief_error, undefined)
+  assert.doesNotMatch(fits.note, /refused/)
+})
+
 // --- Through the service --------------------------------------------------------------------------------------------
 
 test('a meeting joined with its own brief answers from it whatever the shared brief says, keeps it in memory only, and once over has no brief at all', async t => {
@@ -250,6 +266,40 @@ test('a meeting joined with its own brief answers from it whatever the shared br
   assert.ok(logged.some(line => /^\[join\] bot bot-1 is joining a Zoom meeting, with a brief of its own$/.test(line)), logged.join('\n'))
   assert.ok(logged.some(line => /^\[join\] bot bot-2 is joining a Zoom meeting$/.test(line)))
   for (const line of logged) assert.ok(!line.includes('pilot') && !line.includes('Acme'), line)
+})
+
+test('a shared brief edited by hand past the limit is refused, never cut: meetings answer as with none, the join says why, and the log has its length only', async t => {
+  const logged: string[] = []
+  for (const level of ['log', 'warn', 'error'] as const) t.mock.method(console, level, (...args: unknown[]) => void logged.push(args.map(String).join(' ')))
+  const s = await start(t)
+  const file = path.join(s.dataDir, 'brief.md')
+  const long = `# Shared\n${'x'.repeat(MAX_BRIEF_CHARS)}\nNever share the price.`
+  fs.writeFileSync(file, long)
+  const joined = await join(s, { meetingUrl: ZOOM })
+  assert.equal(joined.status, 200, joined.body)
+  assert.equal(JSON.parse(joined.body).brief, 'none')
+  assert.match(
+    JSON.parse(joined.body).brief_note,
+    /^There is no brief: the shared brief \(.*brief\.md\) is refused\. The brief is 16032 characters, more than the 16000 a brief may have: shorten it \(it is never cut.*\)\. Until then, it answers from Sam's profile alone/,
+  )
+  await openPage(s.publicPort, s.keyOf(0))
+  await until(() => s.started.length === 1)
+  const [session] = s.started
+  // Its answers and its minutes read this: none of the brief, not the start of it.
+  assert.equal(session.brief(), '')
+  assert.equal(session.brief(), '')
+  // Shortened, it is the brief again from the next answer.
+  fs.writeFileSync(file, '# Shared\nShort.')
+  assert.equal(session.brief(), '# Shared\nShort.')
+  fs.writeFileSync(file, `${long}!`)
+  assert.equal(session.brief(), '')
+  t.mock.restoreAll()
+  const refused = logged.filter(line => line.startsWith('[brief]'))
+  assert.equal(refused.length, 2, `once for each length it had, not at every answer:\n${refused.join('\n')}`)
+  assert.match(refused[0], /^\[brief\] the shared brief \(brief\.md\) is refused, so meetings without a brief of their own answer as with none\. The brief is 16032 characters/)
+  assert.match(refused[1], /The brief is 16033 characters/)
+  for (const line of logged) assert.ok(!line.includes('price') && !line.includes('xxxx'), line)
+  for (const line of refused) assert.ok(!line.includes(s.dataDir), line)
 })
 
 test('a join with a brief that is too long, empty or not text starts no bot, by /api/join or the bridge; the longest brief fits in a request', async t => {
@@ -522,7 +572,7 @@ async function fakeService(t: Ctx, dir: string, features: string[] | null, opts:
       }
     })
   })
-  return { socketPath, got }
+  return { socketPath, got, wss }
 }
 
 /** The real channel server as a subprocess, on a data folder and a socket of the test's. */
@@ -585,6 +635,13 @@ test("get_profile with a meeting key asks the voice service for that meeting's b
     ['k-own', 'k-shared', 'k-gone'],
   )
   assert.equal(service.got.some(m => m.type === 'claim'), false, 'reading the profile takes no questions')
+  // A tool that claims the questions says so only when the link comes back (the voice service restarted): drop it.
+  const hellos = service.got.filter(m => m.type === 'hello').length
+  for (const ws of service.wss.clients) ws.terminate()
+  await until(() => service.got.filter(m => m.type === 'hello').length > hellos, 500)
+  assert.ok(service.got.filter(m => m.type === 'hello').length > hellos, 'linked again')
+  await wait(300)
+  assert.equal(service.got.some(m => m.type === 'claim'), false, 'reading the profile takes no questions, even after a relink')
 
   // An older service, which never says what it can do, would not answer: no brief, and it is not asked.
   const old = await fakeService(t, dir, null)
