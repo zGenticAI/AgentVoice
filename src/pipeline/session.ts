@@ -106,19 +106,19 @@ const LEAVE_MARGIN_MS = 500
 // Someone who starts talking over Alex pauses it at once (see turnStarted). With no words yet that stop it, the page
 // resumes after this long, so a cough Deepgram is slow to end the turn on doesn't leave the meeting in silence. The
 // turn is still watched after that: words that come later still stop Alex.
-const PAUSE_MAX_MS = 1500
+export const PAUSE_MAX_MS = 1500
 // Speech that starts with no more than this much of the line left to play, and nothing more going out, neither pauses
 // nor stops Alex: it is someone answering as a question ends. Pausing would cut the last word, and lose the reply.
-const TAIL_MS = 400
+export const TAIL_MS = 400
 // How many words that count (wordsThatCount: not a filler, not "mm-hm", "yeah" or "I see", and the name always) stop
 // Alex: 2 while the turn goes on, since Deepgram may still be partway through it, and 1 once it has ended. A single
 // stray word is often noise.
-const STOP_WORDS_PARTIAL = 2
-const STOP_WORDS_FINAL = 1
+export const STOP_WORDS_PARTIAL = 2
+export const STOP_WORDS_FINAL = 1
 // When the page drops, a turn someone is in the middle of is left open this long, so a page back within it keeps the
 // turn whole. Then it is ended on the words heard so far (ForceEndTurn): Deepgram drops a turn left open when it closes
 // a stream that gets no audio (after about 10 s).
-const STT_HOLD_MS = 3000
+export const STT_HOLD_MS = 3000
 // A clear or a pause sent this long before the page was last heard from may still have been lost in a drop: the way to
 // the page can die a little before the way from it. About one heartbeat.
 const STOP_LOST_MARGIN_MS = 1000

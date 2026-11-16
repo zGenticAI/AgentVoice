@@ -66,6 +66,11 @@ export function fluxUrl(opts: { eotThreshold?: number; keyterms?: string[] } = {
   return `wss://api.deepgram.com/v2/listen?${params}`
 }
 
+/** The headers that carry the key on the Flux handshake: the key goes here, never in the address. */
+export function fluxHeaders(key: string): Record<string, string> {
+  return { Authorization: `Token ${key}` }
+}
+
 export type TurnEvent = 'Update' | 'StartOfTurn' | 'EagerEndOfTurn' | 'TurnResumed' | 'EndOfTurn'
 
 export interface TurnInfo {
@@ -210,7 +215,7 @@ export class FluxStream extends EventEmitter<FluxEvents> {
     }
     this.connect =
       opts.connect ??
-      (url => new WebSocket(url, { headers: { Authorization: `Token ${key}` }, handshakeTimeout: FLUX_OPEN_TIMEOUT_MS }))
+      (url => new WebSocket(url, { headers: fluxHeaders(key), handshakeTimeout: FLUX_OPEN_TIMEOUT_MS }))
     this.trackAudio = opts.trackAudio === true
     this.dial()
   }

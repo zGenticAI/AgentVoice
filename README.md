@@ -181,6 +181,7 @@ See [Ports and security](docs/security.md). To report a vulnerability, see [SECU
 - [Choosing the assistant's name](docs/choosing-a-name.md): what makes a name work, and `npm run check-name`.
 - [Minutes and meeting data](docs/minutes-and-data.md): the minutes, and what each service keeps.
 - [Measuring who is speaking](docs/speaker-probe.md): the speaker probe, a test mode for naming speakers, and `npm run speaker-report`.
+- [Measuring Deepgram Flux](docs/flux-probe.md): `npm run flux-probe`, which streams test clips to Deepgram as the service does, to tune when talking over Alex stops it.
 - [Ports and security](docs/security.md): the listeners, tokens and files, and the limits on cost.
 - [Development](docs/development.md): the tests, the name corpus, and what's where.
 

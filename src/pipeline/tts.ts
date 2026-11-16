@@ -48,7 +48,8 @@ export async function* wholeSamples(source: AsyncIterable<Uint8Array>): AsyncGen
   }
 }
 
-export async function* synthesize(text: string, signal?: AbortSignal): AsyncGenerator<Buffer> {
+/** Speaks text in the configured voice. `model` is for npm run flux-probe's other clips only: the service uses TTS_MODEL. */
+export async function* synthesize(text: string, signal?: AbortSignal, model = TTS_MODEL): AsyncGenerator<Buffer> {
   const res = await fetch(ttsUrl(required('ELEVENLABS_VOICE_ID')), {
     method: 'POST',
     signal,
@@ -57,7 +58,7 @@ export async function* synthesize(text: string, signal?: AbortSignal): AsyncGene
       'content-type': 'application/json',
       accept: 'audio/pcm',
     },
-    body: JSON.stringify({ text, model_id: TTS_MODEL }),
+    body: JSON.stringify({ text, model_id: model }),
   })
   if (!res.ok || !res.body) throw new Error(ttsError(res.status, await res.text().catch(() => '')))
   yield* wholeSamples(res.body as unknown as AsyncIterable<Uint8Array>)
