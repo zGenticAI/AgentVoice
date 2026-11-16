@@ -8,7 +8,7 @@ import { ROOT } from '../src/config.ts'
 import type { ClipAnalysis } from '../src/probe/flux-analysis.ts'
 import {
   BACKCHANNELS, CHECKS, IDLE_MAX_S, LONG_SENTENCE, USAGE, buildPlan, costLine, intentOfFile, interruptions, micInputs, parseArgs, redact,
-  selectPlan,
+  runProcess, selectPlan,
 } from '../src/probe/flux-probe.ts'
 import { REPORT_END, type ReportInput, describeVerdict, formatReport } from '../src/probe/flux-report.ts'
 
@@ -52,7 +52,8 @@ test("the plan: the noise clips, the backchannels and interruptions (two with th
   const plan = buildPlan({ mic: false, nonverbal: false }, 'Nova')
   const ids = plan.map(p => p.id)
   assert.deepEqual(ids.slice(0, 4), ['noise-silence', 'noise-white', 'noise-cough', 'noise-breath'])
-  assert.deepEqual(ids.slice(-3), [...CHECKS])
+  assert.deepEqual(ids.slice(-CHECKS.length), [...CHECKS])
+  assert.deepEqual([...CHECKS], ['force-close', 'force-only', 'hold', 'idle'])
   assert.equal(new Set(ids).size, ids.length, 'ids are unique')
   assert.deepEqual(plan.filter(p => p.intent === 'backchannel').map(p => p.text), [...BACKCHANNELS])
   assert.equal(BACKCHANNELS.length, 17)
@@ -108,6 +109,8 @@ test("the costs line: at most how much Deepgram audio, and ElevenLabs' character
   const line = costLine(pick('bc-okay', 'int-long', 'force-close', 'idle'), o)
   assert.match(line, new RegExp(`over 4 streams, and ${5 + LONG_SENTENCE.length} ElevenLabs characters\\. The idle check keeps one stream open up to 90 s with 1\\.5 s of audio in it\\.$`))
   assert.match(costLine(pick('nv-coughs'), o), /and 0 ElevenLabs characters \(and 8 more on ElevenLabs' tagged model for --nonverbal\)/)
+  // The hold check sends what the idle check does: the lead silence and a second of the sentence.
+  assert.equal(costLine(pick('hold'), { ...o, leadMs: 59_000 }), `Cost: at most about 1.0 min of Deepgram audio over 1 streams, and ${LONG_SENTENCE.length} ElevenLabs characters.`)
   assert.match(costLine(pick('bc', 'noise-white'), { ...o, voice: false }), /over 1 streams, and 0 ElevenLabs characters/, 'without a voice, no spoken clips')
   const all = costLine(plan, o)
   const minutes = Number(/about (\d+\.\d) min/.exec(all)?.[1])
@@ -119,19 +122,32 @@ test('redact takes every key out of a text, wherever it is', () => {
   assert.equal(redact('abc', ['ab']), 'abc', 'too short to be a key: left alone')
 })
 
-test('the microphone is recorded through avfoundation on macOS, pulse then alsa on Linux, and nothing elsewhere', () => {
-  assert.deepEqual(micInputs('darwin'), [['-f', 'avfoundation', '-i', ':0']])
-  assert.deepEqual(micInputs('linux'), [['-f', 'pulse', '-i', 'default'], ['-f', 'alsa', '-i', 'default']])
+test("the microphone is the system's default input: avfoundation's :default on macOS, pulse then alsa on Linux, nothing elsewhere", () => {
+  // ":0" would be avfoundation's first device in its list, which a meeting app's virtual device can be.
+  assert.deepEqual(micInputs('darwin').map(i => i.args), [['-f', 'avfoundation', '-i', ':default']])
+  assert.deepEqual(micInputs('linux').map(i => i.args), [['-f', 'pulse', '-i', 'default'], ['-f', 'alsa', '-i', 'default']])
   assert.deepEqual(micInputs('win32'), [])
+  for (const input of [...micInputs('darwin'), ...micInputs('linux')]) assert.match(input.label, /default/, 'the report says which input')
+})
+
+test("the recording's cue waits for its first audio: runProcess calls onFirstData once, when stdout first has something", async () => {
+  const started = performance.now()
+  const cues: number[] = []
+  const script = "setTimeout(() => process.stdout.write('ab'), 200); setTimeout(() => process.stdout.write('cd'), 300)"
+  const out = await runProcess(process.execPath, ['-e', script], () => void cues.push(performance.now() - started))
+  assert.equal(out.toString(), 'abcd')
+  assert.equal(cues.length, 1)
+  assert.ok(cues[0] >= 150, `not as the process starts: ${Math.round(cues[0])} ms`)
+  await assert.rejects(runProcess(process.execPath, ['-e', "process.stderr.write('bad input\\n'); process.exit(2)"]), /exited with 2: bad input$/)
 })
 
 function clip(over: Partial<ClipAnalysis>): ClipAnalysis {
   return {
-    id: 'bc-yeah', intent: 'backchannel', source: 'tts', label: 'Yeah.', clipMs: 420, onsetMs: 30, turns: 1,
+    id: 'bc-yeah', intent: 'backchannel', source: 'tts', label: 'Yeah.', opened: true, clipMs: 420, onsetMs: 30, turns: 1,
     start: { t: 400, transcript: 'Yeah.', fromOnsetMs: 370, firstWordT: 60 }, updates: ['Yeah.'], updateCount: 9, notices: [],
     end: { t: 1500, afterClipMs: 1080, transcript: 'Yeah.', trigger: 'model', confidence: 0.82 }, startToEndMs: 1100,
     verdict: { kind: 'pause-resume', actions: [{ t: 400, what: 'pause', by: 'start' }, { t: 1500, what: 'resume', by: 'end' }] },
-    mismatch: null, close: { t: 2600, code: 1005, reason: '', by: 'server' }, closeStreamT: 2580, refused: null, error: null,
+    mismatch: null, close: { t: 2600, code: 1005, reason: '', by: 'server' }, closeStreamT: 2580, cutShort: null, refused: null, error: null,
     ...over,
   }
 }
@@ -142,7 +158,7 @@ function report(over: Partial<ReportInput> = {}): string {
     flux: { model: 'flux-general-en', eotThreshold: '0.7', keyterms: 3, mipOptOut: 'true' },
     constants: { pauseMaxMs: 1500, tailMs: 400, sttHoldMs: 3000, closeWaitMs: 1000, stopWordsPartial: 2, stopWordsFinal: 1 },
     voice: 'ElevenLabs', usage: { deepgramMs: 120_000, streams: 1, elevenLabsChars: 5, lateMs: 3 }, leadMs: 500, tailMaxMs: 7000, forceAfterMs: 1500,
-    clips: [clip({})], force: [], idle: null, cadence: null,
+    clips: [clip({})], force: [], hold: null, idle: null, cadence: null,
     suggestions: { pauseMaxMs: { none: 'none' }, tailMs: { value: 400, from: 370, clips: 1 }, sttHold: { ok: false, text: 'not checked' }, spellings: [] },
     skipped: [], notes: [],
     ...over,
@@ -198,6 +214,30 @@ test("the report shows Flux's Error and Warning messages, a refusal, and skips g
   assert.match(text, /^nv-coughs: not available: ElevenLabs 400$/m)
   assert.match(text, /^Stopped early: Deepgram refused the stream \(401\)$/m)
   assert.match(text, /^Note: force-close: ran with silence$/m)
+})
+
+test('the report marks a clip whose stream Flux cut short, and says what the hold check saw', () => {
+  const short = clip({ id: 'bc-uh', cutShort: { t: 210, code: 1006, reason: '' }, end: null, startToEndMs: null, close: { t: 210, code: 1006, reason: '', by: 'server' }, closeStreamT: null })
+  const text = report({
+    clips: [short],
+    hold: {
+      opened: true, holdMs: 3000, startT: 380, endedItself: null, closedFirst: null, forced: true, end: { afterMs: 140, trigger: 'manual', transcript: 'Lets move' },
+      endBeforeClose: true, close: null, warnings: [], error: null, refused: null,
+    },
+  })
+  assert.match(text, /^ {2}Incomplete: the stream closed at t=210 \(1006\) before the probe was done with the clip, so what Nova would do is not known; left out of the mismatches and suggestions$/m)
+  assert.doesNotMatch(text, /^ {2}Nova would/m, 'no verdict from half a run')
+  assert.doesNotMatch(text, /^ {2}Closed:/m)
+  assert.match(text, /^hold: one second of the sentence, then 3000 ms with no audio \(STT_HOLD_MS\), then ForceEndTurn alone, as the service does when the bot page has gone\. StartOfTurn at t=380\. EndOfTurn \(trigger manual\) 140 ms after ForceEndTurn: "Lets move"\.$/m)
+  const lost = report({
+    hold: {
+      opened: true, holdMs: 3000, startT: 380, endedItself: null, closedFirst: null, forced: true, end: null, endBeforeClose: null,
+      close: { afterMs: 6000, code: 1011, reason: 'NET-0001' }, warnings: [], error: null, refused: null,
+    },
+  })
+  assert.match(lost, /^hold: .* No EndOfTurn after ForceEndTurn\. Flux closed the stream itself 6000 ms after ForceEndTurn \(1011 "NET-0001"\)\.$/m)
+  assert.match(report(), /^hold: not run$/m)
+  assert.match(report({ clips: [clip({ id: 'int-long' })] }), /^cadence: none: int-long, the long sentence it comes from, did not run to its end$/m)
 })
 
 test("what the assistant would do, in words, for each verdict", () => {

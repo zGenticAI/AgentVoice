@@ -161,6 +161,8 @@ export interface Mismatch {
 }
 
 export interface ClipAnalysis extends ClipInfo {
+  /** Whether Deepgram accepted the stream. */
+  opened: boolean
   clipMs: number
   /** Where sound starts in the clip (ms), or null. */
   onsetMs: number | null
@@ -186,12 +188,39 @@ export interface ClipAnalysis extends ClipInfo {
   mismatch: Mismatch | null
   close: StreamRun['close'] | null
   closeStreamT: number | null
+  /** Flux closed the stream before the probe was done with the clip (cutShort): what it would have sent is not known. */
+  cutShort: { t: number; code: number; reason: string } | null
   refused: StreamRun['refused'] | null
   error: string | null
 }
 
-/** One clip's run, analysed. `leadMs` is the silence the run sent before the clip (word times count from there). */
-export function analyzeClip(info: ClipInfo, run: StreamRun, rules: SessionRules, opts: { onsetMs: number | null; leadMs: number }): ClipAnalysis {
+/**
+ * Whether Flux closed a clip's stream itself before the run was done with it: before CloseStream, and either before the
+ * clip and minTailMs of silence after it had gone, or with a turn still open. Its StartOfTurn or EndOfTurn may then never
+ * have come, so the run says nothing about the clip. Null when the run went to its end.
+ */
+export function cutShort(run: StreamRun, minTailMs = 0): ClipAnalysis['cutShort'] {
+  const close = run.close
+  if (!run.opened || close?.by !== 'server' || (run.closeStreamT !== undefined && run.closeStreamT <= close.t)) return null
+  let open = false
+  for (const e of turns(run.events)) {
+    if (e.t > close.t) break
+    if (e.event === 'StartOfTurn') open = true
+    else if (e.event === 'EndOfTurn') open = false
+  }
+  return close.t < run.clipMs + minTailMs || open ? { t: close.t, code: close.code, reason: close.reason } : null
+}
+
+/**
+ * One clip's run, analysed. `leadMs` is the silence the run sent before the clip (word times count from there), and
+ * `minTailMs` the least silence it sends after it. A run that did not open, or that Flux cut short, has no mismatch.
+ */
+export function analyzeClip(
+  info: ClipInfo,
+  run: StreamRun,
+  rules: SessionRules,
+  opts: { onsetMs: number | null; leadMs: number; minTailMs?: number },
+): ClipAnalysis {
   const all = turns(run.events)
   const starts = all.filter(e => e.event === 'StartOfTurn')
   const first = starts[0]
@@ -209,8 +238,10 @@ export function analyzeClip(info: ClipInfo, run: StreamRun, rules: SessionRules,
   }
   const verdict = simulate(run.events, rules)
   const firstWord = first?.words[0]?.start
+  const short = cutShort(run, opts.minTailMs)
   return {
     ...info,
+    opened: run.opened,
     clipMs: run.clipMs,
     onsetMs: opts.onsetMs,
     turns: starts.length,
@@ -232,9 +263,10 @@ export function analyzeClip(info: ClipInfo, run: StreamRun, rules: SessionRules,
       : null,
     startToEndMs: first && end ? end.t - first.t : null,
     verdict,
-    mismatch: mismatchOf(info.intent, verdict, first?.transcript ?? '', rules),
+    mismatch: run.opened && !short ? mismatchOf(info.intent, verdict, first?.transcript ?? '', rules) : null,
     close: run.close ?? null,
     closeStreamT: run.closeStreamT ?? null,
+    cutShort: short,
     refused: run.refused ?? null,
     error: run.error ?? null,
   }
@@ -365,6 +397,56 @@ export function analyzeIdle(run: StreamRun): IdleResult {
   }
 }
 
+/**
+ * What Flux did in the hold check: one second of speech, then no audio for holdMs, then ForceEndTurn alone if a turn was
+ * open. Times after the last audio (afterLastMs) or after the ForceEndTurn (afterMs).
+ */
+export interface HoldResult {
+  opened: boolean
+  holdMs: number
+  /** t of the first StartOfTurn, or null when the speech started no turn. */
+  startT: number | null
+  /** Flux ended the turn itself during the silence, so no ForceEndTurn went. */
+  endedItself: { afterLastMs: number; trigger: string } | null
+  /** Flux closed the stream during the silence, before ForceEndTurn could go. */
+  closedFirst: { afterLastMs: number; code: number; reason: string } | null
+  forced: boolean
+  end: { afterMs: number; trigger: string; transcript: string } | null
+  endBeforeClose: boolean | null
+  /** Flux closing the stream itself after the ForceEndTurn (not after the probe's CloseStream, which ends the check). */
+  close: { afterMs: number; code: number; reason: string } | null
+  warnings: string[]
+  error: string | null
+  refused: StreamRun['refused'] | null
+}
+
+export function analyzeHold(run: StreamRun, holdMs: number): HoldResult {
+  const all = turns(run.events)
+  const last = run.lastAudioT ?? 0
+  const forceT = run.forceT
+  const start = all.find(e => e.event === 'StartOfTurn')
+  const lastStart = all.filter(e => e.event === 'StartOfTurn').at(-1)
+  const end = forceT === undefined ? undefined : all.find(e => e.event === 'EndOfTurn' && e.t >= forceT)
+  // No ForceEndTurn went when the last turn had already ended, as FluxStream sends none then.
+  const ownEnd = forceT === undefined && lastStart ? all.find(e => e.event === 'EndOfTurn' && e.t >= lastStart.t) : undefined
+  const close = run.close
+  const fluxClosed = close?.by === 'server' && (run.closeStreamT === undefined || close.t < run.closeStreamT) ? close : undefined
+  return {
+    opened: run.opened,
+    holdMs,
+    startT: start?.t ?? null,
+    endedItself: ownEnd ? { afterLastMs: ownEnd.t - last, trigger: ownEnd.trigger ?? '' } : null,
+    closedFirst: fluxClosed && forceT === undefined && !ownEnd ? { afterLastMs: fluxClosed.t - last, code: fluxClosed.code, reason: fluxClosed.reason } : null,
+    forced: forceT !== undefined,
+    end: end && forceT !== undefined ? { afterMs: end.t - forceT, trigger: end.trigger ?? '', transcript: end.transcript } : null,
+    endBeforeClose: end ? !fluxClosed || end.t <= fluxClosed.t : null,
+    close: fluxClosed && forceT !== undefined ? { afterMs: fluxClosed.t - forceT, code: fluxClosed.code, reason: fluxClosed.reason } : null,
+    warnings: run.events.filter(e => forceT !== undefined && e.t >= forceT && e.msg.type === 'Warning').map(e => String(e.msg.code ?? e.msg.description ?? 'a warning')),
+    error: run.error ?? null,
+    refused: run.refused ?? null,
+  }
+}
+
 /** The constants the suggestions are about, as the service has them now. */
 export interface Constants {
   pauseMaxMs: number
@@ -388,7 +470,7 @@ export interface Spelling {
 export interface Suggestions {
   pauseMaxMs: Suggested
   tailMs: Suggested
-  sttHold: { ok: boolean; text: string; value?: number }
+  sttHold: { ok: boolean; text: string }
   spellings: Spelling[]
 }
 
@@ -399,8 +481,6 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 export const PAUSE_MARGIN_MS = 300
 export const PAUSE_BOUNDS: readonly [number, number] = [800, 3000]
 export const TAIL_BOUNDS: readonly [number, number] = [200, 1000]
-// STT_HOLD_MS needs this much room before an idle stream closes: the ForceEndTurn's answer has to come back first.
-export const HOLD_MARGIN_MS = 1000
 
 // A line longer than this is Flux hearing something else, not a way to spell a backchannel.
 const MAX_PHRASE_WORDS = 4
@@ -414,10 +494,16 @@ const SOUNDLIKE = (w: string) => /^[mhnuao]+$/.test(w) && /[mh]/.test(w)
  *   within [800, 3000], to 50 ms.
  * - TAIL_MS: the median StartOfTurn delay from the speech's onset over the spoken (ElevenLabs) clips, within
  *   [200, 1000], to 50 ms.
- * - STT_HOLD_MS: whether a turn held that long can still be ended before Flux closes a stream with no audio.
+ * - STT_HOLD_MS: whether the hold check's ForceEndTurn, after that long with no audio, still ended the turn.
  * - The spellings Flux used for backchannels that would stop the assistant, and which list each would go in.
  */
-export function suggest(clips: ClipAnalysis[], idle: IdleResult | null, now: Constants): Suggestions {
+export function suggest(
+  all: ClipAnalysis[],
+  checks: { hold?: HoldResult | null; idle?: IdleResult | null } | null,
+  now: Constants,
+): Suggestions {
+  // A clip whose stream did not open, or that Flux cut short, says nothing about the constants.
+  const clips = all.filter(c => c.opened && !c.cutShort)
   const resumed = clips.filter(c => c.intent === 'backchannel' && c.verdict.kind === 'pause-resume' && c.startToEndMs !== null)
   const gaps = resumed.map(c => c.startToEndMs as number)
   const pauseMaxMs: Suggested = gaps.length
@@ -430,31 +516,7 @@ export function suggest(clips: ClipAnalysis[], idle: IdleResult | null, now: Con
     ? { value: clamp(roundTo50(median(delays)), ...TAIL_BOUNDS), from: median(delays), clips: delays.length }
     : { none: 'no spoken clip got a StartOfTurn' }
 
-  let sttHold: Suggestions['sttHold']
-  if (!idle || idle.refused || (idle.closedAfterMs === null && idle.stillOpenAfterMs === null)) {
-    sttHold = { ok: false, text: 'not checked: the idle check did not run to the end' }
-  } else if (idle.closedAfterMs === null) {
-    const open = idle.stillOpenAfterMs as number
-    sttHold =
-      open >= now.sttHoldMs + HOLD_MARGIN_MS
-        ? { ok: true, text: `fine: Flux kept a stream with no audio open for ${secs(open)}` }
-        : {
-            ok: false,
-            text: `not checked: the stream was still open when the wait ran out after ${secs(open)}, too soon to tell (run with --idle-max ${Math.ceil((now.sttHoldMs + HOLD_MARGIN_MS) / 1000)} or more)`,
-          }
-  } else if (now.sttHoldMs + HOLD_MARGIN_MS <= idle.closedAfterMs) {
-    sttHold = {
-      ok: true,
-      text: `fine: Flux closed a stream with no audio after ${secs(idle.closedAfterMs)}, and ${now.sttHoldMs} + ${HOLD_MARGIN_MS} ms to end the turn fits`,
-    }
-  } else {
-    const value = Math.max(0, Math.floor((idle.closedAfterMs - HOLD_MARGIN_MS) / 50) * 50)
-    sttHold = {
-      ok: false,
-      value,
-      text: `too long: Flux closed a stream with no audio after ${secs(idle.closedAfterMs)}, before ${now.sttHoldMs} + ${HOLD_MARGIN_MS} ms; STT_HOLD_MS ≈ ${value}`,
-    }
-  }
+  const sttHold = holdLine(checks?.hold ?? null, checks?.idle ?? null)
 
   const spellings: Spelling[] = []
   const seen = new Set<string>()
@@ -478,3 +540,30 @@ export function suggest(clips: ClipAnalysis[], idle: IdleResult | null, now: Con
 }
 
 const secs = (ms: number) => `${(ms / 1000).toFixed(1)} s`
+
+/** STT_HOLD_MS, from what the hold check saw: the service's own path, not a margin guessed from the idle check. */
+function holdLine(hold: HoldResult | null, idle: IdleResult | null): Suggestions['sttHold'] {
+  if (!hold?.opened) return { ok: false, text: 'not checked: the hold check did not run' }
+  const held = `${hold.holdMs} ms with no audio`
+  if (hold.startT === null) return { ok: false, text: 'not checked: the hold check\'s speech started no turn, so there was none to end' }
+  if (hold.endedItself) {
+    const when = hold.endedItself.afterLastMs > 0 ? `${secs(hold.endedItself.afterLastMs)} after the audio stopped` : 'before the audio stopped'
+    return { ok: true, text: `fine: Flux ended the turn itself ${when}, before ${held}, so ForceEndTurn was not needed` }
+  }
+  if (hold.closedFirst) {
+    return {
+      ok: false,
+      text: `too long: Flux closed the stream ${secs(hold.closedFirst.afterLastMs)} after the audio stopped, before ${held} had passed and ForceEndTurn could go; STT_HOLD_MS has to be well under that`,
+    }
+  }
+  if (!hold.forced) return { ok: false, text: 'not checked: the hold check ended before its ForceEndTurn went' }
+  const closes = idle?.closedAfterMs != null ? `; Flux closed the idle check's stream ${secs(idle.closedAfterMs)} after its audio stopped` : ''
+  if (hold.end && hold.endBeforeClose) {
+    return { ok: true, text: `fine: after ${held}, ForceEndTurn still ended the turn, its EndOfTurn ${hold.end.afterMs} ms later${closes}` }
+  }
+  const after = hold.close ? `Flux closed the stream ${hold.close.afterMs} ms after it` : 'none came while the probe waited'
+  return {
+    ok: false,
+    text: `the turn would be lost: after ${held}, ForceEndTurn got no EndOfTurn (${after}). Compare force-only, where audio still flowed`,
+  }
+}

@@ -6,12 +6,12 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { wordsThatCount } from '../brain/attention.ts'
-import { FLUX_CLOSE_WAIT_MS } from '../pipeline/deepgram.ts'
+import { FINAL_STATUSES, FLUX_CLOSE_WAIT_MS } from '../pipeline/deepgram.ts'
 import { PAUSE_MAX_MS, STOP_WORDS_FINAL, STOP_WORDS_PARTIAL, STT_HOLD_MS, TAIL_MS } from '../pipeline/session.ts'
 import { BYTES_PER_MS, msOf, onsetMs, readWav, silence, syntheticClips } from './flux-audio.ts'
 import {
-  type Cadence, type ClipAnalysis, type ClipInfo, type ForceResult, type IdleResult, type Intent, type SessionRules,
-  analyzeClip, analyzeForce, analyzeIdle, cadence, suggest,
+  type Cadence, type ClipAnalysis, type ClipInfo, type ForceResult, type HoldResult, type IdleResult, type Intent, type SessionRules,
+  analyzeClip, analyzeForce, analyzeHold, analyzeIdle, cadence, cutShort, suggest,
 } from './flux-analysis.ts'
 import { formatReport } from './flux-report.ts'
 import { type Connect, STREAM_TIMING, type StreamRun, type StreamTiming, streamClip } from './flux-stream.ts'
@@ -51,12 +51,18 @@ export const MIC_PROMPTS: readonly { id: string; prompt: string; intent: Intent 
 ]
 
 /** The protocol checks, which run after the clips. */
-export const CHECKS = ['force-close', 'force-only', 'idle'] as const
+export const CHECKS = ['force-close', 'force-only', 'hold', 'idle'] as const
 /** ForceEndTurn goes this long after the long sentence's StartOfTurn. */
 export const FORCE_AFTER_MS = 1500
-/** The idle check sends this much of the long sentence, then nothing. */
+/** The hold and idle checks send this much of the long sentence, then nothing. */
+export const HOLD_AUDIO_MS = 1000
 export const IDLE_AUDIO_MS = 1000
 export const IDLE_MAX_S = 90
+
+/** A stream that fails to open, or that Flux closes partway through a clip, is tried once more after this long. */
+export const RETRY_WAIT_MS = 2000
+/** After this many items in a row whose streams would not open, even on a second try, the run stops. */
+export const GIVE_UP_AFTER = 3
 
 export const FFMPEG_HINT = 'ffmpeg is not installed. On macOS: brew install ffmpeg. On Linux: sudo apt install ffmpeg (or your distribution\'s package).'
 
@@ -168,8 +174,8 @@ export function costLine(items: PlanItem[], o: { voice: boolean; leadMs: number;
   for (const item of items) {
     if ((item.source === 'tts' || item.source === 'nonverbal') && !o.voice && item.kind === 'clip') continue
     streams++
-    if (item.id === 'idle') {
-      audioMs += o.leadMs + IDLE_AUDIO_MS
+    if (item.id === 'idle' || item.id === 'hold') {
+      audioMs += o.leadMs + (item.id === 'idle' ? IDLE_AUDIO_MS : HOLD_AUDIO_MS)
     } else {
       const clipMs =
         item.source === 'synthetic' ? (synthetic.get(item.id) ?? 0)
@@ -194,30 +200,58 @@ export function redact(text: string, secrets: string[]): string {
   return out
 }
 
-/** Runs ffmpeg and resolves with what it wrote to stdout. Rejects with code ENOENT when ffmpeg is not installed. */
-export function runFfmpeg(args: string[]): Promise<Buffer> {
+/**
+ * Runs a command and resolves with what it wrote to stdout; onFirstData is called once, as the first of it arrives.
+ * Rejects with code ENOENT when the command is not installed.
+ */
+export function runProcess(command: string, args: string[], onFirstData?: () => void): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     const out: Buffer[] = []
     let err = ''
-    child.stdout.on('data', (b: Buffer) => out.push(b))
+    child.stdout.on('data', (b: Buffer) => {
+      if (!out.length) onFirstData?.()
+      out.push(b)
+    })
     child.stderr.on('data', (b: Buffer) => (err = (err + b).slice(-400)))
     child.on('error', reject)
     child.on('close', code => {
       if (code === 0) resolve(Buffer.concat(out))
-      else reject(new Error(`ffmpeg exited with ${code}${err.trim() ? `: ${err.trim().split('\n').at(-1)}` : ''}`))
+      else reject(new Error(`${path.basename(command)} exited with ${code}${err.trim() ? `: ${err.trim().split('\n').at(-1)}` : ''}`))
     })
   })
 }
 
-/** The ways ffmpeg can record the default microphone here, in order. */
-export function micInputs(platform: NodeJS.Platform): string[][] {
-  if (platform === 'darwin') return [['-f', 'avfoundation', '-i', ':0']]
-  if (platform === 'linux') return [['-f', 'pulse', '-i', 'default'], ['-f', 'alsa', '-i', 'default']]
+/** Runs ffmpeg: see runProcess. */
+export function runFfmpeg(args: string[], onFirstData?: () => void): Promise<Buffer> {
+  return runProcess('ffmpeg', args, onFirstData)
+}
+
+/** One way ffmpeg can record the microphone, and what the report calls it. */
+export interface MicInput {
+  args: string[]
+  label: string
+}
+
+/**
+ * The ways ffmpeg can record the default microphone here, in order. On macOS, ":default" is avfoundation's name for the
+ * system's default input: ":0" would be whichever device it lists first, often a meeting app's virtual one.
+ */
+export function micInputs(platform: NodeJS.Platform): MicInput[] {
+  if (platform === 'darwin') return [{ args: ['-f', 'avfoundation', '-i', ':default'], label: "macOS's default input (avfoundation :default)" }]
+  if (platform === 'linux') {
+    return [
+      { args: ['-f', 'pulse', '-i', 'default'], label: "PulseAudio's default source" },
+      { args: ['-f', 'alsa', '-i', 'default'], label: "ALSA's default device" },
+    ]
+  }
   return []
 }
 
 const TO_PCM = ['-ac', '1', '-ar', '16000', '-f', 's16le', '-acodec', 'pcm_s16le', 'pipe:1']
+// Each packet goes out as soon as it is made, so the first audio, and with it the "Now" cue, comes once capture runs.
+const MIC_OUT = ['-flush_packets', '1', ...TO_PCM]
+export const MIC_SILENT = 'recorded no sound: check the terminal\'s microphone permission and the input device, and make the sound after "Now"'
 
 export interface ProbeDeps {
   /** The Flux address (fluxUrl()) and the key, which goes only in the handshake's header. */
@@ -231,7 +265,8 @@ export interface ProbeDeps {
   name: string
   connect?: Connect
   speak?: (text: string, model?: string) => AsyncIterable<Buffer>
-  ffmpeg?: (args: string[]) => Promise<Buffer>
+  /** runFfmpeg, or a test's: onFirstData once its first audio comes. */
+  ffmpeg?: (args: string[], onFirstData?: () => void) => Promise<Buffer>
   /** Shows a prompt and waits for Enter. */
   ask?: (prompt: string) => Promise<void>
   platform?: NodeJS.Platform
@@ -241,6 +276,10 @@ export interface ProbeDeps {
   log: (text: string) => void
   timing?: Partial<StreamTiming>
   forceAfterMs?: number
+  /** The hold check's silence: STT_HOLD_MS. The tests shorten it. */
+  holdMs?: number
+  /** RETRY_WAIT_MS. The tests shorten it. */
+  retryWaitMs?: number
   app?: string
   date?: string
 }
@@ -258,6 +297,7 @@ export interface ProbeResult {
   clips: ClipAnalysis[]
   runs: Map<string, StreamRun>
   force: ForceResult[]
+  hold: HoldResult | null
   idle: IdleResult | null
   cadence: Cadence | null
   skipped: { id: string; why: string }[]
@@ -270,16 +310,30 @@ async function collect(audio: AsyncIterable<Buffer>): Promise<Buffer> {
 }
 
 const isMissing = (err: unknown) => (err as { code?: unknown })?.code === 'ENOENT'
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, Math.max(0, ms)))
+
+/** A refusal that trying again cannot fix: the same statuses FluxStream gives up on. */
+const isFinal = (run: StreamRun) => run.refused !== undefined && FINAL_STATUSES.has(run.refused.status)
+
+function openFailure(run: StreamRun): string {
+  return run.refused
+    ? `Deepgram refused the stream (${run.refused.status})${run.refused.text ? `: ${run.refused.text}` : ''}`
+    : `could not open a stream to Deepgram: ${run.error ?? 'no reason given'}`
+}
 
 /**
  * The whole probe: makes or records the audio, streams each clip on its own fresh stream (one at a time), runs the
- * checks, prints the report, and writes the JSON when asked. Stops early if Deepgram refuses the stream.
+ * checks, prints the report, and writes the JSON when asked. A stream that fails to open, or that Flux closes partway
+ * through a clip, is tried once more; the run stops early only for a refusal that trying again cannot fix, or when
+ * stream after stream will not open.
  */
 export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeResult> {
   const say = (text: string) => deps.out(redact(text, deps.secrets))
   const log = (text: string) => deps.log(redact(text, deps.secrets))
   const timing: StreamTiming = { ...STREAM_TIMING, ...deps.timing }
   const forceAfterMs = deps.forceAfterMs ?? FORCE_AFTER_MS
+  const holdMs = deps.holdMs ?? STT_HOLD_MS
+  const retryWaitMs = deps.retryWaitMs ?? RETRY_WAIT_MS
   const ffmpeg = deps.ffmpeg ?? runFfmpeg
   const skipped: { id: string; why: string }[] = []
 
@@ -364,19 +418,24 @@ export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeR
       log(ffmpegGone)
       for (const item of micItems) skipped.push({ id: item.id, why: ffmpegGone })
     } else {
-      log(`The microphone clips: ${MIC_MS / 1000} s each, recorded once you press Enter.`)
+      log(`The microphone clips: ${MIC_MS / 1000} s each. The microphone takes a moment to start: make each sound only once "Now" shows.`)
       let working = 0
+      let recordedFrom = ''
       for (const item of micItems) {
-        await (deps.ask ?? (async () => {}))(`Press Enter, then ${item.prompt}`)
-        log(`Recording ${MIC_MS / 1000} s...`)
+        await (deps.ask ?? (async () => {}))(`Press Enter, wait for "Now", then ${item.prompt}`)
         let lastError = ''
         for (let i = working; i < inputs.length; i++) {
           try {
-            const pcm = await ffmpeg(['-hide_banner', '-loglevel', 'error', '-nostdin', ...inputs[i], '-t', String(MIC_MS / 1000), ...TO_PCM])
+            // A sound made before capture runs is lost, so the cue waits for ffmpeg's first audio.
+            const cue = () => log(`Now: ${item.prompt}`)
+            const pcm = await ffmpeg(['-hide_banner', '-loglevel', 'error', '-nostdin', ...inputs[i].args, '-t', String(MIC_MS / 1000), ...MIC_OUT], cue)
             if (msOf(pcm) < MIC_MS / 2) throw new Error(`only ${Math.round(msOf(pcm))} ms of audio came`)
-            audio.set(item.id, pcm.subarray(0, pcm.length & ~1))
             working = i
             lastError = ''
+            recordedFrom = inputs[i].label
+            // Silence from a microphone the terminal may not use, or from a virtual device, would read as Flux ignoring the sound.
+            if (onsetMs(pcm) === null) skipped.push({ id: item.id, why: MIC_SILENT })
+            else audio.set(item.id, pcm.subarray(0, pcm.length & ~1))
             break
           } catch (err) {
             lastError = (err as Error).message
@@ -384,6 +443,7 @@ export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeR
         }
         if (lastError) skipped.push({ id: item.id, why: `could not record: ${lastError}` })
       }
+      if (recordedFrom) notes.push(`the microphone clips were recorded from ${recordedFrom}`)
     }
   }
 
@@ -412,34 +472,68 @@ export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeR
 
   // Each clip on its own fresh stream, then the checks.
   const runs = new Map<string, StreamRun>()
+  // Every stream tried, a first try that was tried again included: what the run used.
+  const tried: StreamRun[] = []
+  const retried: { id: string; why: string; run: StreamRun }[] = []
   const clips: ClipAnalysis[] = []
   const force: ForceResult[] = []
+  let hold: HoldResult | null = null
   let idle: IdleResult | null = null
   let stopped = ''
   const sentence = spoken.get(LONG_SENTENCE) ?? null
+  const stream = (item: PlanItem): Promise<StreamRun> => {
+    const base = { url: deps.url, key: deps.deepgramKey, connect: deps.connect, timing }
+    if (item.kind === 'clip') return streamClip({ ...base, audio: audio.get(item.id) as Buffer })
+    // Without a voice there is no sentence to speak: what Flux does with the commands and no turn is still worth seeing.
+    if (item.id === 'idle') {
+      return streamClip({ ...base, audio: sentence ?? silence(IDLE_AUDIO_MS), idle: { audioMs: IDLE_AUDIO_MS, maxMs: args.idleMaxS * 1000 } })
+    }
+    if (item.id === 'hold') return streamClip({ ...base, audio: sentence ?? silence(HOLD_AUDIO_MS), hold: { audioMs: HOLD_AUDIO_MS, holdMs } })
+    return streamClip({ ...base, audio: sentence ?? silence(3000), force: { afterStartMs: forceAfterMs, close: item.id === 'force-close' } })
+  }
+  // Why a stream says nothing: it did not open, or Flux closed a clip's stream before the probe was done with it.
+  const failure = (item: PlanItem, run: StreamRun): string => {
+    if (!run.opened) return openFailure(run)
+    const short = item.kind === 'clip' ? cutShort(run, timing.minTailMs) : null
+    return short ? `Flux closed the stream at t=${short.t} (${short.code}) before the probe was done with it` : ''
+  }
+  const record = (item: PlanItem, run: StreamRun) => {
+    runs.set(item.id, run)
+    if (item.kind === 'clip') {
+      const opts = { onsetMs: onsetMs(audio.get(item.id) as Buffer), leadMs: timing.leadMs, minTailMs: timing.minTailMs }
+      clips.push(analyzeClip(item, run, SESSION_RULES, opts))
+    } else if (item.id === 'idle') idle = analyzeIdle(run)
+    else if (item.id === 'hold') hold = analyzeHold(run, holdMs)
+    else force.push(analyzeForce(item.id as ForceResult['check'], run))
+  }
   const toStream = items.filter(i => i.kind === 'check' || audio.has(i.id))
+  let unopened = 0
   for (const [n, item] of toStream.entries()) {
     log(`[${n + 1}/${toStream.length}] ${item.id}`)
-    let run: StreamRun
-    if (item.kind === 'clip') {
-      const pcm = audio.get(item.id) as Buffer
-      run = await streamClip({ url: deps.url, key: deps.deepgramKey, audio: pcm, connect: deps.connect, timing })
-      clips.push(analyzeClip(item, run, SESSION_RULES, { onsetMs: onsetMs(pcm), leadMs: timing.leadMs }))
-    } else if (item.id === 'idle') {
-      const pcm = sentence ?? silence(IDLE_AUDIO_MS)
-      run = await streamClip({ url: deps.url, key: deps.deepgramKey, audio: pcm, connect: deps.connect, timing, idle: { audioMs: IDLE_AUDIO_MS, maxMs: args.idleMaxS * 1000 } })
-      idle = analyzeIdle(run)
-    } else {
-      // Without a voice there is no sentence to speak: what Flux does with the commands and no turn is still worth seeing.
-      const pcm = sentence ?? silence(3000)
-      run = await streamClip({ url: deps.url, key: deps.deepgramKey, audio: pcm, connect: deps.connect, timing, force: { afterStartMs: forceAfterMs, close: item.id === 'force-close' } })
-      force.push(analyzeForce(item.id as ForceResult['check'], run))
+    let run = await stream(item)
+    tried.push(run)
+    const why = failure(item, run)
+    // Deepgram fails a handshake, or drops a stream, now and then (FluxStream tries again too): one blip must not cost
+    // the rest of the run, the checks at its end included. A refusal that trying again cannot fix is not tried again.
+    if (why && !isFinal(run)) {
+      log(`${item.id}: ${why}; trying once more in ${retryWaitMs / 1000} s`)
+      retried.push({ id: item.id, why, run })
+      await sleep(retryWaitMs)
+      run = await stream(item)
+      tried.push(run)
+      const again = failure(item, run)
+      notes.push(`${item.id}: ${why}, so it was tried again on a fresh stream${again ? `, which failed too: ${again}` : ''}`)
     }
-    runs.set(item.id, run)
-    if (!run.opened) {
-      stopped = run.refused
-        ? `Deepgram refused the stream (${run.refused.status})${run.refused.text ? `: ${run.refused.text}` : ''}`
-        : `could not open a stream to Deepgram: ${run.error ?? 'no reason given'}`
+    record(item, run)
+    if (isFinal(run)) {
+      stopped = openFailure(run)
+      log(stopped)
+      break
+    }
+    // A network that is down fails every stream: no point waiting out each one's handshake twice.
+    unopened = run.opened ? 0 : unopened + 1
+    if (unopened >= GIVE_UP_AFTER) {
+      stopped = `${GIVE_UP_AFTER} streams in a row would not open, even on a second try (${openFailure(run)})`
       log(stopped)
       break
     }
@@ -452,9 +546,9 @@ export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeR
 
   const long = clips.find(c => c.id === 'int-long')
   const longRun = runs.get('int-long')
-  const cadenceResult = long && longRun?.opened ? cadence('int-long', longRun, long.onsetMs) : null
+  const cadenceResult = long && longRun?.opened && !long.cutShort ? cadence('int-long', longRun, long.onsetMs) : null
   const constants = { pauseMaxMs: PAUSE_MAX_MS, tailMs: TAIL_MS, sttHoldMs: STT_HOLD_MS, closeWaitMs: FLUX_CLOSE_WAIT_MS }
-  const suggestions = suggest(clips, idle, constants)
+  const suggestions = suggest(clips, { hold, idle }, constants)
   const url = new URL(deps.url)
   const flux = {
     model: url.searchParams.get('model') ?? '?',
@@ -473,16 +567,17 @@ export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeR
       ? 'ElevenLabs, with the voice and model the service uses'
       : 'ElevenLabs is not set up (ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID): no spoken clips, and the checks ran without speech',
     usage: {
-      deepgramMs: [...runs.values()].reduce((n, r) => n + r.audioMs, 0),
-      streams: [...runs.values()].filter(r => r.opened).length,
+      deepgramMs: tried.reduce((n, r) => n + r.audioMs, 0),
+      streams: tried.filter(r => r.opened).length,
       elevenLabsChars: ttsChars,
-      lateMs: Math.max(0, ...[...runs.values()].map(r => r.lateMs)),
+      lateMs: Math.max(0, ...tried.map(r => r.lateMs)),
     },
     leadMs: timing.leadMs,
     tailMaxMs: timing.tailMaxMs,
     forceAfterMs,
     clips,
     force,
+    hold,
     idle,
     cadence: cadenceResult,
     suggestions,
@@ -499,9 +594,13 @@ export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeR
       date: new Date().toISOString(),
       flux,
       constants,
-      timing: { ...timing, forceAfterMs, idleMaxS: args.idleMaxS },
+      timing: { ...timing, forceAfterMs, holdMs, idleMaxS: args.idleMaxS, retryWaitMs },
       clips: clips.map(c => ({ ...c, run: runs.get(c.id) })),
-      checks: Object.fromEntries(CHECKS.filter(c => runs.has(c)).map(c => [c, { run: runs.get(c), result: c === 'idle' ? idle : force.find(f => f.check === c) }])),
+      checks: Object.fromEntries(
+        CHECKS.filter(c => runs.has(c)).map(c => [c, { run: runs.get(c), result: c === 'idle' ? idle : c === 'hold' ? hold : force.find(f => f.check === c) }]),
+      ),
+      // The first tries of what was tried again.
+      retried,
       cadence: cadenceResult,
       suggestions,
       skipped,
@@ -510,7 +609,7 @@ export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeR
     writePrivate(args.json, redact(`${JSON.stringify(data, null, 2)}\n`, deps.secrets))
     log(`Wrote the raw events and the analysis to ${args.json} (readable only by you)`)
   }
-  return { report, clips, runs, force, idle, cadence: cadenceResult, skipped }
+  return { report, clips, runs, force, hold, idle, cadence: cadenceResult, skipped }
 }
 
 /** Writes a file only its owner can read (0600), making its folder, if it has to, only its owner can open (0700). */

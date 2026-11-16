@@ -9,8 +9,8 @@ import path from 'node:path'
 import { WebSocket } from 'ws'
 import { fluxUrl } from '../src/pipeline/deepgram.ts'
 import { TTS_MODEL } from '../src/pipeline/tts.ts'
-import { analyzeForce, analyzeIdle } from '../src/probe/flux-analysis.ts'
-import { MIC_PROMPTS, NONVERBAL_TTS_MODEL, type ProbeDeps, parseArgs, runProbe } from '../src/probe/flux-probe.ts'
+import { analyzeForce, analyzeHold, analyzeIdle } from '../src/probe/flux-analysis.ts'
+import { MIC_PROMPTS, MIC_SILENT, NONVERBAL_TTS_MODEL, type ProbeDeps, parseArgs, runProbe } from '../src/probe/flux-probe.ts'
 import { REPORT_END } from '../src/probe/flux-report.ts'
 import { type Connect, streamClip } from '../src/probe/flux-stream.ts'
 import { type Connection, type FluxScript, fakeFlux, tone } from './fixtures/fake-flux.ts'
@@ -224,7 +224,7 @@ test("a refused handshake keeps the status and Deepgram's short error text, noth
 
 // Whole runs: tiny waits, a tone for every spoken clip, and the fake.
 
-const TIMING = { leadMs: 80, minTailMs: 80, tailMaxMs: 240, closeWaitMs: 400 }
+const TIMING = { leadMs: 80, minTailMs: 80, tailMaxMs: 240, closeWaitMs: 400, holdWaitMs: 300 }
 
 function deps(origin: string, over: Partial<ProbeDeps> = {}) {
   const out: string[] = []
@@ -246,6 +246,8 @@ function deps(origin: string, over: Partial<ProbeDeps> = {}) {
     log: text => void log.push(text),
     timing: TIMING,
     forceAfterMs: 100,
+    holdMs: 200,
+    retryWaitMs: 20,
     app: 'agent-voice test',
     date: '2026-11-16 12:00 UTC',
     ...over,
@@ -347,14 +349,16 @@ test('--mic asks before each 3 s recording, records 16 kHz mono with ffmpeg (pul
   await withFlux({ startAfterMs: 40, endAfterQuietMs: 120 }, async fake => {
     const asked: string[] = []
     const calls: string[][] = []
-    const ffmpeg = async (a: string[]) => {
+    const ffmpeg = async (a: string[], onFirstData?: () => void) => {
       calls.push(a)
       if (a.includes('pulse')) throw new Error('ffmpeg exited with 1: Unknown input format: pulse')
-      return a[0] === '-version' ? Buffer.from('ffmpeg version 7') : tone(1500)
+      if (a[0] === '-version') return Buffer.from('ffmpeg version 7')
+      onFirstData?.()
+      return tone(1500)
     }
     const { d, out } = deps(fake.origin, { ask: async p => void asked.push(p), platform: 'linux', ffmpeg })
     await runProbe(args('--mic', '--only', 'mic-cough,mic-yeah'), d)
-    assert.deepEqual(asked, [`Press Enter, then ${MIC_PROMPTS[0].prompt}`, `Press Enter, then ${MIC_PROMPTS[3].prompt}`])
+    assert.deepEqual(asked, [`Press Enter, wait for "Now", then ${MIC_PROMPTS[0].prompt}`, `Press Enter, wait for "Now", then ${MIC_PROMPTS[3].prompt}`])
     const recordings = calls.filter(c => c[0] !== '-version')
     assert.deepEqual(recordings.map(c => c[c.indexOf('-f') + 1]), ['pulse', 'alsa', 'alsa'], 'the input that worked is kept')
     for (const c of recordings) {
@@ -364,6 +368,134 @@ test('--mic asks before each 3 s recording, records 16 kHz mono with ffmpeg (pul
     assert.equal(fake.connections.length, 2)
     assert.match(out[1], /^mic-cough \[noise, mic\] the microphone: cough once: 1\.5 s/m)
     assert.match(out[1], /^- mic-cough \(noise the microphone: cough once\): Flux started a turn/m)
+    assert.match(out[1], /^Note: the microphone clips were recorded from ALSA's default device$/m)
+  })
+})
+
+test('--mic says "Now" only once the recording runs, and skips a recording with no sound in it instead of analysing silence', async () => {
+  await withFlux({ startAfterMs: 40, endAfterQuietMs: 120 }, async fake => {
+    const timeline: string[] = []
+    const ffmpeg = async (a: string[], onFirstData?: () => void) => {
+      if (a[0] === '-version') return Buffer.from('ffmpeg version 7')
+      timeline.push('ffmpeg starts')
+      // macOS takes a while to open the microphone: nothing comes until it has.
+      await new Promise(resolve => setTimeout(resolve, 30))
+      timeline.push('first audio')
+      onFirstData?.()
+      // The cough is recorded; the budget question comes from a microphone the terminal may not use: silence.
+      return a.join(' ').includes(':default') && timeline.filter(t => t === 'ffmpeg starts').length === 1 ? tone(1500) : Buffer.alloc(3000 * 32)
+    }
+    const { d, out } = deps(fake.origin, {
+      ask: async p => void timeline.push(`ask: ${p}`),
+      log: text => void timeline.push(`log: ${text}`),
+      platform: 'darwin',
+      ffmpeg,
+    })
+    await runProbe(args('--mic', '--only', 'mic-cough,mic-budget'), d)
+    const cough = timeline.slice(timeline.indexOf(`ask: Press Enter, wait for "Now", then ${MIC_PROMPTS[0].prompt}`))
+    assert.deepEqual(cough.slice(0, 4), [`ask: Press Enter, wait for "Now", then ${MIC_PROMPTS[0].prompt}`, 'ffmpeg starts', 'first audio', `log: Now: ${MIC_PROMPTS[0].prompt}`])
+    assert.equal(fake.connections.length, 1, 'only the cough is streamed')
+    assert.match(out[1], /^mic-cough \[noise, mic\]/m)
+    assert.doesNotMatch(out[1], /^mic-budget \[/m)
+    assert.doesNotMatch(out[1], /interruption-unheard|mic-budget \(interruption/)
+    assert.match(out[1], new RegExp(`^mic-budget: ${MIC_SILENT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'))
+    assert.match(out[1], /^Note: the microphone clips were recorded from macOS's default input \(avfoundation :default\)$/m)
+  })
+})
+
+test('a stream refused with 503 is tried again after a wait, and the rest of the run, the checks included, still runs', async () => {
+  // The second handshake (noise-cough's) gets 503: Deepgram busy, not a key it refuses.
+  await withFlux({ startAfterMs: 40, endAfterQuietMs: 120, refuse: { status: 503, body: '', only: [1] } }, async fake => {
+    const { d, out, log } = deps(fake.origin)
+    const result = await runProbe(args('--only', 'noise-white,noise-cough,force-only,hold,idle', '--idle-max', '0.3'), d)
+    const report = out[1]
+    assert.doesNotMatch(report, /Stopped early/)
+    assert.equal(fake.connections.length, 6, 'noise-cough twice, then every check')
+    assert.ok(log.some(l => /^noise-cough: Deepgram refused the stream \(503\); trying once more in 0\.02 s$/.test(l)), log.join('\n'))
+    assert.match(report, /^Note: noise-cough: Deepgram refused the stream \(503\), so it was tried again on a fresh stream$/m)
+    assert.match(report, /^noise-cough \[noise, synthetic\][^\n]*\n {2}StartOfTurn/m)
+    assert.equal(result.runs.get('noise-cough')?.opened, true)
+    assert.match(report, /^force-only: StartOfTurn at t=\d+; ForceEndTurn went 100 ms after it\./m)
+    assert.match(report, /^hold: .* StartOfTurn at t=\d+\. EndOfTurn \(trigger manual\)/m)
+    assert.match(report, /^idle: still open after 0\.3 s/m)
+    assert.match(report, /^Used: [^\n]* over 5 streams/m, 'the refused try opened no stream')
+  })
+})
+
+test('a stream that fails twice is reported as failed and the run goes on; one handshake left unanswered is tried again too', async () => {
+  await withFlux({ turns: false, refuse: { status: 503, body: '', only: [1, 2] } }, async fake => {
+    const { d, out } = deps(fake.origin)
+    await runProbe(args('--only', 'noise-white,noise-cough,noise-breath'), d)
+    assert.equal(fake.connections.length, 4)
+    assert.match(out[1], /^noise-cough \[noise, synthetic\][^\n]*\n {2}Deepgram refused the stream \(503\)$/m)
+    assert.match(out[1], /^Note: noise-cough: Deepgram refused the stream \(503\), so it was tried again on a fresh stream, which failed too: Deepgram refused the stream \(503\)$/m)
+    assert.match(out[1], /^noise-breath \[noise, synthetic\][^\n]*\n {2}No StartOfTurn/m)
+    assert.doesNotMatch(out[1], /Stopped early/)
+  })
+  await withFlux({ turns: false, hang: [0] }, async fake => {
+    const { d, out } = deps(fake.origin, { timing: { ...TIMING, openTimeoutMs: 300 } })
+    const result = await runProbe(args('--only', 'noise-white'), d)
+    assert.equal(fake.connections.length, 2)
+    assert.match(out[1], /^Note: noise-white: could not open a stream to Deepgram: no answer from Deepgram within 0\.3 s, so it was tried again on a fresh stream$/m)
+    assert.equal(result.runs.get('noise-white')?.opened, true)
+  })
+})
+
+test('a run where stream after stream will not open stops, rather than waiting out every one twice', async () => {
+  await withFlux({ refuse: { status: 503, body: '' } }, async fake => {
+    const { d, out } = deps(fake.origin)
+    await runProbe(args('--only', 'noise,idle'), d)
+    assert.equal(fake.connections.length, 6, 'three items, each tried twice')
+    assert.match(out[1], /^Stopped early: 3 streams in a row would not open, even on a second try \(Deepgram refused the stream \(503\)\)$/m)
+  })
+})
+
+test('a clip whose stream Flux drops partway is tried again on a fresh stream; dropped again, it is marked incomplete and left out', async () => {
+  // The first stream is dropped 40 ms after it opens: during the lead silence, before any of the clip has gone.
+  await withFlux({ startAfterMs: 40, endAfterQuietMs: 120, drop: { only: [0], afterMs: 40 } }, async fake => {
+    const { d, out } = deps(fake.origin)
+    const result = await runProbe(args('--only', 'int-wait'), d)
+    assert.equal(fake.connections.length, 2)
+    assert.match(out[1], /^Note: int-wait: Flux closed the stream at t=-?\d+ \(1006\) before the probe was done with it, so it was tried again on a fresh stream$/m)
+    assert.equal(result.clips[0].cutShort, null)
+    assert.ok(result.clips[0].start, 'the second stream heard the clip')
+  })
+  await withFlux({ startAfterMs: 40, endAfterQuietMs: 120, drop: { only: [0, 1], afterMs: 40 } }, async fake => {
+    const { d, out } = deps(fake.origin)
+    const result = await runProbe(args('--only', 'int-wait'), d)
+    assert.equal(fake.connections.length, 2)
+    assert.ok(result.clips[0].cutShort)
+    assert.match(out[1], /^ {2}Incomplete: the stream closed at t=-?\d+ \(1006\) before the probe was done with the clip, so what Alex would do is not known; left out of the mismatches and suggestions$/m)
+    assert.match(out[1], /^-- Mismatches --\n\(none\)$/m, 'not "no StartOfTurn, so Alex would not stop"')
+  })
+})
+
+test("the hold check mirrors the service's hold path: a second of speech, nothing for STT_HOLD_MS, then ForceEndTurn alone", async () => {
+  await withFlux({ startAfterMs: 40 }, async fake => {
+    const run = await streamClip({
+      url: fluxUrl(), key: KEY, audio: tone(1600), connect: connectTo(fake.origin),
+      timing: { leadMs: 80, closeWaitMs: 300, holdWaitMs: 500 }, hold: { audioMs: 240, holdMs: 300 },
+    })
+    const conn = fake.connections[0]
+    assert.equal(sequence(conn), 'SLLL[ForceEndTurn][CloseStream]', 'no audio after the second of speech, and no CloseStream with the ForceEndTurn')
+    const texts = conn.received.filter(r => r.kind === 'text')
+    between(texts[0].at - audioOf(conn).at(-1)!.at, 290, 420, 'ForceEndTurn after the last audio')
+    const h = analyzeHold(run, 300)
+    assert.equal(h.forced, true)
+    assert.equal(h.end?.trigger, 'manual')
+    between(h.end?.afterMs ?? -1, 0, 100, 'EndOfTurn after ForceEndTurn')
+    assert.equal(h.endBeforeClose, true)
+  })
+})
+
+test('a Flux that answers ForceEndTurn only while audio comes passes force-only, and the hold check says the turn would be lost', async () => {
+  await withFlux({ startAfterMs: 40, endAfterQuietMs: Infinity, forceNeedsAudio: true }, async fake => {
+    const { d, out } = deps(fake.origin)
+    await runProbe(args('--only', 'force-only,hold'), d)
+    const report = out[1]
+    assert.match(report, /^force-only: StartOfTurn at t=\d+; ForceEndTurn went 100 ms after it\. EndOfTurn \(trigger manual\)/m)
+    assert.match(report, /^hold: .* StartOfTurn at t=\d+\. No EndOfTurn after ForceEndTurn\.$/m)
+    assert.match(report, /^STT_HOLD_MS \(now 3000\): the turn would be lost: after 200 ms with no audio, ForceEndTurn got no EndOfTurn/m)
   })
 })
 

@@ -5,8 +5,8 @@ import assert from 'node:assert/strict'
 import { wordsThatCount } from '../src/brain/attention.ts'
 import { PAUSE_MAX_MS, STOP_WORDS_FINAL, STOP_WORDS_PARTIAL } from '../src/pipeline/session.ts'
 import {
-  type ClipAnalysis, type ClipInfo, type SessionRules, analyzeClip, analyzeForce, analyzeIdle, cadence, countingWords, median,
-  percentile, simulate, suggest,
+  type ClipAnalysis, type ClipInfo, type IdleResult, type SessionRules, analyzeClip, analyzeForce, analyzeHold, analyzeIdle, cadence,
+  countingWords, cutShort, median, percentile, simulate, suggest,
 } from '../src/probe/flux-analysis.ts'
 import type { ProbeEvent, StreamRun } from '../src/probe/flux-stream.ts'
 import { SESSION_RULES } from '../src/probe/flux-probe.ts'
@@ -157,8 +157,9 @@ test('percentile is nearest-rank and median averages the middle two', () => {
 /** A clip analysis with just what suggest() reads. */
 function clipWith(over: Partial<ClipAnalysis>): ClipAnalysis {
   return {
-    id: 'c', intent: 'backchannel', source: 'tts', label: 'c', clipMs: 600, onsetMs: 0, turns: 1, start: null, updates: [], updateCount: 0, notices: [], end: null,
-    startToEndMs: null, verdict: { kind: 'pause-resume', actions: [] }, mismatch: null, close: null, closeStreamT: null, refused: null, error: null,
+    id: 'c', intent: 'backchannel', source: 'tts', label: 'c', opened: true, clipMs: 600, onsetMs: 0, turns: 1, start: null, updates: [], updateCount: 0,
+    notices: [], end: null, startToEndMs: null, verdict: { kind: 'pause-resume', actions: [] }, mismatch: null, close: null, closeStreamT: null,
+    cutShort: null, refused: null, error: null,
     ...over,
   }
 }
@@ -187,23 +188,85 @@ test('TAIL_MS: the median StartOfTurn delay from the sound starting over the spo
   assert.ok('none' in suggest([], null, NOW).tailMs)
 })
 
-test('STT_HOLD_MS is checked against how long Flux kept a stream with no audio', () => {
-  const idle = (o: Partial<ReturnType<typeof analyzeIdle>>) => ({ closedAfterMs: null, code: null, reason: '', stillOpenAfterMs: null, after: [], error: null, refused: null, ...o })
-  const fine = suggest([], idle({ closedAfterMs: 10_200, code: 1011 }), NOW).sttHold
+const idleOf = (o: Partial<IdleResult>): IdleResult => ({ closedAfterMs: null, code: null, reason: '', stillOpenAfterMs: null, after: [], error: null, refused: null, ...o })
+
+test("STT_HOLD_MS comes from the hold check: whether ForceEndTurn, after that long with no audio, still ended the turn", () => {
+  // One second of speech (the last audio at t=1000), STT_HOLD_MS of nothing, then ForceEndTurn at t=4000.
+  const hold = (events: ProbeEvent[], over: Partial<StreamRun>) => analyzeHold(run(events, { lastAudioT: 1000, clipMs: 1000, ...over }), 3000)
+  const answered = hold(
+    [ev(400, 'StartOfTurn', 'Lets'), ev(4120, 'EndOfTurn', 'Lets move', { trigger: 'manual' })],
+    { forceT: 4000, closeStreamT: 4130, close: { t: 4150, code: 1005, reason: '', by: 'server' } },
+  )
+  const fine = suggest([], { hold: answered, idle: idleOf({ closedAfterMs: 10_200 }) }, NOW).sttHold
   assert.equal(fine.ok, true)
-  assert.match(fine.text, /closed a stream with no audio after 10\.2 s/)
-  const tight = suggest([], idle({ closedAfterMs: 3500, code: 1011 }), NOW).sttHold
-  assert.equal(tight.ok, false)
-  assert.equal(tight.value, 2500)
-  assert.match(tight.text, /STT_HOLD_MS ≈ 2500/)
-  assert.equal(suggest([], idle({ closedAfterMs: 4000 }), NOW).sttHold.ok, true, '3000 + 1000 just fits')
-  const open = suggest([], idle({ stillOpenAfterMs: 90_000 }), NOW).sttHold
-  assert.equal(open.ok, true)
-  assert.match(open.text, /open for 90\.0 s/)
-  const early = suggest([], idle({ stillOpenAfterMs: 2000 }), NOW).sttHold
-  assert.equal(early.ok, false, 'a wait shorter than STT_HOLD_MS says nothing about it')
-  assert.match(early.text, /not checked: .* after 2\.0 s, too soon to tell \(run with --idle-max 4 or more\)/)
-  assert.match(suggest([], null, NOW).sttHold.text, /not checked/)
+  assert.match(fine.text, /^fine: after 3000 ms with no audio, ForceEndTurn still ended the turn, its EndOfTurn 120 ms later; Flux closed the idle check's stream 10\.2 s after its audio stopped$/)
+  // A Flux that answers ForceEndTurn only while audio comes: the service's hold path would lose the turn, however long an
+  // idle stream stays open.
+  const unanswered = hold([ev(400, 'StartOfTurn', 'Lets')], { forceT: 4000, close: { t: 10_000, code: 1011, reason: 'NET-0001', by: 'server' } })
+  const lost = suggest([], { hold: unanswered, idle: idleOf({ closedAfterMs: 10_200 }) }, NOW).sttHold
+  assert.equal(lost.ok, false)
+  assert.match(lost.text, /^the turn would be lost: after 3000 ms with no audio, ForceEndTurn got no EndOfTurn \(Flux closed the stream 6000 ms after it\)/)
+  const quiet = hold([ev(400, 'StartOfTurn', 'Lets')], { forceT: 4000, closeStreamT: 9000, close: { t: 9010, code: 1005, reason: '', by: 'server' } })
+  assert.match(suggest([], { hold: quiet }, NOW).sttHold.text, /ForceEndTurn got no EndOfTurn \(none came while the probe waited\)/)
+  // The idle check alone no longer stands for the hold path.
+  const idleOnly = suggest([], { idle: idleOf({ closedAfterMs: 10_200 }) }, NOW).sttHold
+  assert.deepEqual(idleOnly, { ok: false, text: 'not checked: the hold check did not run' })
+  assert.deepEqual(suggest([], null, NOW).sttHold, idleOnly)
+  const closedFirst = hold([ev(400, 'StartOfTurn', 'Lets')], { close: { t: 3500, code: 1011, reason: 'NET-0001', by: 'server' } })
+  const tooLong = suggest([], { hold: closedFirst }, NOW).sttHold
+  assert.equal(tooLong.ok, false)
+  assert.match(tooLong.text, /^too long: Flux closed the stream 2\.5 s after the audio stopped, before 3000 ms with no audio had passed/)
+  const itself = hold(
+    [ev(400, 'StartOfTurn', 'Lets'), ev(3000, 'EndOfTurn', 'Lets', { trigger: 'timeout' })],
+    { closeStreamT: 4000, close: { t: 4020, code: 1005, reason: '', by: 'server' } },
+  )
+  assert.deepEqual(suggest([], { hold: itself }, NOW).sttHold, {
+    ok: true,
+    text: 'fine: Flux ended the turn itself 2.0 s after the audio stopped, before 3000 ms with no audio, so ForceEndTurn was not needed',
+  })
+  const noTurn = hold([ev(400, 'Update', '')], { closeStreamT: 4000, close: { t: 4020, code: 1005, reason: '', by: 'server' } })
+  assert.match(suggest([], { hold: noTurn }, NOW).sttHold.text, /^not checked: the hold check's speech started no turn/)
+  const refused = analyzeHold({ opened: false, clipMs: 1000, events: [], lastAudioT: null, audioMs: 0, lateMs: 0, refused: { status: 503, text: '' } }, 3000)
+  assert.match(suggest([], { hold: refused }, NOW).sttHold.text, /^not checked: the hold check did not run$/)
+})
+
+test('the hold check: when the StartOfTurn came, and when the EndOfTurn and the close came after the ForceEndTurn', () => {
+  const events = [ev(400, 'StartOfTurn', 'Lets'), { t: 4010, msg: { type: 'Warning', code: 'SOMETHING' } }, ev(4120, 'EndOfTurn', 'Lets move', { trigger: 'manual' })]
+  const h = analyzeHold(run(events, { lastAudioT: 1000, forceT: 4000, closeStreamT: 4130, close: { t: 4150, code: 1005, reason: '', by: 'server' } }), 3000)
+  assert.equal(h.holdMs, 3000)
+  assert.equal(h.startT, 400)
+  assert.equal(h.forced, true)
+  assert.deepEqual(h.end, { afterMs: 120, trigger: 'manual', transcript: 'Lets move' })
+  assert.equal(h.endBeforeClose, true)
+  assert.equal(h.close, null, "the close after the probe's CloseStream only ends the check")
+  const closed = analyzeHold(run([ev(400, 'StartOfTurn', 'Lets')], { lastAudioT: 1000, forceT: 4000, close: { t: 4900, code: 1011, reason: 'NET-0001', by: 'server' } }), 3000)
+  assert.deepEqual(closed.close, { afterMs: 900, code: 1011, reason: 'NET-0001' })
+  assert.deepEqual(h.warnings, ['SOMETHING'])
+  assert.equal(h.endedItself, null)
+  assert.equal(h.closedFirst, null)
+})
+
+test('a clip whose stream Flux closed before the probe was done with it is cut short: no mismatch, and left out of the suggestions', () => {
+  const opts = { onsetMs: 0, leadMs: 500, minTailMs: 1000 }
+  const reset = { t: -40, code: 1006, reason: '', by: 'server' as const }
+  // Reset during the lead silence: no StartOfTurn, which says nothing about the clip.
+  const lead = analyzeClip(info('int-wait', 'interruption'), run([], { clipMs: 400, lastAudioT: -40, close: reset }), RULES, opts)
+  assert.deepEqual(lead.cutShort, { t: -40, code: 1006, reason: '' })
+  assert.equal(lead.mismatch, null, 'not "interruption-unheard"')
+  // All of the clip went, but before minTailMs of silence after it: a turn its last sound starts could still have come.
+  assert.ok(cutShort(run([], { clipMs: 400, close: { ...reset, t: 900 } }), 1000))
+  // Closed with a turn still open: its EndOfTurn never came.
+  const open = run([ev(300, 'StartOfTurn', 'Mm-hmm.')], { clipMs: 400, close: { ...reset, t: 5000 } })
+  assert.deepEqual(cutShort(open, 1000), { t: 5000, code: 1006, reason: '' })
+  // Not cut short: closed after the clip and minTailMs with no turn open, or after CloseStream.
+  assert.equal(cutShort(run([ev(300, 'StartOfTurn', 'Mm-hmm.'), ev(900, 'EndOfTurn', 'Mm-hmm.')], { clipMs: 400, close: { ...reset, t: 1500 } }), 1000), null)
+  assert.equal(cutShort(run([ev(300, 'StartOfTurn', 'Mm')], { clipMs: 400, closeStreamT: 2000, close: { t: 2010, code: 1005, reason: '', by: 'server' } }), 1000), null)
+  assert.equal(cutShort(run([], { clipMs: 400, closeStreamT: 2000, close: { t: 2500, code: 1006, reason: '', by: 'probe' } }), 1000), null)
+  // A backchannel cut short, and one whose stream never opened, count for nothing in the suggestions.
+  const short = clipWith({ startToEndMs: 2900, start: { t: 400, transcript: 'x', fromOnsetMs: 990, firstWordT: null }, cutShort: { t: 3300, code: 1011, reason: '' } })
+  const unopened = clipWith({ opened: false, startToEndMs: 2900, start: { t: 400, transcript: 'x', fromOnsetMs: 990, firstWordT: null } })
+  const s = suggest([short, unopened], null, NOW)
+  assert.ok('none' in s.pauseMaxMs && 'none' in s.tailMs)
 })
 
 test('spellings: a backchannel that would stop is suggested for the list its spelling belongs in, once each', () => {

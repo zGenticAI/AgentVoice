@@ -1,8 +1,10 @@
 // A stand-in for Deepgram Flux on 127.0.0.1, for the flux probe's tests: it hears audio as a real stream would (a turn
 // starts a little after loud audio, and ends a little after it stops), answers ForceEndTurn and CloseStream, can close a
-// stream that gets no audio, and can refuse the handshake. It keeps what it was sent, with when, for the tests to check.
+// stream that gets no audio, and can refuse the handshake, leave it unanswered or drop a stream partway. It keeps what it
+// was sent, with when, for the tests to check.
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import type { Duplex } from 'node:stream'
 import { performance } from 'node:perf_hooks'
 import { WebSocket, WebSocketServer } from 'ws'
 
@@ -21,8 +23,14 @@ export interface FluxScript {
   ignoreClose?: boolean
   /** How long after CloseStream it closes the stream (ms). */
   closeDelayMs?: number
-  /** Refuses the handshake with this status and body. */
-  refuse?: { status: number; body: string; dgError?: string }
+  /** Refuses the handshake with this status and body: every one, or only those whose number (from 0) is in `only`. */
+  refuse?: { status: number; body: string; dgError?: string; only?: number[] }
+  /** Never answers these handshakes (by number, from 0): the client's wait runs out. */
+  hang?: number[]
+  /** Drops these streams (by number, from 0) this long after they open, with no close frame: 1006 at the client. */
+  drop?: { only: number[]; afterMs: number }
+  /** Answers ForceEndTurn only once more audio comes, as a model that works on audio frames might. */
+  forceNeedsAudio?: boolean
 }
 
 export type Received = { at: number; kind: 'audio'; ms: number; loud: boolean } | { at: number; kind: 'text'; msg: { type?: string } }
@@ -46,8 +54,16 @@ export async function fakeFlux(script: FluxScript = {}): Promise<{ origin: strin
   const wss = new WebSocketServer({ noServer: true })
   const connections: Connection[] = []
   const sockets = new Set<WebSocket>()
+  const hung = new Set<Duplex>()
+  let upgrades = 0
   server.on('upgrade', (req, socket, head) => {
-    if (script.refuse) {
+    const n = upgrades++
+    if (script.hang?.includes(n)) {
+      hung.add(socket)
+      connections.push({ url: req.url ?? '', headers: req.headers, received: [], sent: [], closedAt: null })
+      return
+    }
+    if (script.refuse && (!script.refuse.only || script.refuse.only.includes(n))) {
       const { status, body, dgError } = script.refuse
       const extra = dgError ? `dg-error: ${dgError}\r\n` : ''
       socket.end(`HTTP/1.1 ${status} Refused\r\nContent-Type: application/json\r\n${extra}Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`)
@@ -59,6 +75,7 @@ export async function fakeFlux(script: FluxScript = {}): Promise<{ origin: strin
       connections.push(conn)
       sockets.add(ws)
       serve(ws, conn, script)
+      if (script.drop?.only.includes(n)) setTimeout(() => socket.destroy(), script.drop.afterMs)
     })
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -68,6 +85,7 @@ export async function fakeFlux(script: FluxScript = {}): Promise<{ origin: strin
     connections,
     close: async () => {
       for (const ws of sockets) ws.terminate()
+      for (const socket of hung) socket.destroy()
       wss.close()
       await new Promise<void>(resolve => server.close(() => resolve()))
     },
@@ -86,6 +104,7 @@ function serve(ws: WebSocket, conn: Connection, script: FluxScript): void {
   let turnIndex = 0
   let turn: 'none' | 'starting' | 'open' = 'none'
   let chunks = 0
+  let forcePending = false
   let idleTimer: NodeJS.Timeout | null = null
   const timers: NodeJS.Timeout[] = []
   const send = (msg: Record<string, unknown>) => {
@@ -125,7 +144,8 @@ function serve(ws: WebSocket, conn: Connection, script: FluxScript): void {
       const msg = JSON.parse(data.toString()) as { type?: string }
       conn.received.push({ at, kind: 'text', msg })
       if (msg.type === 'ForceEndTurn') {
-        if (turn === 'open') endTurn('manual')
+        if (script.forceNeedsAudio) forcePending = true
+        else if (turn === 'open') endTurn('manual')
         else send({ type: 'Warning', code: 'FORCE_END_TURN_NO_ACTIVE_TURN', description: 'no turn' })
       } else if (msg.type === 'CloseStream' && !script.ignoreClose) {
         // Flux sends what it still has, then closes with no status (1005 at the client).
@@ -138,6 +158,10 @@ function serve(ws: WebSocket, conn: Connection, script: FluxScript): void {
     const loud = isLoud(chunk)
     conn.received.push({ at, kind: 'audio', ms, loud })
     armIdle()
+    if (forcePending) {
+      forcePending = false
+      if (turn === 'open') endTurn('manual')
+    }
     if (loud && script.turns !== false) {
       if (firstLoudAt === null) {
         firstLoudAt = at

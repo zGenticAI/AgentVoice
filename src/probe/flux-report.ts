@@ -1,7 +1,7 @@
 // The plain-text report npm run flux-probe prints, made to be pasted back to a Claude Code session: the settings that
 // matter first, then each clip, the mismatches, the protocol checks and the suggestions. It holds no key and no
 // address: only the probe's own test phrases and what Flux made of the audio.
-import type { Cadence, ClipAnalysis, Constants, ForceResult, IdleResult, Suggested, Suggestions, Verdict } from './flux-analysis.ts'
+import type { Cadence, ClipAnalysis, Constants, ForceResult, HoldResult, IdleResult, Suggested, Suggestions, Verdict } from './flux-analysis.ts'
 
 export const REPORT_END = 'Paste this whole report back to your Claude Code session.'
 
@@ -22,6 +22,8 @@ export interface ReportInput {
   forceAfterMs: number
   clips: ClipAnalysis[]
   force: ForceResult[]
+  /** Null when the hold check did not run. */
+  hold: HoldResult | null
   /** Null when the idle check did not run. */
   idle: IdleResult | null
   cadence: Cadence | null
@@ -78,10 +80,13 @@ function clipLines(name: string, c: ClipAnalysis): string[] {
       )
     } else lines.push('  No EndOfTurn')
   }
-  lines.push(`  ${describeVerdict(name, c.verdict)}`)
+  if (!c.cutShort) lines.push(`  ${describeVerdict(name, c.verdict)}`)
   for (const notice of c.notices) lines.push(`  Flux sent ${notice}`)
   if (c.error) lines.push(`  Error: ${c.error}`)
-  lines.push(`  ${closeLine(c)}`)
+  if (c.cutShort) {
+    const { t, code, reason } = c.cutShort
+    lines.push(`  Incomplete: the stream closed at t=${t} (${code}${reason ? ` ${q(reason)}` : ''}) before the probe was done with the clip, so what ${name} would do is not known; left out of the mismatches and suggestions`)
+  } else lines.push(`  ${closeLine(c)}`)
   return lines
 }
 
@@ -137,7 +142,31 @@ function idleLine(idle: IdleResult | null): string {
   return `idle: no result${idle.error ? ` (${idle.error})` : ''}`
 }
 
-function cadenceLine(c: Cadence | null): string {
+function holdLine(h: HoldResult | null): string {
+  if (!h) return 'hold: not run'
+  if (h.refused) return `hold: Deepgram refused the stream (${h.refused.status})`
+  if (!h.opened) return `hold: no result${h.error ? ` (${h.error})` : ''}`
+  const head = `hold: one second of the sentence, then ${h.holdMs} ms with no audio (STT_HOLD_MS), then ForceEndTurn alone, as the service does when the bot page has gone.`
+  if (h.startT === null) return `${head} No StartOfTurn came in the speech, so there was no turn to end.${h.error ? ` (${h.error})` : ''}`
+  if (h.endedItself) {
+    const when = h.endedItself.afterLastMs > 0 ? `${s1(h.endedItself.afterLastMs)} after the audio stopped` : 'before the audio stopped'
+    return `${head} Flux ended the turn itself ${when} (trigger ${h.endedItself.trigger || '(none)'}), so no ForceEndTurn went.`
+  }
+  if (h.closedFirst) {
+    const { afterLastMs, code, reason } = h.closedFirst
+    return `${head} Flux closed the stream ${s1(afterLastMs)} after the audio stopped (${code}${reason ? ` ${q(reason)}` : ''}), before ForceEndTurn could go.`
+  }
+  if (!h.forced) return `${head} ForceEndTurn did not go${h.error ? ` (${h.error})` : ''}.`
+  const parts = [head, `StartOfTurn at t=${h.startT}.`]
+  parts.push(h.end ? `EndOfTurn (trigger ${h.end.trigger || '(none)'}) ${ms(h.end.afterMs)} after ForceEndTurn: ${q(h.end.transcript)}.` : 'No EndOfTurn after ForceEndTurn.')
+  if (h.close) parts.push(`Flux closed the stream itself ${ms(h.close.afterMs)} after ForceEndTurn (${h.close.code}${h.close.reason ? ` ${q(h.close.reason)}` : ''}).`)
+  if (h.end && h.close) parts.push(h.endBeforeClose ? 'The EndOfTurn came before the close.' : 'The EndOfTurn came after the close.')
+  if (h.warnings.length) parts.push(`Warnings: ${h.warnings.join(', ')}.`)
+  return parts.join(' ')
+}
+
+function cadenceLine(c: Cadence | null, clips: ClipAnalysis[]): string {
+  if (!c && clips.some(clip => clip.id === 'int-long')) return 'cadence: none: int-long, the long sentence it comes from, did not run to its end'
   if (!c) return 'cadence: not run (it comes from int-long, the long sentence)'
   const gaps = c.medianGapMs === null ? 'too few messages for a gap' : `a TurnInfo every ${ms(c.medianGapMs)} (median), p90 ${ms(c.p90GapMs ?? 0)}, over ${c.gaps} gaps`
   const lead = c.leadingUpdates
@@ -175,7 +204,7 @@ export function formatReport(r: ReportInput): string {
 
   out.push('', '-- Protocol --')
   for (const f of r.force) out.push(forceLine(f, c.closeWaitMs, r.forceAfterMs))
-  out.push(idleLine(r.idle), cadenceLine(r.cadence))
+  out.push(holdLine(r.hold), idleLine(r.idle), cadenceLine(r.cadence, r.clips))
 
   const s = r.suggestions
   out.push('', '-- Suggestions (not applied: change the constants and word lists by hand if they look right) --')

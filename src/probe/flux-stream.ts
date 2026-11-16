@@ -35,6 +35,8 @@ export interface StreamTiming {
   closeWaitMs: number
   /** How long Deepgram has to accept the stream. */
   openTimeoutMs: number
+  /** The hold check: how long Flux has to answer its ForceEndTurn, with an EndOfTurn or a close. */
+  holdWaitMs: number
 }
 
 export const STREAM_TIMING: StreamTiming = Object.freeze({
@@ -43,6 +45,7 @@ export const STREAM_TIMING: StreamTiming = Object.freeze({
   minTailMs: 1000,
   closeWaitMs: 5000,
   openTimeoutMs: FLUX_OPEN_TIMEOUT_MS + 1000,
+  holdWaitMs: 5000,
 })
 
 export interface StreamOptions {
@@ -59,6 +62,11 @@ export interface StreamOptions {
   force?: { afterStartMs: number; close: boolean }
   /** The idle check: only the first audioMs of the clip go, then nothing at all until Flux closes, or maxMs pass. */
   idle?: { audioMs: number; maxMs: number }
+  /**
+   * The hold check, the service's own path when the bot page has gone (session.ts pageClosed): only the first audioMs
+   * of the clip go, then nothing at all for holdMs, then ForceEndTurn alone if a turn is open, as FluxStream sends it.
+   */
+  hold?: { audioMs: number; holdMs: number }
 }
 
 /** One message from Flux: t is ms from when the clip's audio began (negative during the lead silence). */
@@ -70,7 +78,7 @@ export interface ProbeEvent {
 export interface StreamRun {
   /** Whether Deepgram accepted the stream. */
   opened: boolean
-  /** How long the clip is (ms): t = clipMs is where its audio ends. For the idle check, the part sent. */
+  /** How long the clip is (ms): t = clipMs is where its audio ends. For the idle and hold checks, the part sent. */
   clipMs: number
   events: ProbeEvent[]
   /** When the last audio went out (t), silence included; null when none did. */
@@ -124,8 +132,9 @@ function within(promise: Promise<void>, ms: number): Promise<void> {
  */
 export async function streamClip(opts: StreamOptions): Promise<StreamRun> {
   const timing = { ...STREAM_TIMING, ...opts.timing }
-  const idle = opts.idle
-  const clip = idle ? opts.audio.subarray(0, Math.round(idle.audioMs * BYTES_PER_MS) & ~1) : opts.audio
+  const { idle, hold } = opts
+  const partMs = idle?.audioMs ?? hold?.audioMs
+  const clip = partMs === undefined ? opts.audio : opts.audio.subarray(0, Math.round(partMs * BYTES_PER_MS) & ~1)
   const run: StreamRun = { opened: false, clipMs: msOf(clip), events: [], lastAudioT: null, audioMs: 0, lateMs: 0 }
   // Times are kept as performance.now() until the end, then made relative to where the clip's audio begins.
   const got: { at: number; msg: Record<string, unknown> }[] = []
@@ -166,6 +175,7 @@ export async function streamClip(opts: StreamOptions): Promise<StreamRun> {
   const opened = new Promise<'open' | 'failed'>(resolve => (settle = resolve))
   let onClose: () => void = () => {}
   const closedPromise = new Promise<void>(resolve => (onClose = resolve))
+  let onTurnEnd: () => void = () => {}
   ws.on('open', () => settle('open'))
   ws.on('error', err => {
     // Once the probe has cut the socket (a refusal, a wait run out), ws's own complaint about it says nothing new.
@@ -213,6 +223,7 @@ export async function streamClip(opts: StreamOptions): Promise<StreamRun> {
     } else if (msg.event === 'EndOfTurn') {
       turnOpen = false
       turnEnded = true
+      onTurnEnd()
     }
   })
 
@@ -258,6 +269,15 @@ export async function streamClip(opts: StreamOptions): Promise<StreamRun> {
     const until = (lastAudioAt ?? performance.now()) + idle.maxMs
     await within(closedPromise, until - performance.now())
     if (!closed) run.stillOpenAfterMs = Math.round(performance.now() - (lastAudioAt ?? start))
+  } else if (hold) {
+    await within(closedPromise, (lastAudioAt ?? performance.now()) + hold.holdMs - performance.now())
+    // FluxStream sends ForceEndTurn only while a turn is open: one Flux ended itself needs nothing.
+    if (!closed && turnOpen) {
+      const ended = new Promise<void>(resolve => (onTurnEnd = resolve))
+      ws.send(JSON.stringify({ type: 'ForceEndTurn' }))
+      forceAt = performance.now()
+      await within(Promise.race([ended, closedPromise]), timing.holdWaitMs)
+    }
   } else {
     const tail = silence(CHUNK_MS)
     const clipEnd = timing.leadMs + run.clipMs
