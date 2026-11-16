@@ -40,8 +40,8 @@ const AUDIO_FLOWING_MS = 1000
 // A stream that drops with no audio for this long was probably closed for lack of it: no warning in the log.
 const AUDIO_QUIET_MS = 2000
 // Refusals that trying again cannot fix: a bad request, a wrong key, no credit left, a model the key can't use.
-// Anything else (429 for too many streams at once, 5xx, a network error) is tried again.
-const FINAL_STATUSES = new Set([400, 401, 402, 403, 404])
+// Anything else (429 for too many streams at once, 5xx, a network error) is tried again. The flux probe uses it too.
+export const FINAL_STATUSES: ReadonlySet<number> = new Set([400, 401, 402, 403, 404])
 // Deepgram could not read what this client sent: a fault here, which another stream would only repeat.
 const FINAL_ERROR_CODES = new Set(['UNPARSABLE_CLIENT_MESSAGE'])
 
@@ -64,6 +64,11 @@ export function fluxUrl(opts: { eotThreshold?: number; keyterms?: string[] } = {
   })
   for (const term of opts.keyterms ?? config.deepgramKeyterms) params.append('keyterm', term)
   return `wss://api.deepgram.com/v2/listen?${params}`
+}
+
+/** The headers that carry the key on the Flux handshake: the key goes here, never in the address. */
+export function fluxHeaders(key: string): Record<string, string> {
+  return { Authorization: `Token ${key}` }
 }
 
 export type TurnEvent = 'Update' | 'StartOfTurn' | 'EagerEndOfTurn' | 'TurnResumed' | 'EndOfTurn'
@@ -210,7 +215,7 @@ export class FluxStream extends EventEmitter<FluxEvents> {
     }
     this.connect =
       opts.connect ??
-      (url => new WebSocket(url, { headers: { Authorization: `Token ${key}` }, handshakeTimeout: FLUX_OPEN_TIMEOUT_MS }))
+      (url => new WebSocket(url, { headers: fluxHeaders(key), handshakeTimeout: FLUX_OPEN_TIMEOUT_MS }))
     this.trackAudio = opts.trackAudio === true
     this.dial()
   }
