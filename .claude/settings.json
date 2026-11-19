@@ -28,7 +28,8 @@
       "Read(//**/*.key)",
       "Read(//**/*.p12)",
       "Read(//**/*.pfx)",
-      "Read(//**/local-token)"
+      "Read(//**/local-token)",
+      "Read(//**/data/decks/**)"
     ]
   }
 }

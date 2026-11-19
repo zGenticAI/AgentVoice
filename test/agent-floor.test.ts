@@ -40,7 +40,7 @@ const denied = (name: string) =>
 
 test('the committed settings deny reading those files to every Claude Code session in this folder, and your own go in settings.local.json', () => {
   const settings = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude/settings.json'), 'utf8'))
-  for (const rule of ['Read(//**/.env)', 'Read(//**/.env.local)', 'Read(//**/.env.*.local)', 'Read(~/.ssh/**)', 'Read(~/.cloudflared/**)', 'Read(~/.claude.json)', 'Read(//**/*.pem)', 'Read(//**/*.key)', 'Read(//**/local-token)']) {
+  for (const rule of ['Read(//**/.env)', 'Read(//**/.env.local)', 'Read(//**/.env.*.local)', 'Read(~/.ssh/**)', 'Read(~/.cloudflared/**)', 'Read(~/.claude.json)', 'Read(//**/*.pem)', 'Read(//**/*.key)', 'Read(//**/local-token)', 'Read(//**/data/decks/**)']) {
     assert.ok(DENY.includes(rule), rule)
   }
   assert.deepEqual(Object.keys(settings), ['permissions'], 'nothing else: no allow rules for everyone')

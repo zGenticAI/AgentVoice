@@ -1,0 +1,278 @@
+// The screen-share test's report, made to be pasted back to a Claude Code session: the verdict, the camera page in each
+// step (the decisive result), each step with its timings and answers, and what the test page measured in the bot's
+// browser. Pure: the driver (src/cli/share-test-run.ts) gathers the records, and scrubs everything before it is printed.
+import { PLATFORM_NAMES, type Platform } from '../recall.ts'
+import type { PageHello } from './protocol.ts'
+
+export const REPORT_END = 'Paste this whole report back to your Claude Code session.'
+
+export const STEP_IDS = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9'] as const
+export type StepId = (typeof STEP_IDS)[number]
+export type StepResult = 'PASS' | 'FAIL' | 'SKIPPED' | 'UNKNOWN'
+
+export const STEP_TITLES: Record<StepId, string> = {
+  S1: 'baseline',
+  S2: 'share',
+  S3: 'voice while sharing',
+  S4: 'listening while sharing',
+  S5: 'slide changes',
+  S6: 'hold',
+  S7: 'replace',
+  S8: 'stop',
+  S9: 'restart',
+}
+
+/** An answer the owner gave: y, n, s (skipped), a ladder size or none, or '' when none came in time. */
+export interface Answer {
+  /** What the question was for: seen, retry, ladder, heard, answered, counted, session or gone. */
+  key: string
+  question: string
+  answer: string
+}
+
+/** What one step did. Times are ms; the timings are named for what they measure. */
+export interface StepRecord {
+  id: StepId
+  title: string
+  ran: boolean
+  result: StepResult
+  /** Why it is not a plain pass, in a few words each. */
+  why: string[]
+  started_ms: number | null
+  took_ms: number | null
+  /** Recall's answer to each share call in the step: its HTTP status (0: no answer) and how long it took. */
+  recall: { call: 'share' | 'unshare'; epoch: number | null; status: number; ms: number }[]
+  /** The camera page during the step: connections let in again, drops, and refused pages. */
+  camera: { attaches: number; drops: number; refused: number } | null
+  /** What the test page's link did, in words. */
+  link: string[]
+  timings: Record<string, number | null>
+  answers: Answer[]
+  notes: string[]
+}
+
+export function newStep(id: StepId): StepRecord {
+  return {
+    id,
+    title: STEP_TITLES[id],
+    ran: false,
+    result: 'UNKNOWN',
+    why: [],
+    started_ms: null,
+    took_ms: null,
+    recall: [],
+    camera: null,
+    link: [],
+    timings: {},
+    answers: [],
+    notes: [],
+  }
+}
+
+/** What the test page measured in the bot's browser, over every share. */
+export interface PageSummary {
+  hello: PageHello | null
+  /** Frames per second from requestAnimationFrame: the median and the lowest of the 2-second reports. */
+  fps: { median: number; lowest: number; reports: number } | null
+  worstTimerLateMs: number | null
+  visibility: string[]
+  /**
+   * The Origin header on the page's first link ('' for none), and whether it is the page's own. A bare origin is also
+   * kept as its scheme and host apart: printed as an address, the scrub would take another site's for a link and
+   * leave "[link]", the one answer DESIGN.md's G15 needs. It has no path or query (originOf), so it can't hold a token.
+   */
+  origin: { value: string; scheme: string; host: string; isPage: boolean } | null
+}
+
+export interface ReportInput {
+  name: string
+  app: string
+  node: string
+  platform: Platform
+  /** The date and time the test started, UTC, to the minute. */
+  date: string
+  keep: boolean
+  steps: StepRecord[]
+  page: PageSummary
+  /** The smallest ladder size the owner could read ('16 px', 'none'), or null if not asked or skipped. */
+  smallestText: string | null
+  /** Why the test stopped before the end, if it did. */
+  stopped: string | null
+  /** What was done at the end: the share stopped, the assistant asked to leave, or kept in. */
+  ending: string[]
+}
+
+export interface Verdict {
+  safe: boolean
+  line: string
+  reasons: string[]
+}
+
+const s1 = (ms: number | null | undefined) => (ms === null || ms === undefined ? '?' : `${(ms / 1000).toFixed(1)} s`)
+/** The last answer in a step to the question for this key, or '' when there is none. */
+export const answerOf = (step: StepRecord | undefined, key: string) => step?.answers.findLast(a => a.key === key)?.answer ?? ''
+
+/** What the camera page did in a step, in words: 'untouched' when nothing. */
+export function cameraWords(camera: StepRecord['camera']): string {
+  if (!camera) return 'not known'
+  const parts = [
+    camera.drops ? `dropped ${camera.drops} time${camera.drops === 1 ? '' : 's'}` : '',
+    camera.attaches ? `connected again ${camera.attaches} time${camera.attaches === 1 ? '' : 's'}` : '',
+    camera.refused ? `${camera.refused} page${camera.refused === 1 ? '' : 's'} refused (loaded again without its secret)` : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join(', ') : 'untouched'
+}
+
+const cameraMoved = (camera: StepRecord['camera']) => Boolean(camera && (camera.drops || camera.attaches || camera.refused))
+
+const accepted = (step: StepRecord | undefined, call: 'share' | 'unshare') => Boolean(step?.recall.some(c => c.call === call && c.status >= 200 && c.status < 300))
+
+/**
+ * "Slides look safe" only when, from S2 to S9 (every one of them run to its end): the camera page never dropped or came
+ * back, and was known at the end; Recall accepted every share and stop, the replace in S7 included; the owner saw the
+ * share (S2) and saw it go (S8); and the assistant was heard and answered while sharing (S3, S4) and after the stop (S8).
+ * Hearing and speaking take separate paths in the camera page, so one can break while the other works. The test
+ * stands in for Gate 0, whose start, replace and stop must work as asked, not only leave the camera page alone.
+ */
+export function verdict(input: Pick<ReportInput, 'name' | 'platform' | 'steps' | 'stopped'>): Verdict {
+  const platform = PLATFORM_NAMES[input.platform]
+  const byId = new Map(input.steps.map(s => [s.id, s]))
+  const reasons: string[] = []
+  for (const step of input.steps) {
+    if (step.id === 'S1') continue
+    if (cameraMoved(step.camera)) reasons.push(`the camera page ${cameraWords(step.camera)} in ${step.id} (${step.title})`)
+  }
+  // A step whose closing status failed is counted in the next step that got one. After the last, nothing counts it.
+  const lastKnown = input.steps.findLastIndex(s => s.ran && s.camera)
+  const unknown = input.steps.filter((s, i) => s.id !== 'S1' && s.ran && !s.camera && i > lastKnown).map(s => s.id)
+  if (unknown.length) reasons.push(`the camera page is not known in ${unknown.join(', ')}`)
+  const notRun = input.steps.filter(s => s.id !== 'S1' && !s.ran).map(s => s.id)
+  const why = input.stopped ? ` (${input.stopped})` : ''
+  if (notRun.length) reasons.push(`the test stopped before ${notRun.join(', ')}${why}`)
+  // Every step started, yet it stopped: partway through the last one, whose end was never seen.
+  else if (input.stopped) reasons.push(`the test stopped partway through ${input.steps.at(-1)?.id ?? 'the last step'}${why}`)
+  const seen = answerOf(byId.get('S2'), 'seen')
+  if (byId.get('S2')?.ran && seen !== 'y') reasons.push(seen === 'n' ? 'you did not see the share in S2' : 'the share was not confirmed seen in S2')
+  for (const id of ['S3', 'S8'] as const) {
+    const step = byId.get(id)
+    if (!step?.ran) continue
+    const heard = answerOf(step, 'heard')
+    if (heard !== 'y') reasons.push(heard === 'n' ? `you did not hear ${input.name} in ${id}` : `hearing ${input.name} was not confirmed in ${id}`)
+  }
+  for (const id of ['S4', 'S8'] as const) {
+    const step = byId.get(id)
+    if (!step?.ran) continue
+    const answered = answerOf(step, 'answered')
+    if (answered !== 'y') reasons.push(answered === 'n' ? `${input.name} did not answer you in ${id}` : `${input.name} answering was not confirmed in ${id}`)
+  }
+  // A share, a replace or a stop that Recall refused tested nothing: the camera page being untouched then proves nothing.
+  for (const id of ['S2', 'S9'] as const) {
+    const step = byId.get(id)
+    if (!step?.ran) continue
+    for (const call of step.recall) {
+      if (call.status >= 200 && call.status < 300) continue
+      const what = call.call === 'share' ? 'share' : 'stop'
+      reasons.push(`Recall ${call.status ? `answered ${call.status} to the ${what}` : `did not answer the ${what}`} in ${id} (${step.title})`)
+    }
+  }
+  if (byId.get('S5')?.ran && answerOf(byId.get('S5'), 'counted') === 'n') reasons.push('the number did not count up to 5 in S5')
+  const s7 = byId.get('S7')
+  if (s7?.ran) {
+    if (!accepted(s7, 'share')) reasons.push('Recall did not accept the new share in S7, so a replace was not tested')
+    else if (answerOf(s7, 'session') === 'n') reasons.push('the page did not show the new session in S7')
+  }
+  const s8 = byId.get('S8')
+  if (s8?.ran) {
+    if (!accepted(s8, 'unshare')) reasons.push('Recall did not stop the share in S8, so a stop was not tested')
+    const gone = answerOf(s8, 'gone')
+    if (gone !== 'y') reasons.push(gone === 'n' ? 'you said the share did not go in S8' : 'the share going was not confirmed in S8')
+  }
+  if (!reasons.length) return { safe: true, line: `Slides look safe on ${platform}.`, reasons }
+  return { safe: false, line: `Not safe yet on ${platform}: ${reasons.join('; ')}.`, reasons }
+}
+
+function stepLines(step: StepRecord): string[] {
+  const head = `${step.id} ${step.title}: ${step.result}${step.ran && step.took_ms !== null ? ` (${s1(step.took_ms)})` : ''}`
+  if (!step.ran) return [`${head}. Not run.`]
+  const lines = [head]
+  if (step.why.length) lines.push(`  Why: ${step.why.join('; ')}.`)
+  for (const call of step.recall) {
+    const what = call.call === 'share' ? `share ${call.epoch ?? '?'}` : 'stop'
+    lines.push(`  Recall, ${what}: ${call.status ? `answered ${call.status}` : 'no answer'} in ${s1(call.ms)}`)
+  }
+  const timings = Object.entries(step.timings).filter(([, v]) => v !== null && v !== undefined)
+  if (timings.length) lines.push(`  Timings: ${timings.map(([k, v]) => `${k.replaceAll('_', ' ')} ${s1(v)}`).join(', ')}`)
+  for (const event of step.link) lines.push(`  Link: ${event}`)
+  lines.push(`  Camera page: ${cameraWords(step.camera)}`)
+  for (const a of step.answers) lines.push(`  Asked: ${a.question} Answer: ${a.answer || '(none)'}`)
+  for (const note of step.notes) lines.push(`  Note: ${note}`)
+  return lines
+}
+
+function pageLines(page: PageSummary): string[] {
+  const lines: string[] = []
+  const h = page.hello
+  lines.push(
+    h
+      ? `Viewport ${h.width}x${h.height}, devicePixelRatio ${h.dpr}, visibility ${h.visibility}, Chrome ${h.chrome_major ?? 'not named in the user agent'}`
+      : 'The page never said hello, so nothing is known of its browser.',
+  )
+  if (page.fps) lines.push(`Frames per second (requestAnimationFrame): median ${page.fps.median}, lowest ${page.fps.lowest}, over ${page.fps.reports} reports`)
+  else lines.push('Frames per second: no reports')
+  lines.push(`Worst timer lateness: ${page.worstTimerLateMs === null ? 'no reports' : `${page.worstTimerLateMs} ms`}`)
+  if (page.visibility.length) lines.push(`Visibility reported: ${page.visibility.join(', ')}`)
+  const o = page.origin
+  const shown = o?.host ? `scheme ${o.scheme}, host ${o.host}` : o?.value
+  lines.push(!o ? 'Origin on the link: not seen' : !shown ? 'Origin on the link: none sent' : `Origin on the link: ${shown}${o.isPage ? ", the page's own" : ", not the page's own"}`)
+  return lines
+}
+
+/** The report, as plain text. */
+export function formatReport(input: ReportInput): string {
+  const v = verdict(input)
+  const lines = [
+    'Screen-share test report',
+    `App: ${input.app}, Node ${input.node}`,
+    `Platform: ${PLATFORM_NAMES[input.platform]}`,
+    `Date: ${input.date}`,
+    '',
+    `Verdict: ${v.line}`,
+  ]
+  if (input.stopped) lines.push(`The test stopped early: ${input.stopped}.`)
+  lines.push('', 'Camera page (it carries the voice and the hearing), step by step:')
+  for (const step of input.steps) lines.push(`  ${step.id} ${step.title}: ${step.ran ? cameraWords(step.camera) : 'not run'}`)
+  lines.push('', 'Steps:')
+  for (const step of input.steps) lines.push(...stepLines(step))
+  lines.push('', 'The test page in the bot\'s browser:', ...pageLines(input.page).map(l => `  ${l}`))
+  lines.push('', `Smallest readable text: ${input.smallestText ?? 'not answered'}`)
+  if (input.ending.length) lines.push('', `At the end: ${input.ending.join(' ')}`)
+  lines.push('', REPORT_END)
+  return lines.join('\n')
+}
+
+/** An Origin's scheme and host, when it is a bare origin (no path, query, fragment or user); both '' otherwise. */
+export function originParts(value: string): { scheme: string; host: string } {
+  const url = URL.parse(value)
+  const bare = Boolean(url?.host) && `${url?.protocol}//${url?.host}` === value.toLowerCase()
+  return bare && url ? { scheme: url.protocol.slice(0, -1), host: url.host } : { scheme: '', host: '' }
+}
+
+/** Every 2-second report's frame rate and lateness, over every share: a summary for the report. */
+export function summarizePage(shares: { hello: PageHello | null; origin: string | null; origin_is_page: boolean | null; metrics: { fps: number; worst_timer_late_ms: number; visibility: string }[] }[]): PageSummary {
+  const hello = shares.find(s => s.hello)?.hello ?? null
+  const metrics = shares.flatMap(s => s.metrics)
+  const fps = metrics.map(m => m.fps).sort((a, b) => a - b)
+  const withOrigin = shares.find(s => s.origin !== null)
+  return {
+    hello,
+    fps: fps.length ? { median: fps[Math.floor((fps.length - 1) / 2)], lowest: fps[0], reports: fps.length } : null,
+    worstTimerLateMs: metrics.length ? Math.max(...metrics.map(m => m.worst_timer_late_ms)) : null,
+    visibility: [...new Set([hello?.visibility, ...metrics.map(m => m.visibility)].filter((v): v is string => Boolean(v)))],
+    origin: withOrigin ? { value: withOrigin.origin ?? '', ...originParts(withOrigin.origin ?? ''), isPage: withOrigin.origin_is_page === true } : null,
+  }
+}
+
+/** The date and time for the report: UTC, to the minute. */
+export function reportDate(date: Date): string {
+  return `${date.toISOString().slice(0, 16).replace('T', ' ')} UTC`
+}

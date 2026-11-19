@@ -2,7 +2,8 @@
 // tested without a voice service.
 
 export const JOIN_USAGE =
-  'Usage: npm run join -- "<Zoom, Google Meet or Microsoft Teams meeting link>" [--brief <file>] [--speaker-probe]'
+  'Usage: npm run join -- "<Zoom, Google Meet or Microsoft Teams meeting link>" [--brief <file>] [--speaker-probe]\n' +
+  '       npm run join -- "<meeting link>" --share-test [--json <file>] [--keep] [--brief <file>]'
 
 export interface JoinArgs {
   meetingUrl: string
@@ -10,12 +11,18 @@ export interface JoinArgs {
   briefFile?: string
   /** Measure who is speaking in this meeting: a test meeting, with SPEAKER_PROBE on (docs/speaker-probe.md). */
   speakerProbe?: true
+  /** Run the screen-share test in this meeting: a test meeting you host (docs/share-test.md). */
+  shareTest?: true
+  /** With --share-test: also write the test's raw step records to this file. */
+  jsonFile?: string
+  /** With --share-test: leave the assistant in the meeting when the test ends. */
+  keep?: true
 }
 
 /** Options that take a value, as --name <value> or --name=<value>, and the field each one fills. */
-const VALUE_OPTIONS = { '--brief': 'briefFile' } as const satisfies Record<string, keyof JoinArgs>
+const VALUE_OPTIONS = { '--brief': 'briefFile', '--json': 'jsonFile' } as const satisfies Record<string, keyof JoinArgs>
 /** Options that take none, and the field each one sets. */
-const FLAG_OPTIONS = { '--speaker-probe': 'speakerProbe' } as const satisfies Record<string, keyof JoinArgs>
+const FLAG_OPTIONS = { '--speaker-probe': 'speakerProbe', '--share-test': 'shareTest', '--keep': 'keep' } as const satisfies Record<string, keyof JoinArgs>
 
 /** The join command's arguments, or why they can't be used. Options may come before or after the link. */
 export function joinArgs(argv: readonly string[]): JoinArgs | { problem: string } {
@@ -44,5 +51,10 @@ export function joinArgs(argv: readonly string[]): JoinArgs | { problem: string 
     options[field] = value
   }
   if (links.length !== 1) return { problem: links.length ? 'Give one meeting link.' : 'Give the meeting link.' }
+  // The share test is a test meeting of its own: it measures nothing of who is speaking, and the probe nothing of it.
+  if (options.shareTest && options.speakerProbe) return { problem: 'Use --share-test or --speaker-probe, not both.' }
+  for (const [name, field] of [['--json', 'jsonFile'], ['--keep', 'keep']] as const) {
+    if (options[field] !== undefined && !options.shareTest) return { problem: `${name} goes with --share-test.` }
+  }
   return { meetingUrl: links[0], ...options }
 }

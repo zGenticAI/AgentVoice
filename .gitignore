@@ -20,5 +20,10 @@ data/*
 profile.md
 .claude/settings.local.json
 /briefs/
+# Your slide decks and their scripts (npm run slides), which hold your clients' slides and your own narration: keep
+# them in decks/, or outside this folder. The root patterns catch a PDF prepared right here.
+/decks/
+/*.pdf
+/*.script.md
 # Your own list of private terms, which test/private-terms.test.ts checks the tree for (see test/private-terms.ts).
 private-terms.txt

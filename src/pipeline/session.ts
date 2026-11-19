@@ -15,6 +15,7 @@ import { type MinutesInput, writeMinutes } from '../minutes.ts'
 import { sameSecret } from '../network.ts'
 import * as recall from '../recall.ts'
 import { type Ending, type SpeakerProbe, probeCodeword } from '../speakers/probe.ts'
+import type { TestLineOutcome } from '../sharetest/protocol.ts'
 import { type Line, Transcript } from '../transcript.ts'
 import { FluxStream, SAMPLE_RATE, type TurnInfo } from './deepgram.ts'
 import { Playback } from './playback.ts'
@@ -345,6 +346,8 @@ export class MeetingSession {
   // answers: a line the page stops short marks its verdict cut_off, even once its turn is over (see the Playback).
   private readonly turnVerdicts = new WeakMap<AbortSignal, Verdict>()
   private readonly lineVerdicts = new WeakMap<Line, Verdict>()
+  // How many of Alex's lines the page has stopped short: the test line waits for the page, and is cut off if one is.
+  private linesCut = 0
 
   constructor(
     ws: WebSocket,
@@ -359,6 +362,7 @@ export class MeetingSession {
     // that says more.
     this.playback = new Playback((line, text) => {
       this.transcript.amend(line, text)
+      this.linesCut++
       const heard = this.lineVerdicts.get(line)
       // While the line's own turn still runs, how that turn ends says what came of it: stopped, it is cut off; failed,
       // it failed; and a checking line ElevenLabs failed partway leaves the question waiting for the owner's session.
@@ -653,6 +657,48 @@ export class MeetingSession {
 
   get botId(): string | undefined {
     return this.opts.botId
+  }
+
+  /** Whether the consent line has gone out in full and the page has played it: the screen-share test waits for it. */
+  get consentDone(): boolean {
+    return (this.consent === 'sent' || this.consent === 'heard') && this.greeting === null
+  }
+
+  /**
+   * For the screen-share test (npm run join --share-test): says a fixed test line as an answer is said, through the
+   * same turn, transcript and page (talking over it pauses it, and words stop it), once the consent line is over.
+   * Resolves once the page has played it to the end, or with why not.
+   */
+  async sayTestLine(text: string): Promise<TestLineOutcome> {
+    if (this.greeting) await this.greeting
+    if (this.ended || this.leaving) return 'not_now'
+    if (!this.ws) return 'no_page'
+    let outcome = 'cut_off' as TestLineOutcome
+    await this.runTurn(async signal => {
+      try {
+        if (await this.say(text, signal)) outcome = 'played'
+      } catch (err) {
+        if (!signal.aborted) outcome = 'failed'
+        throw err
+      }
+    })
+    if (outcome !== 'played') return outcome
+    // All of it went out: the page plays the rest from what it holds. A line the page stops short meanwhile (talked
+    // over, "never mind", a page that dropped) cuts it, though its turn is over: the Playback says so for each.
+    const cut = this.linesCut
+    const playing = this.playback.playsUntil - this.clock()
+    if (playing > 0) await new Promise(resolve => setTimeout(resolve, playing).unref())
+    return this.ended || this.leaving || this.linesCut !== cut ? 'cut_off' : 'played'
+  }
+
+  /**
+   * The screen-share test is over: the assistant leaves as on "please leave", by the same path. It says goodbye, its
+   * transcript is deleted, and there are no minutes.
+   */
+  leaveAsAsked(): void {
+    if (this.leaving) return
+    if (this.ended) return this.forget()
+    this.leave().catch(err => console.error('[leave]', (err as Error).message))
   }
 
   async postChat(message: string): Promise<boolean> {

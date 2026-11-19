@@ -1,8 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ENDED_SUB_CODES, FATAL_SUB_CODES, RecallError, botEnding, botLeftCall, botRequest, deleteMedia, howBotEnded, leaveCall, meetingPlatform, sendChat, worthRetrying } from '../src/recall.ts'
+import fs from 'node:fs'
+import path from 'node:path'
+import {
+  ENDED_SUB_CODES, FATAL_SUB_CODES, RecallError, STOP_SCREENSHARE, botEnding, botLeftCall, botRequest, deleteMedia, howBotEnded, leaveCall,
+  meetingPlatform, sendChat, startScreenshare, stopScreenshare, worthRetrying,
+} from '../src/recall.ts'
 import { joinChatMessage } from '../src/consent.ts'
-import { config } from '../src/config.ts'
+import { ROOT, config } from '../src/config.ts'
 
 test('bot request names Alex, streams the page and posts the consent message', () => {
   const body = botRequest({ meetingUrl: 'https://zoom.us/j/912345678', pageUrl: 'https://alex.example/agent' }) as any
@@ -298,4 +303,94 @@ test('a refused chat post keeps only its status: Recall may quote the message, w
   assert.equal(refused.status, 400)
   assert.equal(refused.message, 'Recall could not post a chat message for bot b1 (400)')
   assert.equal(worthRetrying(refused), false)
+})
+
+// --- A screen share mid-call (the screen-share test) ----------------------------------------------------------
+
+type Sent = { url: string; method: string; body: string; signal: boolean }
+
+/** Recall as fetch meets it: each request is kept, and answered by `answer`. */
+function fakeRecall(t: { after: (fn: () => void) => void }, answer: (sent: Sent) => Response | Promise<Response>) {
+  const realFetch = globalThis.fetch
+  const realKey = process.env.RECALL_API_KEY
+  t.after(() => {
+    globalThis.fetch = realFetch
+    if (realKey === undefined) delete process.env.RECALL_API_KEY
+    else process.env.RECALL_API_KEY = realKey
+  })
+  process.env.RECALL_API_KEY = 'test-key'
+  const sent: Sent[] = []
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    const one = { url: String(url), method: String(init.method), body: String(init.body), signal: init.signal instanceof AbortSignal }
+    sent.push(one)
+    return answer(one)
+  }) as typeof fetch
+  return sent
+}
+
+const SHARE_URL = 'https://alex.example/share-test?t=TOKENTOKENTOKEN'
+
+test('a screen share starts with the page as a webpage, and stops with exactly {"screenshare":true}, never {}, which would stop the camera page too', async t => {
+  const sent = fakeRecall(t, one =>
+    one.method === 'POST'
+      ? new Response(JSON.stringify({ id: 'b1', output_media: { screenshare: { kind: 'webpage', config: { url: SHARE_URL } } } }), { status: 200 })
+      : new Response(null, { status: 204 }),
+  )
+  assert.equal(await startScreenshare('b1', SHARE_URL), 200)
+  assert.equal(await stopScreenshare('b1'), 204)
+  assert.deepEqual(
+    sent.map(({ url, method, body }) => ({ url, method, body })),
+    [
+      { url: 'https://us-east-1.recall.ai/api/v1/bot/b1/output_media/', method: 'POST', body: `{"screenshare":{"kind":"webpage","config":{"url":"${SHARE_URL}"}}}` },
+      { url: 'https://us-east-1.recall.ai/api/v1/bot/b1/output_media/', method: 'DELETE', body: '{"screenshare":true}' },
+    ],
+  )
+  // Each gives up on a Recall that never answers.
+  assert.ok(sent.every(one => one.signal))
+  assert.equal(JSON.stringify(STOP_SCREENSHARE), '{"screenshare":true}')
+  assert.ok(Object.isFrozen(STOP_SCREENSHARE))
+  // Nothing else in the service stops an output: the only DELETE is the screen share's, with that body.
+  for (const file of fs.readdirSync(path.join(ROOT, 'src'), { recursive: true, encoding: 'utf8' })) {
+    if (!file.endsWith('.ts')) continue
+    const text = fs.readFileSync(path.join(ROOT, 'src', file), 'utf8')
+    for (const m of text.matchAll(/'DELETE'/g)) {
+      const line = text.slice(text.lastIndexOf('\n', m.index) + 1, text.indexOf('\n', m.index))
+      const allowed = /shareCall\('DELETE', botId, STOP_SCREENSHARE,/.test(line) || /^async function shareCall\(method: 'POST' \| 'DELETE',/.test(line)
+      assert.ok(file === 'recall.ts' && allowed, `${file}: ${line.trim()}`)
+    }
+  }
+})
+
+test('a refused or unanswered share call keeps only its status: Recall may quote the page address, which carries its token', async t => {
+  let status = 400
+  fakeRecall(t, () => new Response(JSON.stringify({ config: { url: [`Not reachable: ${SHARE_URL}`] } }), { status }))
+  for (const s of [400, 403, 404, 503]) {
+    status = s
+    const refused = await startScreenshare('b1', SHARE_URL).catch((err: unknown) => err)
+    assert.ok(refused instanceof RecallError)
+    assert.equal(refused.status, s)
+    assert.equal(refused.message, `Recall could not start a screen share for bot b1 (${s})`)
+    const stopRefused = await stopScreenshare('b1').catch((err: unknown) => err)
+    assert.ok(stopRefused instanceof RecallError)
+    assert.equal(stopRefused.message, `Recall could not stop the screen share for bot b1 (${s})`)
+  }
+  globalThis.fetch = (async () => {
+    throw new TypeError(`fetch failed for ${SHARE_URL}`)
+  }) as typeof fetch
+  const offline = await startScreenshare('b1', SHARE_URL).catch((err: unknown) => err)
+  assert.ok(offline instanceof Error && !(offline instanceof RecallError))
+  assert.equal(offline.message, 'Recall could not be reached to start a screen share for bot b1')
+  assert.equal(worthRetrying(offline), true)
+})
+
+test('the bot is created with its camera page only: never an output audio, nor a screen share', () => {
+  for (const plan of [
+    { meetingUrl: 'https://zoom.us/j/912345678', pageUrl: 'https://alex.example/agent' },
+    { meetingUrl: 'https://zoom.us/j/912345678', pageUrl: 'https://alex.example/agent', eventsUrl: 'wss://alex.example/recall/?key=k&token=t' },
+  ]) {
+    const body = botRequest(plan) as { output_media: Record<string, unknown> }
+    assert.deepEqual(Object.keys(body.output_media), ['camera'])
+    assert.equal('audio' in body.output_media, false)
+    assert.equal('screenshare' in body.output_media, false)
+  }
 })

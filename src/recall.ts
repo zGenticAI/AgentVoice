@@ -1,5 +1,7 @@
 // Recall.ai meeting bot: joins Zoom, Google Meet or Microsoft Teams as Alex and streams our agent page as its camera and microphone.
-// Docs: https://docs.recall.ai/docs/stream-media, https://docs.recall.ai/docs/chat-messages, https://docs.recall.ai/docs/zoom-overview,
+// Docs: https://docs.recall.ai/docs/meeting-agents-build-a-custom-meeting-agent,
+// https://docs.recall.ai/docs/meeting-agents-share-and-control-an-agents-webpage-via-camera-or-screenshare,
+// https://docs.recall.ai/docs/sending-chat-messages, https://docs.recall.ai/docs/zoom-overview,
 // https://docs.recall.ai/docs/zero-data-retention, https://docs.recall.ai/docs/sub-codes
 import { config, recallRegionProblem, required } from './config.ts'
 import { joinChatMessage } from './consent.ts'
@@ -32,14 +34,18 @@ export function worthRetrying(err: unknown): boolean {
   return err.status >= 500 || err.status === 429 || err.status === 408
 }
 
+function headers(): Record<string, string> {
+  return {
+    Authorization: required('RECALL_API_KEY'),
+    accept: 'application/json',
+    'content-type': 'application/json',
+  }
+}
+
 async function call(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<any> {
   const res = await fetch(`${base()}${path}`, {
     method,
-    headers: {
-      Authorization: required('RECALL_API_KEY'),
-      accept: 'application/json',
-      'content-type': 'application/json',
-    },
+    headers: headers(),
     body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   })
@@ -142,6 +148,48 @@ export async function sendChat(botId: string, message: string): Promise<void> {
 
 export async function leaveCall(botId: string): Promise<void> {
   await call('POST', `/bot/${botId}/leave_call/`)
+}
+
+// --- A screen share mid-call (only the screen-share test uses these: npm run join --share-test) ---------------------
+// https://docs.recall.ai/docs/meeting-agents-share-and-control-an-agents-webpage-via-camera-or-screenshare (2026-11-18)
+
+/**
+ * Stops the screen share only. "Explicitly targeting screenshare keeps a separate camera session running." An empty
+ * object would stop every output, and with it the camera page that carries Alex's voice: never send one.
+ */
+export const STOP_SCREENSHARE = Object.freeze({ screenshare: true })
+
+/** How long a share call waits for Recall before it gives up (ms). */
+export const SCREENSHARE_CALL_MS = 15_000
+
+/**
+ * A share call: its HTTP status once Recall accepts it. The reply is never read: Recall's answer to a POST is the bot,
+ * whose output_media holds the page's address and its token. A refusal keeps only its status, for the same reason (as
+ * sendChat's does), and so does a call Recall never answered.
+ */
+async function shareCall(method: 'POST' | 'DELETE', botId: string, body: object, what: string): Promise<number> {
+  // A setting that is missing throws as it is: only the call itself is stripped.
+  const url = `${base()}/bot/${botId}/output_media/`
+  const init = { method, headers: headers(), body: JSON.stringify(body), signal: AbortSignal.timeout(SCREENSHARE_CALL_MS) }
+  let res: Response
+  try {
+    res = await fetch(url, init)
+  } catch {
+    throw new Error(`Recall could not be reached to ${what} for bot ${botId}`)
+  }
+  await res.body?.cancel().catch(() => {})
+  if (!res.ok) throw new RecallError(res.status, `Recall could not ${what} for bot ${botId} (${res.status})`)
+  return res.status
+}
+
+/** Shares a webpage as the bot's screen, beside its camera. A 2xx means Recall accepted it, not that it is shown yet. */
+export async function startScreenshare(botId: string, url: string): Promise<number> {
+  return shareCall('POST', botId, { screenshare: { kind: 'webpage', config: { url } } }, 'start a screen share')
+}
+
+/** Stops the bot's screen share, and nothing else: the camera page goes on. */
+export async function stopScreenshare(botId: string): Promise<number> {
+  return shareCall('DELETE', botId, STOP_SCREENSHARE, 'stop the screen share')
 }
 
 // Recall refuses to delete a bot's media while the bot is in progress
