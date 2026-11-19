@@ -13,7 +13,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { createCanvas, loadImage } from '@napi-rs/canvas'
 import { ROOT } from '../src/config.ts'
-import { CANVAS_MISSING, PASSWORD_REFUSAL, PrepareError, type Prepared, childCommand, childEnv, newDeckId, prepareDeck, slugOf } from '../src/slides/convert.ts'
+import {
+  CANVAS_MISSING, PASSWORD_REFUSAL, PrepareError, type Prepared, childCommand, childEnv, newDeckId, pageOverDeckLimit, prepareDeck, slugOf,
+} from '../src/slides/convert.ts'
 import { DeckStore, webpSize } from '../src/slides/deck.ts'
 import { DECK_ID } from '../src/slides/manifest.ts'
 import { skeleton } from '../src/slides/script.ts'
@@ -310,6 +312,16 @@ test("the parent reads the child strictly: a refusal's words are its own, and an
   assert.match((await withFakeChild({ lines: ['not json at all'] })).message, /^The converter stopped unexpectedly/)
   assert.match((await withFakeChild({ lines: ['{"type":"open","pages":1}', '{"type":"done","other":0}'] })).message, /did not render every page/)
   assert.match((await withFakeChild({ lines: [], exit: 3 })).message, /^The converter stopped unexpectedly \(exit 3\)/)
+})
+
+test("a deck whose images come to more than 40 MiB stops at that page, in the owner's words, with no deck id", async () => {
+  const refusal = (await withFakeChild({ lines: ['{"type":"open","pages":60}', '{"type":"refused","reason":"deck-too-big","page":52}'] })).message
+  assert.equal(refusal, "deck.pdf's slide images come to more than 40 MiB (it stopped at page 52). Export it again with lighter images, split it, or leave some pages out with --exclude.")
+  assert.ok(!refusal.includes('41943040'), 'in MiB, not bytes')
+  // The parent's own count, for a child that did not stop: the page where the total first goes over.
+  const mib = 1024 * 1024
+  assert.equal(pageOverDeckLimit([{ n: 1, bytes: 20 * mib }, { n: 3, bytes: 20 * mib }]), null)
+  assert.equal(pageOverDeckLimit([{ n: 1, bytes: 20 * mib }, { n: 3, bytes: 20 * mib }, { n: 4, bytes: 1 }]), 4)
 })
 
 test('ids: a slug of the label, ASCII-folded, at most 24 characters, then 6 base32 letters, never one taken', () => {

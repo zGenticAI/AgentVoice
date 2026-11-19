@@ -90,7 +90,7 @@ Next: write the sections (or ask your Claude Code session to draft them), then
 - **`--exclude 3,9`** (or `4-6`) leaves pages out completely: they are never rendered, and nothing of them is kept. Use it for a slide whose text must not appear anywhere.
 - **`--label`** names the deck, and its id, instead of the file's name.
 - **The script** is written next to the PDF: `deck.pdf` gets `deck.script.md`, readable only by you. If it is already there, prepare updates it instead (see [After you change the deck](#after-you-change-the-deck)).
-- A deck of 30 slides takes a few seconds. A PDF may have at most 100 pages and 100 MiB, and a page's image at most 2 MiB (prepare lowers the quality a little first, and says so). Prepare stops a PDF that takes more than 3 minutes.
+- A deck of 30 slides takes a few seconds. A PDF may have at most 100 pages and 100 MiB, a page's image at most 2 MiB (prepare lowers the quality a little first, and says so), and all a deck's images together at most 40 MiB. A long deck of detailed photos can reach that: prepare stops at the page that goes over, and says so. Export it again with lighter images, split it, or leave some pages out with `--exclude`. Prepare stops a PDF that takes more than 3 minutes.
 
 ## Writing the script
 

@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import {
-  MAX_IMAGE_BYTES, MAX_PAGES, MAX_PAGE_TEXT, MAX_TITLE, SLIDE_HEIGHT, SLIDE_WIDTH, type WarningCode, slideFile,
+  MAX_DECK_BYTES, MAX_IMAGE_BYTES, MAX_PAGES, MAX_PAGE_TEXT, MAX_TITLE, SLIDE_HEIGHT, SLIDE_WIDTH, type WarningCode, slideFile,
 } from './manifest.ts'
 import type { ChildMessage, Job } from './child-protocol.ts'
 import { type TextItem, cleanText, hasSmallText, oneLine, titleOf } from './page-text.ts'
@@ -115,6 +115,8 @@ async function main(): Promise<void> {
   }
   await send({ type: 'open', pages })
   const labels = await doc.getPageLabels().catch(() => null)
+  // The images so far: a deck over the loader's limit stops here, not after every page is rendered.
+  let total = 0
 
   for (let n = 1; n <= pages; n++) {
     if (job.exclude.includes(n)) continue
@@ -209,6 +211,11 @@ async function main(): Promise<void> {
     }
     if (!webp) {
       await send({ type: 'refused', reason: 'page-too-big', page: n })
+      return
+    }
+    total += webp.length
+    if (total > MAX_DECK_BYTES) {
+      await send({ type: 'refused', reason: 'deck-too-big', page: n })
       return
     }
     fs.writeFileSync(path.join(job.out, slideFile(n)), webp, { mode: 0o600, flag: 'wx' })

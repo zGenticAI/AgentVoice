@@ -17,8 +17,8 @@ import {
 } from './deck.ts'
 import { type Kind, folderKind, linkKind, refusal, sniff } from './detect.ts'
 import {
-  DECK_ID, MAX_INPUT_BYTES, MAX_LABEL, MAX_PAGES, MAX_PAGE_TEXT, MAX_TITLE, type Manifest, type ManifestSlide, WARNINGS, type WarningCode,
-  slideFile,
+  DECK_ID, MAX_DECK_BYTES, MAX_INPUT_BYTES, MAX_LABEL, MAX_PAGES, MAX_PAGE_TEXT, MAX_TITLE, type Manifest, type ManifestSlide, WARNINGS,
+  type WarningCode, slideFile,
 } from './manifest.ts'
 import { cleanText, oneLine } from './page-text.ts'
 import type { ChildMessage, Job } from './child-protocol.ts'
@@ -155,6 +155,21 @@ function parseMessage(line: string): ChildMessage | null {
 /** An error's class name from the child, never anything else it might say. */
 const safeName = (name: unknown) => (typeof name === 'string' && /^[A-Za-z]{1,40}$/.test(name) ? name : 'Error')
 
+/** The owner's words for a deck whose images come to more than the loader takes (MAX_DECK_BYTES in all). */
+export function deckTooBig(name: string, page: number): string {
+  return `${name}'s slide images come to more than ${MAX_DECK_BYTES / 1024 / 1024} MiB (it stopped at page ${page}). Export it again with lighter images, split it, or leave some pages out with --exclude.`
+}
+
+/** The page at which slides' images first come to more than MAX_DECK_BYTES, or null. */
+export function pageOverDeckLimit(slides: readonly { n: number; bytes: number }[]): number | null {
+  let total = 0
+  for (const slide of slides) {
+    total += slide.bytes
+    if (total > MAX_DECK_BYTES) return slide.n
+  }
+  return null
+}
+
 /** The owner's words for why the child stopped. */
 function refusedMessage(msg: Extract<ChildMessage, { type: 'refused' }>, name: string): string {
   const page = msg.page ?? 0
@@ -177,6 +192,8 @@ function refusedMessage(msg: Extract<ChildMessage, { type: 'refused' }>, name: s
       return `Page ${page} can't be saved under 2 MiB, even at a lower quality. Simplify it, or leave it out with --exclude ${page}.`
     case 'memory':
       return `${name} needs too much memory to render (it stopped after page ${page}). Export it again with smaller images, or split it.`
+    case 'deck-too-big':
+      return deckTooBig(name, page)
     default:
       return `${name} could not be read as a PDF (${safeName(msg.name)}). Export it again, or save it as a PDF from another viewer.`
   }
@@ -330,6 +347,10 @@ export async function prepareDeck(opts: PrepareOptions): Promise<Prepared> {
         warnings: [...new Set(page.warnings as WarningCode[])],
       }
     })
+    // The child stops at the limit itself; this is for one that did not. The loader below would refuse it in words
+    // that name a deck the owner never saw.
+    const over = pageOverDeckLimit(slides)
+    if (over !== null) throw new PrepareError(deckTooBig(name, over))
     const created = (opts.now ?? new Date()).toISOString().replace(/\.\d{3}Z$/, 'Z')
     const key = opts.scriptFile ? scriptKey(opts.decksDir, true) : null
     const script = key && opts.scriptFile ? scriptMark(key, opts.scriptFile) : null

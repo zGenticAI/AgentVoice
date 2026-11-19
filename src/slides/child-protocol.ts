@@ -17,7 +17,7 @@ export interface Job {
 /** Why the child stopped without a deck. */
 export type RefusedReason =
   | 'no-canvas' | 'unreadable' | 'password' | 'too-many-pages' | 'exclude-range' | 'all-excluded' | 'page-failed' | 'page-slow' | 'page-too-big'
-  | 'memory'
+  | 'memory' | 'deck-too-big'
 
 export type ChildMessage =
   | { type: 'open'; pages: number }
