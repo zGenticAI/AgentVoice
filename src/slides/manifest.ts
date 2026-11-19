@@ -70,7 +70,8 @@ export interface Manifest {
   excluded: number
   /**
    * Which script this deck was prepared for: a keyed hash of where prepare wrote it (scriptMark in deck.ts), never the
-   * path. Check compares the slides' figures, writes the sheet and keeps the deck only for that script. Null: none.
+   * path. Check compares the slides' figures, writes the sheet and keeps the deck only for that script. Null: none,
+   * as for a deck prepared before the mark, whose manifest has no such field.
    */
   script: string | null
   slides: ManifestSlide[]
@@ -105,14 +106,17 @@ function cleanText(value: unknown, max: number, multiline: boolean): value is st
  * over-long field refuses the whole deck.
  */
 export function manifestProblem(value: unknown, id: string): string {
-  if (!isObject(value) || !keysAre(value, ['format', 'id', 'label', 'created', 'pages', 'excluded', 'script', 'slides'])) return 'its manifest has missing or unknown fields'
+  const keys = ['format', 'id', 'label', 'created', 'pages', 'excluded', 'script', 'slides']
+  // A deck prepared before the script mark has no "script": the loader reads it as none (null), so check treats every
+  // script as not its own and says to prepare it again, and prepare can still compare its slides.
+  if (!isObject(value) || !(keysAre(value, keys) || keysAre(value, keys.filter(k => k !== 'script')))) return 'its manifest has missing or unknown fields'
   if (value.format !== 1) return 'its manifest is of an unknown format'
   if (value.id !== id) return 'its manifest is for another deck'
   if (!cleanText(value.label, MAX_LABEL, false) || !value.label) return 'its label is not valid'
   if (typeof value.created !== 'string' || !CREATED.test(value.created) || Number.isNaN(Date.parse(value.created))) return 'its creation time is not valid'
   if (!isWhole(value.pages, 1, MAX_PAGES)) return `its page count is not 1 to ${MAX_PAGES}`
   if (!isWhole(value.excluded, 0, value.pages - 1)) return 'its count of excluded pages is not valid'
-  if (value.script !== null && (typeof value.script !== 'string' || !HEX64.test(value.script))) return 'its script mark is not valid'
+  if (Object.hasOwn(value, 'script') && value.script !== null && (typeof value.script !== 'string' || !HEX64.test(value.script))) return 'its script mark is not valid'
   const slides = value.slides
   if (!Array.isArray(slides) || slides.length < 1 || slides.length > MAX_PAGES) return `it has no slides, or more than ${MAX_PAGES}`
   if (slides.length + value.excluded !== value.pages) return 'its slides and excluded pages do not add up to its pages'

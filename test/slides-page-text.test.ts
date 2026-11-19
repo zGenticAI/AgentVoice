@@ -1,8 +1,9 @@
 // A slide's title, read from pdf.js's text items (src/slides/page-text.ts titleOf): the first line of the page's
-// largest words, joined as the page text joins them. The item sequences are the ones pdf.js gives for real decks.
+// largest words, joined as the page text joins them. The item sequences are the ones pdf.js gives for real decks. And
+// what the page text puts between two runs (separator), left to right and right to left.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { type TextItem, titleOf } from '../src/slides/page-text.ts'
+import { type Run, type TextItem, separator, titleOf } from '../src/slides/page-text.ts'
 
 const item = (str: string, px: number, more: Partial<TextItem> = {}): TextItem => ({ str, px, hasEOL: false, sep: '', ...more })
 
@@ -24,4 +25,25 @@ test('a title is words or figures: never a bullet, a quote mark, an icon glyph o
   assert.equal(titleOf([item('89,526,124', 60), item('$', 60)]), '89,526,124$', 'a figure is a title, and a sign at its size joins it')
   assert.equal(titleOf([item('Q4', 60)]), 'Q4')
   assert.equal(titleOf([item('•', 40), item(' ', 40)]), '', 'nothing but glyphs: no title')
+})
+
+test('left to right, runs are parted by a gap along the line, a run well back on it (a legend, a second column), or a run lower down', () => {
+  const run = (x: number, w: number, more: Partial<Run> = {}): Run => ({ x, y: 300, w, size: 20, rtl: false, ...more })
+  assert.equal(separator(run(100, 80), run(181, 40)), '', 'a word in two fonts, drawn end to end')
+  assert.equal(separator(run(100, 80), run(170, 40)), '', 'kerned back a little: still one word')
+  assert.equal(separator(run(100, 80), run(190, 40)), ' ', 'a gap of half a line')
+  assert.equal(separator(run(400, 80), run(60, 40)), ' ', 'a legend back at the start of the line')
+  assert.equal(separator(run(100, 80), run(100, 40, { y: 270 })), '\n', 'a run lower down')
+})
+
+test('right to left, the runs of one word stay one word in either order pdf.js gives them, and only a gap parts them', () => {
+  const rtl = (x: number, w: number, more: Partial<Run> = {}): Run => ({ x, y: 300, w, size: 20, rtl: true, ...more })
+  // One word in two fonts, in reading order: the second run is drawn to the left of the first. Measured left to right,
+  // the two runs together are wider than a line, so it would be two words.
+  assert.equal(separator(rtl(300, 60), rtl(240, 60)), '')
+  assert.equal(separator(rtl(240, 60), rtl(300, 60)), '', 'and in the order it is drawn')
+  assert.equal(separator(rtl(300, 60), rtl(200, 60)), ' ', 'a gap to its left: two words')
+  assert.equal(separator(rtl(300, 60), rtl(420, 60)), ' ', 'a gap to its right: two words')
+  assert.equal(separator(rtl(300, 60), rtl(240, 60, { rtl: false })), '', 'a run that reads left to right beside one that does not')
+  assert.equal(separator(rtl(300, 60), rtl(300, 60, { y: 270 })), '\n')
 })

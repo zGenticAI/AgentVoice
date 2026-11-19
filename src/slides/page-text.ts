@@ -1,6 +1,6 @@
-// What prepare keeps of a page's text: cleaned the same way for the text, the title, the page label and sticky notes,
-// and the two things read from the text items' sizes (the title, and text too small to read in a share). Pure, for the
-// converter child (render-child.ts) and the tests.
+// What prepare keeps of a page's text: cleaned the same way for the text, the title, the page label and sticky notes;
+// what goes between two runs of text; and the two things read from the text items' sizes (the title, and text too small
+// to read in a share). Pure, for the converter child (render-child.ts) and the tests.
 import { MAX_TITLE, SMALL_TEXT_PX } from './manifest.ts'
 import { stripBlockTags } from '../untrusted.ts'
 
@@ -34,6 +34,30 @@ export interface TextItem {
   px: number
   /** What the page text put before it: nothing, a space (a gap along the line), or a new line. */
   sep: '' | ' ' | '\n'
+}
+
+/** A run of text as pdf.js places it: where it starts, its width and size, and whether it reads right to left. */
+export interface Run {
+  x: number
+  y: number
+  w: number
+  size: number
+  rtl: boolean
+}
+
+/**
+ * What the page text puts between two runs, as pdf.js doesn't always mark the end of a line or a word: a new line for
+ * a run lower down, a space for a gap along the line, or nothing (a word drawn in two fonts stays one word). Left to
+ * right, a run that starts well back along the line (a chart's legend, a second column) is a new word too. Right to
+ * left, pdf.js may give a word's runs in reading order or in the order they are drawn, so only a gap between them, on
+ * either side, parts them.
+ */
+export function separator(last: Run, run: Run): TextItem['sep'] {
+  const tall = Math.max(last.size, run.size)
+  if (Math.abs(run.y - last.y) > tall * 0.5) return '\n'
+  if (last.rtl || run.rtl) return Math.max(run.x - (last.x + last.w), last.x - (run.x + run.w)) > tall * 0.15 ? ' ' : ''
+  const gap = run.x - (last.x + last.w)
+  return gap > tall * 0.15 || gap < -tall ? ' ' : ''
 }
 
 /** Digits alone, as in a page number or "1.": not a title, and not text too small to read. */

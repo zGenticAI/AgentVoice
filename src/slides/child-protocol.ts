@@ -12,6 +12,8 @@ export interface Job {
   exclude: number[]
   /** The parent's time limit: the child ends itself after it too, should the parent be gone. */
   timeoutMs: number
+  /** Tests only, and never set by prepare: a lower limit on the images than MAX_DECK_BYTES, which a small PDF can reach. */
+  maxDeckBytes?: number
 }
 
 /** Why the child stopped without a deck. */

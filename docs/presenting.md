@@ -171,17 +171,18 @@ It needs no key and no network. It reads only a file named `<something>.script.m
 
 It exits with 1 while the script has errors, and 0 once it has none.
 
-Only the script prepare wrote for the deck (the one beside its PDF) is compared with the slides' figures, refreshes the contact sheet, and counts as a use of the deck. Any other file that names the deck gets its other errors and warnings, and a line that says so: prepare the deck again from the PDF beside it. A script whose structure is unclear (two sections for one page, say) is not compared either, until it is fixed.
+Only the script prepare wrote for the deck (the one beside its PDF) is compared with the slides' figures, refreshes the contact sheet, and counts as a use of the deck. Any other file that names the deck gets its other errors and warnings, and a line that says so: prepare the deck again from the PDF beside it. A script whose structure is unclear (two sections for one page, say) is not compared either, and leaves the contact sheet as it was, until it is fixed.
 
 ### The contact sheet
 
-`data/decks/<id>/sheet.html`: open it in a browser. It shows every slide at half size, exactly as the meeting will see it, with its title, what prepare noticed, and, once check has run, what the script does with it (narrated, on request, excluded, or no section), the estimate, the narration, and the script's errors and warnings for that slide. It is a static page, with no script, that loads nothing from outside its folder. Check refreshes it every time.
+`data/decks/<id>/sheet.html`: open it in a browser. It shows every slide at half size, exactly as the meeting will see it, with its title, what prepare noticed, and, once check has run, what the script does with it (narrated, on request, excluded, or no section), the estimate, the narration, and the script's errors and warnings for that slide. It is a static page, with no script, that loads nothing from outside its folder. Prepare writes it. Check refreshes it only for the deck's own script, once that script's structure is clear: for any other file, or while the structure is unclear, the sheet is left as it was, so it can show an older version of the script. Its count of warnings is the one check prints.
 
 ## After you change the deck
 
 Export the PDF again and run `prepare` on it again. It makes a new deck and updates the script beside the PDF:
 - the `deck:` line gets the new id;
-- a slide that moved (you inserted or deleted a slide before it) is found by its text, and its section's heading is renumbered, with a comment saying so. If your sections would then be out of order (you moved slides around), the headings are left as they are, and each such section gets `check: changed` and a comment saying which page its slide is on now: move it there;
+- a slide that moved (you inserted or deleted slides before it) is found by its text, or by its picture when it has no text or the same text as another slide. Its section's heading is renumbered, with a comment saying so. A slide you edited where it was is compared there, between the slides around it. A section whose slide is no longer in the deck gets `exclude: yes` and, when the sections around it were renumbered, a number no slide has, so the sections stay in page order;
+- if your sections would then be out of order (you moved slides around, or deleted one between two others), the headings are left as they are. Each section whose slide moved gets `check: changed` and a comment saying which page its slide is on now: move it there. A new page whose number such a section still has can't have a section yet: prepare names it, and quotes it in that section, so you can add one once the section has moved;
 - a section whose slide changed, in its text or its picture, gets `check: changed`, a comment saying so, and the slide's new text in a comment. It is an error until you have read the section against the slide and deleted the line, so narration written for the old slide is never presented over the new one. A re-export that changes a picture only slightly (a photo compressed again) marks it too: read it and delete the line;
 - a new page gets a new section, with `TODO`;
 - a section for a page that is gone (or that you left out with `--exclude`) gets `exclude: yes` (an `exclude: no` becomes yes, and an `on-request: yes` becomes a comment, to put back if the page returns). A page left out with `--exclude` also loses prepare's own comments quoting it, and its heading's title if it is the slide's;
@@ -189,7 +190,7 @@ Export the PDF again and run `prepare` on it again. It makes a new deck and upda
 - **your written paragraphs are never changed**, and every line you wrote stays where it was, but for a heading's page number or slide title as above;
 - then the old deck is deleted.
 
-Prepare compares each slide's text and picture with the old deck's. Slides with no text, or with the same text as another, are compared only on the same page. If the old deck is gone already, it can't tell which slides changed, so it marks every section `check: changed`. A script whose structure prepare can't follow (no front matter or `deck:` line, a comment left open, sections out of order) is never rewritten: prepare says what to fix, and renders nothing.
+Prepare compares each slide's text and picture with the old deck's. An unchanged page renders the same picture, so a slide with no text is found by it; a slide found by neither its text nor its picture is compared with the page the slides around it put it on. If the old deck is gone already, or can't be used, it can't tell which slides changed, so it marks every section `check: changed` (and deletes a deck that can't be used, as nothing would use it again). A script whose structure prepare can't follow (no front matter or `deck:` line, a comment left open, sections out of order) is never rewritten: prepare says what to fix, and renders nothing.
 
 ## Keeping and deleting decks
 

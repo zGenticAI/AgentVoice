@@ -157,6 +157,15 @@ test('the manifest is strict: an unknown key, a wrong type or an over-long field
   assert.equal(manifestProblem(null, 'x'), 'its manifest has missing or unknown fields')
 })
 
+test('a deck prepared before the script mark, with no "script" in its manifest, loads as a deck for no script', () => {
+  const older = makeDeck({ edit: m => delete (m as Partial<Manifest>).script })
+  assert.ok(!fs.readFileSync(path.join(older.dir, 'manifest.json'), 'utf8').includes('script'))
+  assert.equal(older.store.load(older.id, { images: 'all' }).manifest.script, null)
+  // Only that one field may be missing, and a mark that is there is still checked.
+  assert.match(refusal(makeDeck({ edit: m => delete (m as Partial<Manifest>).label }).store, 'q4-roadmap-k7m2qa'), /missing or unknown fields/)
+  assert.match(refusal(makeDeck({ edit: m => Object.assign(m, { script: 42 }) }).store, 'q4-roadmap-k7m2qa'), /script mark is not valid/)
+})
+
 test("each image: a WebP's magic, a header that says 1280x720, at most 2 MiB, and the manifest's hash", () => {
   const png = makeDeck({ image: p => (p === 2 ? Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(100)]) : SLIDE) })
   assert.match(refusal(png.store, png.id), /002\.webp is not a WebP image/)

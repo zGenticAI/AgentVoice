@@ -182,6 +182,78 @@ test('prepare again: a slide inserted renumbers the sections after it; --exclude
   assert.ok((await prepare()).includes('  page 4 is rendered, though its section says exclude: yes. If its text must not be kept at all, prepare with --exclude 4.'))
 })
 
+test('prepare again: an insert with a delete, and a new page on the number of a section that must move, are each said; a key above the deck line is no bar', async () => {
+  const work = fs.mkdtempSync(path.join(DIR, 'mixed-'))
+  const decksDir = path.join(work, 'data', 'decks')
+  const pdf = path.join(work, 'talk.pdf')
+  const slides = (titles: string[]) => makePdf(titles.map(t => ({ texts: [{ text: t, size: 40 }, { text: `About ${t.toLowerCase()}`, size: 24 }] })))
+  const prepare = async () => {
+    const out = await runPrepare({ input: pdf, exclude: [], decksDir, name: 'Alex', cwd: work })
+    assert.equal(out.code, 0, out.lines.join('\n'))
+    return out.lines
+  }
+  const scriptFile = path.join(work, 'talk.script.md')
+  fs.writeFileSync(pdf, slides(['Intro', 'Problem', 'Solution', 'Pricing']))
+  await prepare()
+  // Every section written, and an "author:" line at the top, as YAML front matter often has: an error for check, but
+  // it hides nothing, so prepare can still update the script.
+  fs.writeFileSync(scriptFile, fs.readFileSync(scriptFile, 'utf8').replace(/^---\n/, '---\nauthor: Sam\n').replace(/check: yes\n\nTODO/g, '\nWe talk about it here.'))
+  // A slide inserted as page 2, and the last one deleted.
+  fs.writeFileSync(pdf, slides(['Intro', 'Customer story', 'Problem', 'Solution']))
+  const both = await prepare()
+  assert.equal(both[1], 'Script: talk.script.md (updated for the new deck): pages 2, 3 moved to 3, 4 (headings renumbered); page 2 new (TODO); page 4 no longer in the deck (exclude: yes). Your written paragraphs are unchanged.')
+  assert.equal(both[2], '  page 4: its section has no slide in the new deck, so its heading is now 5, to keep the sections in page order.')
+  assert.deepEqual(parseScript(fs.readFileSync(scriptFile, 'utf8')).script?.sections.map(s => [s.page, s.heading, s.exclude]), [
+    [1, 'Intro', false], [2, 'Customer story', false], [3, 'Problem', false], [4, 'Solution', false], [5, 'Pricing', true],
+  ])
+  fs.writeFileSync(scriptFile, fs.readFileSync(scriptFile, 'utf8').replace(/check: yes\n\nTODO/, '\nA customer story.'))
+  assert.deepEqual(runCheck({ file: scriptFile, decksDir, retentionDays: 30, cwd: work }).lines.slice(1, 3), [
+    '1 error: the script can\'t be used until it is fixed.',
+    '  line 2: this is not a front matter key: they are deck, title and minutes.',
+  ])
+
+  // A slide inserted at the front and the second deleted: the Intro section can't be renumbered past Customer story's,
+  // so it is told to move, and the new page 1 is said, and quoted in it.
+  fs.writeFileSync(pdf, slides(['Welcome', 'Intro', 'Problem', 'Solution']))
+  const stuck = await prepare()
+  assert.equal(stuck[1], 'Script: talk.script.md (updated for the new deck): page 1 is now page 2 (check: changed: move each section to its page); page 2 changed (check: changed); page 1 new, with no section yet (the section on it must move first). Your written paragraphs are unchanged.')
+  assert.match(fs.readFileSync(scriptFile, 'utf8'), /## 1 · Intro\ncheck: changed\n<!-- This slide is now page 2: .*\n\nWe talk about it here\.\n<!-- On the slide: "Intro \/ About intro" -->\n\n<!-- On the slide now: "Welcome \/ About welcome" -->\n\n## 2 · Customer story/)
+})
+
+test('prepare again from a deck the earlier build made, with no script mark, compares its slides; one that cannot be used is deleted, never called gone', async () => {
+  const work = fs.mkdtempSync(path.join(DIR, 'older-'))
+  const decksDir = path.join(work, 'data', 'decks')
+  const pdf = path.join(work, 'talk.pdf')
+  const scriptFile = path.join(work, 'talk.script.md')
+  fs.writeFileSync(pdf, makePdf([{ texts: [{ text: 'Intro', size: 40 }] }, { texts: [{ text: 'Problem', size: 40 }] }]))
+  const prepare = async () => {
+    const out = await runPrepare({ input: pdf, exclude: [], decksDir, name: 'Alex', cwd: work })
+    assert.equal(out.code, 0, out.lines.join('\n'))
+    return out.lines
+  }
+  const editManifest = (id: string, edit: (m: Record<string, unknown>) => void) => {
+    const file = path.join(decksDir, id, 'manifest.json')
+    const manifest = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>
+    edit(manifest)
+    fs.writeFileSync(file, JSON.stringify(manifest), { mode: 0o600 })
+  }
+  const id = /^Prepared (talk-[a-z2-7]{6}):/.exec((await prepare())[0])?.[1] ?? ''
+  fs.writeFileSync(scriptFile, fs.readFileSync(scriptFile, 'utf8').replace(/check: yes\n\nTODO/g, '\nWe talk about it here.'))
+  editManifest(id, m => delete m.script)
+  const older = await prepare()
+  const second = /^Prepared (talk-[a-z2-7]{6}):/.exec(older[0])?.[1] ?? ''
+  assert.deepEqual(older.slice(1, 3), ['Script: talk.script.md (updated for the new deck): no slide changed. Your written paragraphs are unchanged.', `  Deleted the deck it was written for (${id}).`])
+
+  // A deck that is there but can't be used: every section is read again, and the deck goes, as it would never be used.
+  editManifest(second, m => Object.assign(m, { source: 'talk.pdf' }))
+  const invalid = await prepare()
+  const third = /^Prepared (talk-[a-z2-7]{6}):/.exec(invalid[0])?.[1] ?? ''
+  assert.ok(invalid.includes(`  The prepared deck ${second} can't be used: its manifest has missing or unknown fields. So every section is marked check: changed, and that deck is deleted.`), invalid.join('\n'))
+  assert.ok(!invalid.some(l => /is gone/.test(l)), invalid.join('\n'))
+  assert.deepEqual(new DeckStore(decksDir).ids(), [third])
+  assert.match(fs.readFileSync(scriptFile, 'utf8'), /The deck this script was written for is gone or can't be used/)
+})
+
 test('prepare never renders, nor rewrites, when the script beside the PDF has a structure it cannot follow', async () => {
   const work = fs.mkdtempSync(path.join(DIR, 'work-'))
   const decksDir = path.join(work, 'decks')
@@ -336,7 +408,8 @@ test("prepare and check give the deck's warnings one line per kind, with its pag
     '  pages 1-3, 5-6: the slide has text under 20 px, which may be hard to read in a small share window.',
     '  pages 1-3, 5-6: the slide is not 16:9, so it is shown with bars at its sides or above and below.',
   ])
-  assert.match(fs.readFileSync(path.join(decksDir, id, 'sheet.html'), 'utf8'), /5 slides to present, about \d+ s of your 3 min;/)
+  // The sheet counts the warnings as the terminal does: a line per kind, not one per slide.
+  assert.match(fs.readFileSync(path.join(decksDir, id, 'sheet.html'), 'utf8'), /5 slides to present, about \d+ s of your 3 min; 0 errors, 3 warnings\./)
   assert.equal(ranges([6, 1, 2, 3, 10]), 'pages 1-3, 6, 10')
   assert.equal(ranges([4]), 'page 4')
 })

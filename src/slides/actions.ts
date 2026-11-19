@@ -103,6 +103,17 @@ function deckWarningLines(byPage: readonly { page: number; message: string }[]):
   return [...kinds].map(([message, list]) => `${ranges(list)}: ${message}`)
 }
 
+/**
+ * The warnings as check prints them: the script's own in the file's order, then the deck's, one line per kind. The
+ * contact sheet counts these too, so it and the terminal give the same number.
+ */
+function warningLines(checked: Checked): string[] {
+  return [
+    ...checked.warnings.filter(w => !w.fromDeck).map(w => `${where(w)}${w.message}`),
+    ...deckWarningLines(checked.warnings.filter(w => w.fromDeck && w.page).map(w => ({ page: w.page as number, message: w.message }))),
+  ]
+}
+
 /** What the sheet shows for each slide, from a checked script. */
 export function sheetSlides(checked: Checked, manifest: Manifest): Map<number, SheetSlide> {
   const out = new Map<number, SheetSlide>()
@@ -131,7 +142,7 @@ function refreshSheet(store: DeckStore, manifest: Manifest, checked: Checked | n
     ...(checked
       ? {
           slides: sheetSlides(checked, manifest),
-          summary: `${summary(checked)}; ${plural(checked.errors.length, 'error')}, ${plural(checked.warnings.length, 'warning')}.`,
+          summary: `${summary(checked)}; ${plural(checked.errors.length, 'error')}, ${plural(warningLines(checked).length, 'warning')}.`,
           scriptName,
           title: checked.script?.title ?? undefined,
         }
@@ -220,25 +231,40 @@ export async function runPrepare(given: PrepareInput): Promise<Outcome> {
     } else {
       oldId = parseScript(existing).script?.deck ?? ''
       let old: Manifest | null = null
+      // Why the old deck can't be compared with: it is gone, it is there but can't be used (then it goes too), or it
+      // could not be read.
+      let missing = false
+      let invalid: DeckError | null = null
+      let unreadable = ''
       try {
         if (DECK_ID.test(oldId)) old = store.load(oldId).manifest
-      } catch {
-        old = null
+      } catch (err) {
+        if (err instanceof DeckError && err.code === 'missing') missing = true
+        else if (err instanceof DeckError) invalid = err
+        else unreadable = codeOf(err)
       }
       const merged = mergeScript(existing, old, manifest, prepared.notes)
       writeScript(scriptFile, merged.text, true)
       text = merged.text
       wrote = true
       const moves = merged.moved
+      const unsectioned = merged.unsectioned
       const what = [
         moves.length && merged.renumbered ? `${pages(moves.map(m => m.from))} moved to ${moves.map(m => m.to).join(', ')} (headings renumbered)` : '',
         moves.length && !merged.renumbered ? `${moves.map(m => `page ${m.from} is now page ${m.to}`).join(', ')} (check: changed: move each section to its page)` : '',
         merged.changed.length ? `${pages(merged.changed)} changed (check: changed)` : '',
         merged.back.length ? `${pages(merged.back)} back in the deck (check: changed)` : '',
         merged.added.length ? `${pages(merged.added)} new (TODO)` : '',
+        unsectioned.length === 1 ? `page ${unsectioned[0]} new, with no section yet (the section on it must move first)` : '',
+        unsectioned.length > 1 ? `${pages(unsectioned)} new, with no sections yet (the sections on them must move first)` : '',
         merged.gone.length ? `${pages(merged.gone)} no longer in the deck (exclude: yes)` : '',
       ].filter(Boolean)
       lines.push(`Script: ${shown(scriptFile, input.cwd)} (updated for the new deck): ${what.length ? what.join('; ') : 'no slide changed'}. Your written paragraphs are unchanged.`)
+      if (merged.retired.length) {
+        const list = merged.retired
+        const one = list.length === 1
+        lines.push(`  ${pages(list.map(r => r.from))}: ${one ? 'its section has' : 'their sections have'} no slide in the new deck, so ${one ? 'its heading is' : 'their headings are'} now ${list.map(r => r.to).join(', ')}, to keep the sections in page order.`)
+      }
       if (merged.scrubbed.length) {
         const one = merged.scrubbed.length === 1
         lines.push(`  ${pages(merged.scrubbed)} left out: prepare's notes of ${one ? 'its' : 'their'} slide text are gone from the script, but your heading${one ? '' : 's'} and paragraphs for ${one ? 'it' : 'them'} are kept. Delete them if they must not appear anywhere.`)
@@ -247,7 +273,18 @@ export async function runPrepare(given: PrepareInput): Promise<Outcome> {
         const list = merged.excludedRendered
         lines.push(`  ${pages(list)} ${list.length === 1 ? 'is' : 'are'} rendered, though ${list.length === 1 ? 'its section says' : 'their sections say'} exclude: yes. If ${list.length === 1 ? 'its' : 'their'} text must not be kept at all, prepare with --exclude ${list.join(',')}.`)
       }
-      if (!old && DECK_ID.test(oldId)) lines.push(`  The deck it was written for (${oldId}) is gone, so every section is marked check: changed.`)
+      if (missing) lines.push(`  The deck it was written for (${oldId}) is gone, so every section is marked check: changed.`)
+      if (invalid) {
+        // Never compared with, and never used again: deleted now, rather than left until the retention sweep.
+        let deleted = false
+        try {
+          deleted = store.delete(oldId)
+        } catch {
+          deleted = false
+        }
+        lines.push(`  ${invalid.message} So every section is marked check: changed${deleted ? ', and that deck is deleted' : ''}.`)
+      }
+      if (unreadable) lines.push(`  The deck it was written for (${oldId}) could not be read (${unreadable}), so every section is marked check: changed.`)
       if (old && oldId !== manifest.id) {
         store.delete(oldId)
         lines.push(`  Deleted the deck it was written for (${oldId}).`)
@@ -367,11 +404,7 @@ export function runCheck(input: CheckInput): Outcome {
     lines.push(`${plural(checked.errors.length, 'error')}: the script can't be used until ${checked.errors.length === 1 ? 'it is' : 'they are'} fixed.`)
     for (const e of checked.errors) lines.push(`  ${where(e)}${e.message}.`)
   }
-  // The script's own warnings in the file's order, then the deck's, one line per kind.
-  const warned = [
-    ...checked.warnings.filter(w => !w.fromDeck).map(w => `${where(w)}${w.message}`),
-    ...deckWarningLines(checked.warnings.filter(w => w.fromDeck && w.page).map(w => ({ page: w.page as number, message: w.message }))),
-  ]
+  const warned = warningLines(checked)
   if (warned.length) {
     lines.push(`${plural(warned.length, 'warning')}:`)
     for (const w of warned) lines.push(`  ${w}.`)

@@ -206,6 +206,7 @@ export class DeckStore {
     const problem = manifestProblem(manifest, id)
     if (problem) throw invalid(problem)
     const deck = manifest as Manifest
+    deck.script ??= null
     const files = new Set(deck.slides.map(s => s.file))
     const extra = names.find(name => name !== MANIFEST && name !== SHEET && !files.has(name))
     if (extra) throw invalid(`${extra} is not one of its files`)

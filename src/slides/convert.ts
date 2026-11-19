@@ -4,8 +4,8 @@
 // its own TMPDIR, so none of the keys this process loaded from .env are in it; its stdin is closed, its stdout is
 // JSON lines, and its stderr is kept from the terminal. Its whole process group is killed after 3 minutes, or when
 // this process is stopped by a signal. Should this process die without a word (SIGKILL, a crash), the child still
-// stops: the kernel ends it on a CPU-time limit, and it ends itself once its parent is gone or its time is up. The
-// result is checked with the same loader the service uses, then moved into place.
+// stops: the kernel ends it on a CPU-time limit (this process's own, when that is lower), and it ends itself once its
+// parent is gone or its time is up. The result is checked with the same loader the service uses, then moved into place.
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -206,18 +206,27 @@ const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const
 
 /**
  * The command that starts the child: node, under a CPU-time limit the kernel enforces even while the child is stuck
- * in one long step, and after this process is gone. Generous, as it counts every thread's time.
+ * in one long step, and after this process is gone. Generous, as it counts every thread's time. A lower limit this
+ * process has already (a shell profile, systemd's LimitCPU) can't be raised, and bounds the child all the same, so a
+ * refused ulimit never stops it. With no /bin/sh or /usr/bin/env (a minimal container image) node is started directly,
+ * bounded by the kill and its own timers. `exists` is for the tests.
  */
-export function childCommand(script: string, job: Job, timeoutMs: number): [string, string[]] {
+export function childCommand(script: string, job: Job, timeoutMs: number, exists: (file: string) => boolean = fs.existsSync): [string, string[]] {
   const node = [process.execPath, '--max-old-space-size=1536', '--import', import.meta.resolve('tsx'), script, JSON.stringify(job)]
-  if (process.platform === 'win32') return [node[0], node.slice(1)]
+  if (process.platform === 'win32' || !exists('/bin/sh') || !exists('/usr/bin/env')) return [node[0], node.slice(1)]
   const cpuSeconds = Math.max(1, Math.ceil((2 * timeoutMs) / 1000))
   // env -i: the shell adds variables of its own (PWD), and the child gets childEnv's three only.
-  return ['/bin/sh', ['-c', `ulimit -t ${cpuSeconds} && exec /usr/bin/env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" "$0" "$@"`, ...node]]
+  return ['/bin/sh', ['-c', `ulimit -t ${cpuSeconds} 2>/dev/null; exec /usr/bin/env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" "$0" "$@"`, ...node]]
+}
+
+/** An error's code, never its message (which can name a path). */
+const codeOf = (err: unknown) => {
+  const code = (err as NodeJS.ErrnoException)?.code
+  return typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'error'
 }
 
 /** Runs the child on the job, and gives its messages; kills its process group on the time limit, or when this process stops. */
-function runChild(job: Job, root: string, tmp: string, script: string, timeoutMs: number): Promise<{ messages: ChildMessage[]; timedOut: boolean; code: number | null; signal: string | null; bad: boolean }> {
+function runChild(job: Job, root: string, tmp: string, script: string, timeoutMs: number): Promise<{ messages: ChildMessage[]; timedOut: boolean; code: number | null; signal: string | null; bad: boolean; notStarted: string }> {
   return new Promise(resolve => {
     const [command, args] = childCommand(script, job, timeoutMs)
     const child = spawn(command, args, {
@@ -229,6 +238,8 @@ function runChild(job: Job, root: string, tmp: string, script: string, timeoutMs
     const messages: ChildMessage[] = []
     let timedOut = false
     let bad = false
+    // Why it could not be started at all, as an error's code: nothing of the PDF was read then.
+    let notStarted = ''
     let buffered = ''
     let total = 0
     const killGroup = () => {
@@ -279,11 +290,12 @@ function runChild(job: Job, root: string, tmp: string, script: string, timeoutMs
       clearTimeout(timer)
       for (const s of STOP_SIGNALS) process.removeListener(s, onSignal)
       process.removeListener('exit', killGroup)
-      resolve({ messages, timedOut, code, signal, bad })
+      resolve({ messages, timedOut, code, signal, bad, notStarted })
     }
     child.on('close', finish)
-    child.on('error', () => {
+    child.on('error', err => {
       bad = true
+      if (child.pid === undefined) notStarted = codeOf(err)
       finish(null, null)
     })
   })
@@ -318,6 +330,12 @@ export async function prepareDeck(opts: PrepareOptions): Promise<Prepared> {
     if (refused?.type === 'refused') throw new PrepareError(refusedMessage(refused, name))
     const open = run.messages.find(m => m.type === 'open')
     const done = run.messages.find(m => m.type === 'done')
+    // A child that could not start, or ended without a word and without a signal, never got to the PDF: the cause is
+    // this computer, so the owner is not sent to export the PDF again.
+    if (run.notStarted) throw new PrepareError(`The converter could not be started (${run.notStarted}), so ${name} was not read. Check that npm install finished, then prepare again.`)
+    if (!run.messages.length && run.signal === null && run.code !== 0) {
+      throw new PrepareError(`The converter stopped before it opened ${name} (exit ${run.code}). Check that npm install finished, then prepare again.`)
+    }
     if (run.bad || run.code !== 0 || open?.type !== 'open' || done?.type !== 'done') {
       throw new PrepareError(`The converter stopped unexpectedly (${run.signal ?? `exit ${run.code}`}). Export the PDF again, or save it as a PDF from another viewer.`)
     }

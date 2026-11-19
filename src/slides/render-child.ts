@@ -14,7 +14,7 @@ import {
   MAX_DECK_BYTES, MAX_IMAGE_BYTES, MAX_PAGES, MAX_PAGE_TEXT, MAX_TITLE, SLIDE_HEIGHT, SLIDE_WIDTH, type WarningCode, slideFile,
 } from './manifest.ts'
 import type { ChildMessage, Job } from './child-protocol.ts'
-import { type TextItem, cleanText, hasSmallText, oneLine, titleOf } from './page-text.ts'
+import { type Run, type TextItem, cleanText, hasSmallText, oneLine, separator, titleOf } from './page-text.ts'
 
 /**
  * Best effort only, and for drawing a page: a synchronous image decode blocks this timer, and opening the document and
@@ -115,8 +115,11 @@ async function main(): Promise<void> {
   }
   await send({ type: 'open', pages })
   const labels = await doc.getPageLabels().catch(() => null)
-  // The images so far: a deck over the loader's limit stops here, not after every page is rendered.
+  // The images so far: a deck over the loader's limit stops here, not after every page is rendered. A test may lower
+  // the limit, never raise it.
   let total = 0
+  const lower = job.maxDeckBytes
+  const maxDeckBytes = typeof lower === 'number' && Number.isInteger(lower) && lower >= 0 ? Math.min(lower, MAX_DECK_BYTES) : MAX_DECK_BYTES
 
   for (let n = 1; n <= pages; n++) {
     if (job.exclude.includes(n)) continue
@@ -142,25 +145,20 @@ async function main(): Promise<void> {
 
     const items: TextItem[] = []
     let raw = ''
-    // Items are runs of text. pdf.js doesn't always mark the end of a line, so a run lower down starts a new line,
-    // and a gap along the line is a space.
-    let last: { x: number; y: number; w: number; size: number } | null = null
+    // Items are runs of text: what goes between two is separator()'s, but never a second space.
+    let last: Run | null = null
     for (const item of content.items) {
       if (!('str' in item)) continue
-      const [x, y] = [item.transform[4], item.transform[5]]
-      const size = Math.hypot(item.transform[2], item.transform[3])
+      const run: Run = { x: item.transform[4], y: item.transform[5], w: item.width, size: Math.hypot(item.transform[2], item.transform[3]), rtl: item.dir === 'rtl' }
       let sep: TextItem['sep'] = ''
       if (last && item.str && raw && !raw.endsWith('\n')) {
-        const tall = Math.max(last.size, size)
-        // A run that starts well back along the line (a chart's legend, a second column) is a new word too.
-        const gap = x - (last.x + last.w)
-        if (Math.abs(y - last.y) > tall * 0.5) sep = '\n'
-        else if ((gap > tall * 0.15 || gap < -tall) && !/\s$/.test(raw) && !/^\s/.test(item.str)) sep = ' '
+        sep = separator(last, run)
+        if (sep === ' ' && (/\s$/.test(raw) || /^\s/.test(item.str))) sep = ''
       }
       raw += sep + item.str + (item.hasEOL ? '\n' : '')
-      if (item.str) last = { x, y, w: item.width, size }
+      if (item.str) last = run
       // The title is read from these, with the same separators, so it reads as the page text does.
-      items.push({ str: item.str, hasEOL: item.hasEOL, px: size * scale, sep })
+      items.push({ str: item.str, hasEOL: item.hasEOL, px: run.size * scale, sep })
     }
     const { text, cut } = cleanText(raw, MAX_PAGE_TEXT)
     const notes = annotations
@@ -218,7 +216,7 @@ async function main(): Promise<void> {
       return
     }
     total += webp.length
-    if (total > MAX_DECK_BYTES) {
+    if (total > maxDeckBytes) {
       await send({ type: 'refused', reason: 'deck-too-big', page: n })
       return
     }

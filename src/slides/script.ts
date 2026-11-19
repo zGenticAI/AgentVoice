@@ -19,7 +19,7 @@
 // text, the skeleton prepare writes, and the update merge, which never changes a written paragraph.
 import { SentenceSplitter } from '../brain/text.ts'
 import { MS_PER_CHAR, spokenLength } from '../pipeline/playback.ts'
-import { DECK_ID, MAX_PAGES, type Manifest, WARNINGS } from './manifest.ts'
+import { DECK_ID, MAX_PAGES, type Manifest, type ManifestSlide, WARNINGS } from './manifest.ts'
 
 /** The whole script's canonical text: about 45 minutes of narration. */
 export const MAX_SCRIPT_CHARS = 40_000
@@ -224,14 +224,15 @@ function outline(source: string, errors: Problem[]): Outline | null {
   const result: Outline = { deck: null, deckLine: -1, frontEnd: -1, sections: [] }
   const seen = new Set<string>()
   // Check reads whatever file it is given, so nothing of a line that is not a key is ever quoted, and only the first
-  // such line is named: a file that only looks like a script (YAML, notes) gives one line number, not its lines.
+  // such line is named: a file that only looks like a script (YAML, notes) gives one line number, not its lines. The
+  // keys after it are still read: an "author:" above the deck line must not hide the deck line.
   let unknown = false
   for (i++; i < lines.length && lines[i].text.trim() !== '---'; i++) {
     const { text, n } = lines[i]
-    if (unknown || !text.trim() || text.trim().startsWith('#')) continue
+    if (!text.trim() || text.trim().startsWith('#')) continue
     const kv = keyValue(text)
     if (!kv || !['deck', 'title', 'minutes'].includes(kv.key)) {
-      errors.push({ line: n, message: 'this is not a front matter key: they are deck, title and minutes' })
+      if (!unknown) errors.push({ line: n, message: 'this is not a front matter key: they are deck, title and minutes' })
       unknown = true
       continue
     }
@@ -611,12 +612,16 @@ export interface Merged {
   changed: number[]
   /** New pages: skeleton sections. */
   added: number[]
-  /** Pages no longer in the deck: exclude: yes. */
+  /** Sections whose slide is not in the deck any more, by their page before the merge: exclude: yes. */
   gone: number[]
-  /** Slides that moved to another page, found by their text: from the old page to the new one. */
+  /** Slides that moved to another page, with their sections: from the old page to the new one. */
   moved: { from: number; to: number }[]
-  /** Whether the moved sections' headings were renumbered. When not (a reorder), each is marked check: changed. */
+  /** Whether the sections' headings were renumbered. When not (a reorder), each section that moved is marked check: changed. */
   renumbered: boolean
+  /** Sections with no slide in the new deck, renumbered to keep the sections in page order: from the old number to the new. */
+  retired: { from: number; to: number }[]
+  /** New pages with no section yet, when not renumbered: a section that must move still has their number. */
+  unsectioned: number[]
   /** Pages the merge itself had excluded, back in the deck: check: changed. */
   back: number[]
   /** Pages left out with --exclude whose section lost prepare's own notes of the slide's text. */
@@ -628,24 +633,92 @@ export interface Merged {
 /** prepare's own one-line comments that quote a slide: the skeleton's, and the merge's. */
 const QUOTES_SLIDE = /^\s*<!-- (?:On the slide(?: now)?|Page label|Your notes): .*-->\s*$/
 
-/** The comment the merge writes right after the "exclude: yes" it gives a section whose page went. */
-const goneComment = (page: number, leftOut: boolean) =>
-  `<!-- ${leftOut ? `Page ${page} was left out when the deck was prepared` : `Page ${page} is not in the deck any more`}, so this section is excluded. -->`
+/**
+ * The comment the merge writes right after the "exclude: yes" it gives a section whose slide went. `was` is the
+ * section's page before the merge, when it was renumbered.
+ */
+function goneComment(page: number, leftOut: boolean, was = page): string {
+  const why = leftOut
+    ? `Page ${page} was left out when the deck was prepared`
+    : was !== page
+      ? `Was page ${was}: that slide is not in the deck any more`
+      : `Page ${page} is not in the deck any more`
+  return `<!-- ${why}, so this section is excluded. -->`
+}
+
+/** Any comment goneComment writes, whatever its page: a section the merge excluded may have been renumbered since. */
+const GONE = /^<!-- (?:Page \d+ was left out when the deck was prepared|Was page \d+: that slide is not in the deck any more|Page \d+ is not in the deck any more), so this section is excluded\. -->$/
 
 /** What an "on-request: yes" becomes in a section the merge excludes: the two keys can't go together. */
 const ON_REQUEST_KEPT = '<!-- on-request: yes (put it back if the page returns) -->'
 
 /**
+ * The old deck's slides found again in the new one, from the old page to the new: by the text, when it is not empty and
+ * comes once in each deck, or else by the picture, when it comes once in each. An unchanged page renders to the same
+ * bytes, so that is how a slide with no text, or the same text as another, is found.
+ */
+function findAgain(oldDeck: Manifest | null, deck: Manifest): Map<number, number> {
+  const found = new Map<number, number>()
+  const claimed = new Set<number>()
+  for (const key of [(s: ManifestSlide) => (s.text ? s.textHash : ''), (s: ManifestSlide) => s.sha256]) {
+    const index = (slides: readonly ManifestSlide[]) => {
+      const out = new Map<string, number[]>()
+      for (const s of slides) if (key(s)) out.set(key(s), [...(out.get(key(s)) ?? []), s.n])
+      return out
+    }
+    const before = index(oldDeck?.slides ?? [])
+    const after = index(deck.slides)
+    for (const s of oldDeck?.slides ?? []) {
+      const there = before.get(key(s))
+      const here = after.get(key(s))
+      if (found.has(s.n) || there?.length !== 1 || here?.length !== 1 || claimed.has(here[0])) continue
+      found.set(s.n, here[0])
+      claimed.add(here[0])
+    }
+  }
+  return found
+}
+
+/**
+ * The sections' page numbers once they follow their slides, or null when that would put them out of order (a reorder,
+ * or a slide deleted between two others). `to` is each section's slide in the new deck, or null for none. A section
+ * with no slide keeps its number if it still fits between its neighbours, or else takes the first one that does and is
+ * no slide's page: an excluded section on a slide's page would hide that slide.
+ */
+function followSlides(pages: readonly number[], to: readonly (number | null)[], isSlide: (n: number) => boolean): number[] | null {
+  const out: number[] = []
+  for (let i = 0; i < pages.length; i++) {
+    const prev = out[i - 1] ?? 0
+    const t = to[i]
+    if (t !== null) {
+      if (t <= prev) return null
+      out.push(t)
+      continue
+    }
+    const next = to.slice(i + 1).find(n => n !== null) ?? MAX_PAGES + 1
+    const fits = (n: number) => n > prev && n < next && n <= MAX_PAGES && !isSlide(n)
+    let n = fits(pages[i]) ? pages[i] : prev + 1
+    while (n < next && !fits(n)) n++
+    if (!fits(n)) return null
+    out.push(n)
+  }
+  return out
+}
+
+/**
  * Updates an existing script for a newly prepared deck, never touching a written paragraph:
  * - the deck line gets the new id, keeping a comment after it;
- * - a slide found again by its text on another page (an insert or a delete before it) has its section's heading
- *   renumbered, when that keeps the sections in page order; otherwise (a reorder) the section gets "check: changed"
- *   and a comment saying where its slide is now;
+ * - each section's slide is found in the new deck: by its text or its picture, or else where the slides around it put
+ *   it (a slide edited in place stays between its neighbours). When the sections stay in page order that way (slides
+ *   inserted or deleted before them), their headings are renumbered, and a section whose slide is gone takes a number
+ *   no slide has. Otherwise (a reorder, or a slide deleted between two others) the headings stay: a section whose slide
+ *   moved gets "check: changed" and a comment saying where its slide is now, and a new page whose number such a section
+ *   still has is quoted in that section and reported, as it can't have a section yet;
  * - a section whose slide changed, in its text or its picture (by the old deck's hashes; every section, when the old
  *   deck is gone) gets "check: changed", which refuses check until the owner has read it;
- * - a page no longer in the deck gets "exclude: yes" (an "exclude: no" becomes yes, and an "on-request: yes" a
- *   comment); a page left out with --exclude also loses prepare's own comments that quote it, and its heading's title
- *   when that is the slide's;
+ * - a section whose slide is no longer in the deck gets "exclude: yes" (an "exclude: no" becomes yes, and an
+ *   "on-request: yes" a comment); a page left out with --exclude also loses prepare's own comments that quote it, and
+ *   its heading's title when that is the slide's;
  * - a page the merge excluded that is back in the deck loses those two lines, and gets "check: changed";
  * - a new page gets a skeleton section.
  * So lines are added, and the merge changes only its own: the deck line, check keys, a heading's number or slide
@@ -668,45 +741,77 @@ export function mergeScript(source: string, oldManifest: Manifest | null, manife
 
   const slides = new Map(manifest.slides.map(s => [s.n, s]))
   const old = new Map(oldManifest?.slides.map(s => [s.n, s]) ?? [])
-  // A slide is found again by its text only when that text is not empty and comes once in each deck: never an
-  // image-only slide (they all have the same text hash), nor a repeated one.
-  const byText = (deck: Manifest | null) => {
-    const out = new Map<string, number[]>()
-    for (const s of deck?.slides ?? []) if (s.text) out.set(s.textHash, [...(out.get(s.textHash) ?? []), s.n])
-    return out
-  }
-  const oldByText = byText(oldManifest)
-  const newByText = byText(manifest)
   const sections = shape.sections
-  const target = sections.map(section => {
-    const was = old.get(section.page)
-    const there = was?.text ? oldByText.get(was.textHash) : undefined
-    const here = was?.text ? newByText.get(was.textHash) : undefined
-    return there?.length === 1 && here?.length === 1 ? here[0] : section.page
+  const found = findAgain(oldManifest, manifest)
+  const taken = new Set(found.values())
+  // How far the slides before a page moved: as far as the nearest one found again before it.
+  const shift = (page: number) => {
+    let at = 0
+    let by = 0
+    for (const [from, to] of found) {
+      if (from < page && from > at) {
+        at = from
+        by = to - from
+      }
+    }
+    return by
+  }
+  // Each section's slide in the new deck: the slide found again, or else the page the slides before it moved it to.
+  // Null when that page is another slide's, or not in the deck.
+  const where = sections.map(section => {
+    const page = found.get(section.page)
+    if (page !== undefined) return { slide: page as number | null, found: true }
+    const guess = section.page + shift(section.page)
+    return { slide: slides.has(guess) && !taken.has(guess) ? guess : null, found: false }
   })
   // The page number is prepare's own key, so renumbering is prepare's job, but only while the sections stay in page
-  // order (a slide inserted or deleted before them). A reorder is left to the owner.
-  const renumber = target.some((to, i) => to !== sections[i].page) && target.every((to, i) => i === 0 || to > target[i - 1])
-  const merged: Merged = { text: '', changed: [], added: [], gone: [], moved: [], renumbered: renumber, back: [], scrubbed: [], excludedRendered: [] }
+  // order. A reorder is left to the owner.
+  const numbers = followSlides(sections.map(s => s.page), where.map(w => w.slide), n => slides.has(n))
+  const renumber = numbers !== null
+  const pageOf = (i: number) => (numbers ? numbers[i] : sections[i].page)
+  // The page whose slide a section is for, or null. When the headings stay, a slide found again is still its section's
+  // (which is told to move), and any other section is compared with the page it is on.
+  const slideOf = (i: number) => (numbers || where[i].found ? where[i].slide : slides.has(sections[i].page) ? sections[i].page : null)
+  const excluded = (i: number) => {
+    const ex = sections[i].keys.find(k => k.key === 'exclude')
+    return ex !== undefined && yesNo(ex.value) === true
+  }
+  // The new deck's pages some section is for. An excluded section covers the page it is on too.
+  const covered = new Set<number>()
+  sections.forEach((_, i) => {
+    const page = slideOf(i)
+    if (page !== null) covered.add(page)
+    if (excluded(i)) covered.add(pageOf(i))
+  })
+  // A new page no section is for, whose number a section that must move still has: it can't have a section yet.
+  const unsectioned = new Set(manifest.slides.filter(s => !covered.has(s.n) && sections.some((_, i) => pageOf(i) === s.n)).map(s => s.n))
+  const merged: Merged = {
+    text: '', changed: [], added: [], gone: [], moved: [], renumbered: Boolean(numbers?.some((n, i) => n !== sections[i].page)),
+    retired: [], unsectioned: [], back: [], scrubbed: [], excludedRendered: [],
+  }
 
   sections.forEach((section, i) => {
     const next = sections[i + 1]?.headingLine ?? lines.length
     const keyEnd = (section.keys.at(-1)?.index ?? section.headingLine) + 1
     const has = (key: string) => section.keys.find(k => k.key === key)
     const from = section.page
-    const to = target[i]
-    const page = renumber ? to : from
+    const page = pageOf(i)
+    const to = slideOf(i)
+    const slide = to === null ? undefined : slides.get(to)
+    const ex = has('exclude')
+    const own = ex !== undefined && excluded(i) && GONE.test(lines[ex.index + 1]?.trim() ?? '')
     let heading = lines[section.headingLine]
-    if (to !== from) {
+    if (page !== from) heading = heading.replace(/^(##[ \t]+)\d+/, `$1${page}`)
+    // A section follows its slide: renumbered with it, or else told to move. An excluded section is never told to move,
+    // and the merge's own exclude, for a page that came back, is renumbered but is no move.
+    if (slide && to !== null && to !== from && !(renumber ? own : excluded(i))) {
       merged.moved.push({ from, to })
-      if (renumber) {
-        heading = heading.replace(/^(##[ \t]+)\d+/, `$1${to}`)
-        insert(keyEnd, [`<!-- Was page ${from}: the slide moved to page ${to}. -->`])
-      }
-    }
+      if (renumber) insert(keyEnd, [`<!-- Was page ${from}: the slide moved to page ${to}. -->`])
+    } else if (slide && page !== from) insert(keyEnd, [`<!-- Was page ${from}: renumbered to keep the sections in page order. -->`])
     const comments: string[] = []
     let flag = false
-    let now: Manifest['slides'][number] | null = null
+    // What is on the section's page now, quoted at its end: a changed slide, or a new one that has no section yet.
+    let now: Manifest['slides'][number] | null = unsectioned.has(page) ? (slides.get(page) ?? null) : null
     const done = () => {
       replace.set(section.headingLine, heading)
       if (flag) {
@@ -737,22 +842,28 @@ export function mergeScript(source: string, oldManifest: Manifest | null, manife
       }
       if (any) merged.scrubbed.push(page)
     }
-    const slide = slides.get(to)
     const leftOut = !slides.has(page) && page <= manifest.pages
-    const ex = has('exclude')
-    if (ex && yesNo(ex.value) === true) {
-      // The merge's own exclude, for a page that is back: undone, and read again before it is shown.
-      const own = [goneComment(from, true), goneComment(from, false)].includes(lines[ex.index + 1]?.trim() ?? '')
-      if (own && slides.has(page)) {
+    if (ex && excluded(i)) {
+      if (own && slide) {
+        // The merge's own exclude, for a page that is back: undone, and read again before it is shown.
         drop.add(ex.index)
         drop.add(ex.index + 1)
         for (let n = section.headingLine + 1; n < next; n++) if (lines[n].trim() === ON_REQUEST_KEPT) replace.set(n, 'on-request: yes')
         flag = true
         comments.push(`<!-- Page ${page} is back in the deck: read it against the slide, then delete "check: changed". -->`)
-        now = slides.get(page) ?? null
+        now = slide
         merged.back.push(page)
-      } else if (leftOut) scrub()
-      else if (slides.has(page)) merged.excludedRendered.push(page)
+        return done()
+      }
+      if (leftOut) scrub()
+      else if (slide) merged.excludedRendered.push(page)
+      if (!slide && page !== from) {
+        // Renumbered with no slide: the merge's own comment is written again for the new number; the owner's exclude
+        // gets one saying why the number changed.
+        if (own) replace.set(ex.index + 1, goneComment(page, leftOut, from))
+        else insert(keyEnd, [`<!-- Was page ${from}: renumbered to keep the sections in page order. -->`])
+        merged.retired.push({ from, to: page })
+      }
       return done()
     }
     if (!slide) {
@@ -760,15 +871,16 @@ export function mergeScript(source: string, oldManifest: Manifest | null, manife
       if (ex) {
         // "exclude: no" (or a value check refuses) becomes yes: a second exclude key would be an error.
         replace.set(ex.index, lines[ex.index].replace(/^(\s*exclude:)[ \t]*\S*/i, '$1 yes'))
-        insert(ex.index + 1, [goneComment(page, leftOut)])
-      } else insert(keyEnd, ['exclude: yes', goneComment(page, leftOut)])
+        insert(ex.index + 1, [goneComment(page, leftOut, from)])
+      } else insert(keyEnd, ['exclude: yes', goneComment(page, leftOut, from)])
       // A section can't be both on request and excluded: the key becomes a comment, which parses as nothing.
       const onRequest = has('on-request')
       if (onRequest && yesNo(onRequest.value) === true) replace.set(onRequest.index, ON_REQUEST_KEPT)
-      merged.gone.push(page)
+      merged.gone.push(from)
+      if (page !== from) merged.retired.push({ from, to: page })
       return done()
     }
-    if (to !== from && !renumber) {
+    if (!renumber && to !== from) {
       flag = true
       comments.push(`<!-- This slide is now page ${to}: move this section there and renumber its heading, then delete "check: changed". -->`)
     }
@@ -778,7 +890,7 @@ export function mergeScript(source: string, oldManifest: Manifest | null, manife
     // is compared too, and a re-export stays quiet.
     if (was && sameText && was.sha256 === slide.sha256) return done()
     const why = !oldManifest
-      ? "The deck this script was written for is gone, so prepare can't tell whether this slide changed"
+      ? "The deck this script was written for is gone or can't be used, so prepare can't tell whether this slide changed"
       : !was
         ? 'This slide was not in the deck this section was written for'
         : sameText
@@ -790,11 +902,12 @@ export function mergeScript(source: string, oldManifest: Manifest | null, manife
     merged.changed.push(page)
     return done()
   })
-  // The pages sections are for after the merge: renumbered, or (a reorder) both where each is and where its slide went.
-  const known = new Set(sections.flatMap((s, i) => (renumber ? [target[i]] : [s.page, target[i]])))
-  const pageOf = (i: number) => (renumber ? target[i] : sections[i].page)
   for (const slide of manifest.slides) {
-    if (known.has(slide.n)) continue
+    if (covered.has(slide.n)) continue
+    if (unsectioned.has(slide.n)) {
+      merged.unsectioned.push(slide.n)
+      continue
+    }
     const after = sections.findIndex((_, i) => pageOf(i) > slide.n)
     const add = skeletonSection(slide, notes.get(slide.n))
     if (after >= 0) insert(sections[after].headingLine, [...add, ''])

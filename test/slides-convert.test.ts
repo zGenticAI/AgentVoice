@@ -5,7 +5,7 @@
 // (the child's environment, the time limit, what it reads of the child) runs against a fake child.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -131,6 +131,12 @@ test("a title drawn as two runs keeps the space between them, as the page's text
   const { manifest } = await prepareDeck({ input: c.input, decksDir: c.decksDir })
   assert.equal(manifest.slides[0].title, 'Gap title')
   assert.match(manifest.slides[0].text, /^Gap title\nBody text$/)
+})
+
+test("a run drawn back along the line (a chart's legend) is a word of its own in the page text", async () => {
+  const c = setup(makePdf([{ texts: [{ text: 'Revenue by region', size: 40, x: 60, y: 440 }, { text: 'North', size: 24, x: 600, y: 300 }, { text: 'South', size: 24, x: 100, y: 300 }] }]))
+  const { manifest } = await prepareDeck({ input: c.input, decksDir: c.decksDir })
+  assert.equal(manifest.slides[0].text, 'Revenue by region\nNorth South', 'not "NorthSouth"')
 })
 
 test('a 4:3 page is fitted into 1280x720 with 160 px bars in the colour of its edge', async () => {
@@ -288,12 +294,46 @@ test('closing the terminal (SIGHUP) or SIGQUIT stops the prepare in order: the c
 })
 
 test('the child starts under a CPU-time limit, twice the time limit, that holds once its parent is gone', () => {
-  const [command, args] = childCommand('/x/child.ts', { input: '/i', out: '/o', exclude: [], timeoutMs: 180_000 }, 180_000)
+  const job = { input: '/i', out: '/o', exclude: [], timeoutMs: 180_000 }
+  const [command, args] = childCommand('/x/child.ts', job, 180_000)
   if (process.platform === 'win32') return
   assert.equal(command, '/bin/sh')
-  assert.deepEqual(args.slice(0, 3), ['-c', 'ulimit -t 360 && exec /usr/bin/env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" "$0" "$@"', process.execPath])
+  assert.deepEqual(args.slice(0, 3), ['-c', 'ulimit -t 360 2>/dev/null; exec /usr/bin/env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" "$0" "$@"', process.execPath])
   assert.equal(args.at(-2), '/x/child.ts')
-  assert.deepEqual(JSON.parse(args.at(-1) ?? ''), { input: '/i', out: '/o', exclude: [], timeoutMs: 180_000 })
+  assert.deepEqual(JSON.parse(args.at(-1) ?? ''), job)
+  // With no shell or env (a minimal container image), node is started directly: still with childEnv's environment.
+  const [direct, directArgs] = childCommand('/x/child.ts', job, 180_000, file => file !== '/bin/sh')
+  assert.equal(direct, process.execPath)
+  assert.deepEqual(directArgs.slice(-2), ['/x/child.ts', JSON.stringify(job)])
+})
+
+test('a lower CPU limit already in place (a shell profile, LimitCPU) bounds the child, and never stops it starting', async t => {
+  if (process.platform === 'win32') return t.skip('no ulimit')
+  const c = setup(makePdf([{}]))
+  const home = fs.mkdtempSync(path.join(DIR, 'home-'))
+  fs.writeFileSync(path.join(home, 'fake-child.json'), JSON.stringify({ env: true, exit: 1 }))
+  // prepare itself runs under a 100 s limit: the child's 360 s can't be set, and before, sh then never started node.
+  const parent = spawn('/bin/sh', ['-c', 'ulimit -t 100 && exec "$0" "$@"', process.execPath, '--import', 'tsx', path.join(import.meta.dirname, 'fixtures/slides/prepare-parent.ts'), c.input, c.decksDir, FAKE_CHILD], {
+    cwd: ROOT,
+    env: { ...process.env, HOME: home },
+    stdio: 'ignore',
+  })
+  assert.equal(await new Promise(resolve => parent.on('exit', resolve)), 2, 'the fake child says nothing, so prepare refuses')
+  assert.ok(fs.existsSync(path.join(home, 'child-env.json')), 'the child started')
+  const limits = path.join(home, 'child-limits.txt')
+  if (fs.existsSync(limits)) {
+    const cpu = /^Max cpu time\s+(\d+)\s+(\d+)\s+seconds/m.exec(fs.readFileSync(limits, 'utf8'))
+    assert.ok(cpu && Number(cpu[1]) <= 360 && Number(cpu[2]) <= 360, 'and it is bounded')
+  }
+})
+
+test("a child that never opens the PDF, or can't be found, is put down to this computer, not the PDF", async () => {
+  const never = (await withFakeChild({ lines: [], exit: 3 })).message
+  assert.equal(never, 'The converter stopped before it opened deck.pdf (exit 3). Check that npm install finished, then prepare again.')
+  const c = setup(makePdf([{}]))
+  const missing = await refused(prepareDeck({ input: c.input, decksDir: c.decksDir, childScript: path.join(DIR, 'no-such-child.ts') }))
+  assert.equal(missing, 'The converter stopped before it opened deck.pdf (exit 1). Check that npm install finished, then prepare again.')
+  assert.deepEqual(fs.readdirSync(c.decksDir), [])
 })
 
 test('prepare first removes what a killed prepare left (once it is 10 minutes old), never one that may be running', async () => {
@@ -318,7 +358,7 @@ test("the parent reads the child strictly: a refusal's words are its own, and an
   assert.match((await withFakeChild({ lines: ['{"type":"refused","reason":"unreadable","name":"Secret file text"}'] })).message, /could not be read as a PDF \(Error\)/, "a name that isn't an error's name is not echoed")
   assert.match((await withFakeChild({ lines: ['not json at all'] })).message, /^The converter stopped unexpectedly/)
   assert.match((await withFakeChild({ lines: ['{"type":"open","pages":1}', '{"type":"done","other":0}'] })).message, /did not render every page/)
-  assert.match((await withFakeChild({ lines: [], exit: 3 })).message, /^The converter stopped unexpectedly \(exit 3\)/)
+  assert.match((await withFakeChild({ lines: ['{"type":"open","pages":1}'], exit: 3 })).message, /^The converter stopped unexpectedly \(exit 3\)\. Export the PDF again/)
 })
 
 test("a deck whose images come to more than 40 MiB stops at that page, in the owner's words, with no deck id", async () => {
@@ -329,6 +369,36 @@ test("a deck whose images come to more than 40 MiB stops at that page, in the ow
   const mib = 1024 * 1024
   assert.equal(pageOverDeckLimit([{ n: 1, bytes: 20 * mib }, { n: 3, bytes: 20 * mib }]), null)
   assert.equal(pageOverDeckLimit([{ n: 1, bytes: 20 * mib }, { n: 3, bytes: 20 * mib }, { n: 4, bytes: 1 }]), 4)
+})
+
+test('a child that renders past 40 MiB without a word is stopped by the parent at the page that took it over: no deck, and no deck id', async () => {
+  const mib = 1024 * 1024
+  const pages = Array.from({ length: 21 }, (_, i) => i + 1)
+  const page = (n: number) => JSON.stringify({ type: 'page', n, title: '', pageLabel: null, text: '', notes: '', warnings: [], other: 0 })
+  const { message, decksDir } = await withFakeChild({
+    files: pages.map(n => ({ n, bytes: 2 * mib })),
+    lines: ['{"type":"open","pages":21}', ...pages.map(page), '{"type":"done","other":0}'],
+  })
+  // 20 pages of 2 MiB are 40 MiB, which the loader takes; the 21st goes over.
+  assert.equal(message, "deck.pdf's slide images come to more than 40 MiB (it stopped at page 21). Export it again with lighter images, split it, or leave some pages out with --exclude.")
+  assert.deepEqual(fs.readdirSync(decksDir), [], 'no deck, and no copy of the PDF')
+})
+
+test('the real converter stops at the page that takes the images over the limit, and never writes that page', () => {
+  const c = setup(makePdf(['One', 'Two', 'Three'].map(text => ({ texts: [{ text, size: 40 }] }))))
+  const run = (maxDeckBytes?: number) => {
+    const out = fs.mkdtempSync(path.join(DIR, 'out-'))
+    const job = { input: c.input, out, exclude: [], timeoutMs: 60_000, ...(maxDeckBytes === undefined ? {} : { maxDeckBytes }) }
+    const child = spawnSync(process.execPath, ['--import', 'tsx', path.join(ROOT, 'src/slides/render-child.ts'), JSON.stringify(job)], { cwd: ROOT, encoding: 'utf8' })
+    return { messages: child.stdout.trim().split('\n').map(line => JSON.parse(line) as { type: string }), files: fs.readdirSync(out).sort(), out }
+  }
+  const all = run()
+  assert.deepEqual(all.files, ['001.webp', '002.webp', '003.webp'])
+  // A limit page 1 fits exactly: page 2 takes the total over it.
+  const stopped = run(fs.statSync(path.join(all.out, '001.webp')).size)
+  assert.deepEqual(stopped.messages.map(m => m.type), ['open', 'page', 'refused'])
+  assert.deepEqual(stopped.messages.at(-1), { type: 'refused', reason: 'deck-too-big', page: 2 })
+  assert.deepEqual(stopped.files, ['001.webp'])
 })
 
 test('ids: a slug of the label, ASCII-folded, at most 24 characters, then 6 base32 letters, never one taken', () => {
