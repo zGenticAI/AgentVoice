@@ -76,8 +76,12 @@ export interface PageSummary {
   fps: { median: number; lowest: number; reports: number } | null
   worstTimerLateMs: number | null
   visibility: string[]
-  /** The Origin header on the page's first link: scheme and host ('' for none), and whether it is the page's own. */
-  origin: { value: string; isPage: boolean } | null
+  /**
+   * The Origin header on the page's first link ('' for none), and whether it is the page's own. A bare origin is also
+   * kept as its scheme and host apart: printed as an address, the scrub would take another site's for a link and
+   * leave "[link]", the one answer DESIGN.md's G15 needs. It has no path or query (originOf), so it can't hold a token.
+   */
+  origin: { value: string; scheme: string; host: string; isPage: boolean } | null
 }
 
 export interface ReportInput {
@@ -218,9 +222,8 @@ function pageLines(page: PageSummary): string[] {
   lines.push(`Worst timer lateness: ${page.worstTimerLateMs === null ? 'no reports' : `${page.worstTimerLateMs} ms`}`)
   if (page.visibility.length) lines.push(`Visibility reported: ${page.visibility.join(', ')}`)
   const o = page.origin
-  lines.push(
-    !o ? 'Origin on the link: not seen' : !o.value ? 'Origin on the link: none sent' : `Origin on the link: ${o.value}${o.isPage ? ", the page's own" : ", not the page's own"}`,
-  )
+  const shown = o?.host ? `scheme ${o.scheme}, host ${o.host}` : o?.value
+  lines.push(!o ? 'Origin on the link: not seen' : !shown ? 'Origin on the link: none sent' : `Origin on the link: ${shown}${o.isPage ? ", the page's own" : ", not the page's own"}`)
   return lines
 }
 
@@ -247,6 +250,13 @@ export function formatReport(input: ReportInput): string {
   return lines.join('\n')
 }
 
+/** An Origin's scheme and host, when it is a bare origin (no path, query, fragment or user); both '' otherwise. */
+export function originParts(value: string): { scheme: string; host: string } {
+  const url = URL.parse(value)
+  const bare = Boolean(url?.host) && `${url?.protocol}//${url?.host}` === value.toLowerCase()
+  return bare && url ? { scheme: url.protocol.slice(0, -1), host: url.host } : { scheme: '', host: '' }
+}
+
 /** Every 2-second report's frame rate and lateness, over every share: a summary for the report. */
 export function summarizePage(shares: { hello: PageHello | null; origin: string | null; origin_is_page: boolean | null; metrics: { fps: number; worst_timer_late_ms: number; visibility: string }[] }[]): PageSummary {
   const hello = shares.find(s => s.hello)?.hello ?? null
@@ -258,7 +268,7 @@ export function summarizePage(shares: { hello: PageHello | null; origin: string 
     fps: fps.length ? { median: fps[Math.floor((fps.length - 1) / 2)], lowest: fps[0], reports: fps.length } : null,
     worstTimerLateMs: metrics.length ? Math.max(...metrics.map(m => m.worst_timer_late_ms)) : null,
     visibility: [...new Set([hello?.visibility, ...metrics.map(m => m.visibility)].filter((v): v is string => Boolean(v)))],
-    origin: withOrigin ? { value: withOrigin.origin ?? '', isPage: withOrigin.origin_is_page === true } : null,
+    origin: withOrigin ? { value: withOrigin.origin ?? '', ...originParts(withOrigin.origin ?? ''), isPage: withOrigin.origin_is_page === true } : null,
   }
 }
 

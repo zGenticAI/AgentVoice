@@ -82,7 +82,7 @@ Then:
 
 Paste the whole report, from `Screen-share test report` to `Paste this whole report back to your Claude Code session.`, into your Claude Code session. Run it once on each platform you use.
 
-The report and the `--json` file hold no key or token, no meeting link, no address and no bot id: the public address shows as `[public-host]`, and anything else that looks like one is taken out. Keep the `--json` file to yourself unless your session asks for it.
+The report and the `--json` file hold no key or token, no meeting link, no address and no bot id: the public address shows as `[public-host]`, and anything else that looks like one is taken out. The Origin the bot's browser sent is kept as its scheme and host, even another site's: it has no path, so it can't hold a token. Keep the `--json` file to yourself unless your session asks for it.
 
 ## What it changes in the service
 

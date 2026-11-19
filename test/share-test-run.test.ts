@@ -36,6 +36,8 @@ interface Script {
   /** How long after a stop, or after the share that replaced it was asked for, a page's link closes; null: never. */
   closeAfter?: number | null
   said?: TestLineOutcome
+  /** The Origin the bot's browser sends on the link (the page's own unless given). */
+  origin?: string
   /** Called before each action is answered, to make things happen meanwhile. */
   onAction?: (svc: FakeService, action: ShareTestAction, step: string) => void
 }
@@ -109,8 +111,8 @@ class FakeService implements ShareTestClient {
       link_closed_at: said && isClosed ? closed : null,
       link_close_code: said && isClosed ? 1001 : null,
       link_closed_by: said && isClosed ? 'page' : null,
-      origin: said ? PUBLIC : null,
-      origin_is_page: said ? true : null,
+      origin: said ? (this.script.origin ?? PUBLIC) : null,
+      origin_is_page: said ? (this.script.origin ?? PUBLIC) === PUBLIC : null,
       metrics,
       frames: v.frames.map(f => ({ ...f, shown_at: f.sent_at + 120 <= this.now ? f.sent_at + 120 : null })),
     }
@@ -296,7 +298,7 @@ test('the full run: every step passes, the verdict says safe, and the report goe
   assert.match(report, /Viewport 1280x720, devicePixelRatio 1, visibility visible, Chrome 126/)
   assert.match(report, /Frames per second \(requestAnimationFrame\): median 15, lowest 15/)
   assert.match(report, /Worst timer lateness: 40 ms/)
-  assert.match(report, /Origin on the link: https:\/\/\[public-host\], the page's own/)
+  assert.match(report, /Origin on the link: scheme https, host \[public-host\], the page's own/)
   assert.match(report, /Smallest readable text: 16 px/)
   assert.match(report, /At the end: Alex was asked to leave, as on "please leave"/)
   assert.ok(report.endsWith(REPORT_END))
@@ -519,6 +521,31 @@ test('--json writes the raw step records, scrubbed, readable only by the owner',
   assert.equal(fs.statSync(file).mode & 0o777, 0o600)
   assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700)
   assert.match(h.log.join('\n'), /Wrote the raw step records to .*share-test\.json \(readable only by you\)/)
+})
+
+test("the Origin another site's browser sent is kept as its scheme and host, in the report and the JSON, for DESIGN.md's G15", async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'av-sto-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const cases: [string, string][] = [
+    ['https://bot-browser.example.net', "Origin on the link: scheme https, host bot-browser.example.net, not the page's own"],
+    ['http://assistant.example.com', "Origin on the link: scheme http, host [public-host], not the page's own"],
+    ['https://assistant.example.com:8443', "Origin on the link: scheme https, host [public-host]:8443, not the page's own"],
+    ['null', "Origin on the link: null, not the page's own"],
+  ]
+  for (const [origin, line] of cases) {
+    const file = path.join(dir, `${cases.findIndex(c => c[0] === origin)}.json`)
+    const h = harness({ origin }, [], { jsonFile: file })
+    h.deps.writeJson = writePrivate
+    assert.equal(await h.run(), 0)
+    const report = reportOf(h)
+    assert.ok(report.split('\n').includes(`  ${line}`), report)
+    const json = fs.readFileSync(file, 'utf8')
+    const page = JSON.parse(json).page.origin
+    const host = origin === 'null' ? '' : new URL(origin).host.replace('assistant.example.com', '[public-host]')
+    assert.deepEqual([page.scheme, page.host, page.isPage], [origin === 'null' ? '' : new URL(origin).protocol.slice(0, -1), host, false])
+    assertClean(report)
+    assertClean(json)
+  }
 })
 
 // --- The pure parts ------------------------------------------------------------------------------------------------
