@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280, initial-scale=1">
+<title>Screen-share test</title>
+<style>
+  /* Shared as the bot's screen in npm run join --share-test (docs/share-test.md). Recall renders it at 1280x720 and
+     15 fps, and the meeting platform compresses it: so a plain dark page, the system's own fonts, a 1-px border and
+     corner marks to show any cropping, and a bar that moves all the time to show the frame rate. It makes no sound. */
+  :root { --page: #0b0d12; --ink: #f6f7f9; --muted: #b9bfca; --mark: #ffd23f; --bar: #5eb8ff; --track: #2a2f3a; }
+  html, body { margin: 0; width: 1280px; height: 720px; overflow: hidden; background: var(--page); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  body { box-sizing: border-box; border: 1px solid var(--ink); position: relative; }
+  .corner { position: absolute; width: 36px; height: 36px; border: 0 solid var(--mark); }
+  .tl { top: 0; left: 0; border-top-width: 6px; border-left-width: 6px; }
+  .tr { top: 0; right: 0; border-top-width: 6px; border-right-width: 6px; }
+  .bl { bottom: 0; left: 0; border-bottom-width: 6px; border-left-width: 6px; }
+  .br { bottom: 0; right: 0; border-bottom-width: 6px; border-right-width: 6px; }
+  main { position: absolute; inset: 40px 56px 92px; display: grid; grid-template-columns: 400px 1fr; gap: 40px; }
+  h1 { margin: 0; font-size: 44px; line-height: 1.1; }
+  .session { margin: 10px 0 0; font-size: 32px; color: var(--muted); }
+  .frame { margin-top: 18px; font-size: 220px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .link { margin: 12px 0 0; font-size: 22px; color: var(--muted); }
+  .ladder { align-self: center; }
+  .ladder p { margin: 0 0 6px; display: flex; align-items: baseline; gap: 18px; white-space: nowrap; }
+  .size { flex: none; width: 72px; font-size: 20px; color: var(--mark); text-align: right; }
+  .px12 { font-size: 12px; } .px14 { font-size: 14px; } .px16 { font-size: 16px; } .px18 { font-size: 18px; }
+  .px20 { font-size: 20px; } .px24 { font-size: 24px; } .px28 { font-size: 28px; } .px32 { font-size: 32px; }
+  .px40 { font-size: 40px; } .px48 { font-size: 48px; }
+  .track { position: absolute; left: 56px; right: 56px; bottom: 40px; height: 24px; background: var(--track); }
+  .bar { position: absolute; top: 0; left: 0; width: 120px; height: 24px; background: var(--bar); will-change: transform; }
+</style>
+</head>
+<body>
+<div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+<main>
+  <section>
+    <h1>Screen-share test</h1>
+    <p class="session" id="session">Session &hellip;</p>
+    <div class="frame" id="frame">0</div>
+    <p class="link" id="link">Connecting&hellip;</p>
+  </section>
+  <section class="ladder" aria-label="Text sizes">
+    <p><span class="size">12 px</span><span class="px12">Quick brown fox, 1,234.56</span></p>
+    <p><span class="size">14 px</span><span class="px14">Quick brown fox, 1,234.56</span></p>
+    <p><span class="size">16 px</span><span class="px16">Quick brown fox, 1,234.56</span></p>
+    <p><span class="size">18 px</span><span class="px18">Quick brown fox, 1,234.56</span></p>
+    <p><span class="size">20 px</span><span class="px20">Quick brown fox, 1,234.56</span></p>
+    <p><span class="size">24 px</span><span class="px24">Quick brown fox, 1,234.56</span></p>
+    <p><span class="size">28 px</span><span class="px28">Quick brown fox, 1,234.56</span></p>
+    <p><span class="size">32 px</span><span class="px32">Quick brown fox, 1,234.56</span></p>
+    <p><span class="size">40 px</span><span class="px40">Quick brown fox, 1,234.56</span></p>
+    <p><span class="size">48 px</span><span class="px48">Quick brown fox, 1,234.56</span></p>
+  </section>
+</main>
+<div class="track"><div class="bar" id="bar"></div></div>
+<script>
+// The page's link to the voice service, with the token its own address carries. It says hello once each connection
+// opens, how it runs every 2 s, and when it has painted a frame number the service sent. Nothing else: it needs nothing
+// from the meeting, and the service sends it only its session number and frame numbers.
+(() => {
+  'use strict'
+  const token = new URLSearchParams(location.search).get('t') || ''
+  const linkUrl = new URL('/share-test-link', location.href)
+  linkUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  linkUrl.search = new URLSearchParams({ t: token }).toString()
+
+  const sessionEl = document.getElementById('session')
+  const frameEl = document.getElementById('frame')
+  const linkEl = document.getElementById('link')
+  const bar = document.getElementById('bar')
+  const TRACK = Math.max(0, bar.parentElement.clientWidth - bar.offsetWidth)
+
+  // Frames per second, from requestAnimationFrame, and the bar, which moves on each one.
+  let frames = 0
+  function tick(now) {
+    frames++
+    const x = ((now % 2000) / 2000) * TRACK
+    bar.style.transform = 'translateX(' + x.toFixed(1) + 'px)'
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+
+  // How late a 100 ms timer runs: a page the browser holds back shows here.
+  let worstLate = 0
+  let lastTimer = performance.now()
+  setInterval(() => {
+    const now = performance.now()
+    worstLate = Math.max(worstLate, now - lastTimer - 100)
+    lastTimer = now
+  }, 100)
+
+  let ws = null
+  let tries = 0
+  let stopped = false
+
+  function send(msg) {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg))
+  }
+
+  let windowStart = performance.now()
+  setInterval(() => {
+    const now = performance.now()
+    const fps = (frames * 1000) / Math.max(1, now - windowStart)
+    frames = 0
+    windowStart = now
+    send({ type: 'metrics', fps: Math.round(fps * 10) / 10, worstTimerLateMs: Math.round(worstLate), visibility: document.visibilityState })
+    worstLate = 0
+  }, 2000)
+
+  function chromeMajor() {
+    const m = /Chrom(?:e|ium)\/(\d+)/.exec(navigator.userAgent)
+    return m ? Number(m[1]) : null
+  }
+
+  // A frame number is acknowledged once it has been painted: two animation frames after it changed.
+  function showFrame(n) {
+    frameEl.textContent = String(n)
+    requestAnimationFrame(() => requestAnimationFrame(() => send({ type: 'shown', frame: n })))
+  }
+
+  function connect() {
+    if (stopped) return
+    const sock = new WebSocket(linkUrl.href)
+    ws = sock
+    sock.onopen = () => {
+      tries = 0
+      linkEl.textContent = 'Linked'
+      send({
+        type: 'hello',
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        dpr: window.devicePixelRatio,
+        visibility: document.visibilityState,
+        chromeMajor: chromeMajor(),
+      })
+    }
+    sock.onmessage = ev => {
+      if (typeof ev.data !== 'string') return
+      let msg
+      try {
+        msg = JSON.parse(ev.data)
+      } catch {
+        return
+      }
+      if (msg.type === 'session' && Number.isInteger(msg.epoch)) sessionEl.textContent = 'Session ' + msg.epoch
+      else if (msg.type === 'frame' && Number.isInteger(msg.frame)) showFrame(msg.frame)
+    }
+    sock.onclose = ev => {
+      if (ws !== sock) return
+      ws = null
+      // 4000: this share is over; 4001: a newer connection took its place. Either way, not again.
+      if (ev.code === 4000 || ev.code === 4001 || ++tries > 8) {
+        stopped = true
+        linkEl.textContent = 'Link closed'
+        return
+      }
+      linkEl.textContent = 'Reconnecting'
+      setTimeout(connect, Math.min(5000, 250 * 2 ** tries))
+    }
+  }
+  connect()
+})()
+</script>
+</body>
+</html>

@@ -5,10 +5,12 @@
 // separate listeners:
 // - public (PORT on HOST, 127.0.0.1 unless set): the tunnel points here. Only what the meeting bot needs: the
 //   agent page and its scripts, /audio for a meeting this process started, and a /health that says only ok. With
-//   SPEAKER_PROBE on, also /recall/: Recall's participant events, for a meeting joined with --speaker-probe.
+//   SPEAKER_PROBE on, also /recall/: Recall's participant events, for a meeting joined with --speaker-probe. While a
+//   meeting joined with --share-test is sharing, also its test page and that page's link, with the share's token.
 // - control (a Unix socket in the data folder, CONTROL_SOCKET to put it elsewhere): /api/join for npm run join,
-//   /bridge for the Claude Code channel, and the detailed /health. No pages. Only you can open it, and no other
-//   user can take its place while the service is down, as one could with a port (src/control-socket.ts).
+//   /bridge for the Claude Code channel, the screen-share test's /api/share-test/ for npm run join --share-test, and
+//   the detailed /health. No pages. Only you can open it, and no other user can take its place while the service is
+//   down, as one could with a port (src/control-socket.ts).
 //
 // The service owns getting every bot it sent into a meeting out of the call again: it keeps asking Recall until
 // the bot is out, keeps the bots it has not seen out in the data folder in case it crashes, and stops in order
@@ -37,6 +39,11 @@ import { MeetingSession, PAGE_CLOSE, PAGE_ERRORS, type SessionOptions, endSessio
 import { PROFILE } from './profile.ts'
 import * as recall from './recall.ts'
 import { type LiveSession, sessionHandlers } from './sessions.ts'
+import { type ShareTestPage, loadShareTestPage, shareTestHeaders } from './sharetest/page.ts'
+import {
+  LINK_MAX_BYTES, SHARE_TEST_ACTIONS, SHARE_TEST_LINK_PATH, SHARE_TEST_PAGE_PATH, type ShareTestAction, type TestLineOutcome,
+} from './sharetest/protocol.ts'
+import { type Share, ShareTest, ShareTestOver } from './sharetest/share-test.ts'
 import { MAX_RECALL_MESSAGE_BYTES, RecallEvents } from './speakers/connection.ts'
 import { PROBE_OFF, PROBE_ON, SpeakerProbe } from './speakers/probe.ts'
 import { RECORD_DIRS, sweepOldRecords } from './transcript.ts'
@@ -87,8 +94,8 @@ function joinTip(): string {
   return `${identity.name} joins as a guest: if the meeting has a waiting room or lobby, someone in the meeting has to admit it.`
 }
 
-function send(res: http.ServerResponse, status: number, body: string, type = 'text/plain; charset=utf-8'): void {
-  res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' })
+function send(res: http.ServerResponse, status: number, body: string, type = 'text/plain; charset=utf-8', headers: http.OutgoingHttpHeaders = {}): void {
+  res.writeHead(status, { ...headers, 'content-type': type, 'cache-control': 'no-store' })
   res.end(body)
 }
 
@@ -254,6 +261,10 @@ export interface ServiceConfig {
   /** How long Recall's events connection may stay unheard before it is cut, and how often it is pinged (ms). */
   recallSilenceMs?: number
   recallPingMs?: number
+  /** The screen-share test's page (public/share-test.html, read when the service is made, unless a test passes one). */
+  shareTestPage?: ShareTestPage
+  /** The screen-share test's timings, which tests make short (src/sharetest/share-test.ts). */
+  shareTestTiming?: ConstructorParameters<typeof ShareTest>[0]['timing']
 }
 
 /** What the server uses of a MeetingSession. */
@@ -268,6 +279,12 @@ export interface ServiceSession extends LiveSession {
   resumes(secret: string): boolean
   /** The meeting's page came back (or replaces a connection that stopped answering); got: the voice bytes it says it had. */
   attach(ws: WebSocket, from: { got?: number }): void
+  /** For the screen-share test: whether the consent line has been said in full. */
+  readonly consentDone?: boolean
+  /** For the screen-share test: says a fixed line through the normal speech path, and how it went. */
+  sayTestLine?(text: string): Promise<TestLineOutcome>
+  /** For the screen-share test: leaves as on "please leave". */
+  leaveAsAsked?(): void
 }
 
 export interface ServiceDeps<S extends ServiceSession> {
@@ -284,6 +301,11 @@ export interface ServiceDeps<S extends ServiceSession> {
     opts: SessionOptions,
     ctx: { bridge: SessionBridge; brief: () => string; reconnectMs: number; speakerProbe?: SpeakerProbe },
   ): S
+  /**
+   * Starts and stops a bot's screen share, resolving with Recall's HTTP status (recall.startScreenshare and
+   * stopScreenshare, unless a test passes fakes). Only the screen-share test uses them.
+   */
+  screenshare?: { start(botId: string, url: string): Promise<number>; stop(botId: string): Promise<number> }
 }
 
 export interface Service<S extends ServiceSession> {
@@ -355,10 +377,16 @@ interface Meeting<S> {
   over?: boolean
   /** Joined with the speaker probe: its participant events from Recall, and what its probe measures (in memory). */
   events?: RecallEvents
+  /** Joined with the screen-share test (npm run join --share-test): its shares, and what its camera page did (in memory). */
+  shareTest?: ShareTest
 }
 
 export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps: ServiceDeps<S>): Service<S> {
   const served = botFiles(cfg.agentPage ?? loadAgentPage('', identity).page)
+  // The screen-share test's page, read once, like the bot page. One that can't be used only keeps meetings from being
+  // joined with the share test: the join says why.
+  const shareTestPage = cfg.shareTestPage ?? loadShareTestPage()
+  const screenshare = deps.screenshare ?? { start: recall.startScreenshare, stop: recall.stopScreenshare }
   const briefFile = path.join(cfg.dataDir, SHARED_BRIEF_FILE)
   // The shared brief, read again at every answer and for the minutes, for the meetings without one of their own. One
   // edited by hand to more than a brief may hold is refused, never cut (its end often says what must not be shared):
@@ -434,6 +462,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
   function gone(meeting: Meeting<S>): void {
     if (closed || meetings.get(meeting.key) !== meeting) return
     clearTimers(meeting)
+    meeting.shareTest?.end()
     // Its own brief goes with it.
     meetings.delete(meeting.key)
     save()
@@ -468,6 +497,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     // probe measured stays with the meeting's session, which writes it as it ends. (Every end of a meeting comes here,
     // but the service stopping: stop() cuts them.)
     meeting.events?.stop()
+    // Nor the screen-share test: its tokens die, and its page's link closes. The share goes with the bot.
+    meeting.shareTest?.end()
     console.log(`[leave] bot ${meeting.botId}: ${why}, so it is asked to leave its call`)
     const attempt = async (n: number): Promise<void> => {
       if (await askToLeave(meeting)) return
@@ -518,6 +549,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     if (meeting.page !== ws) return
     meeting.page = undefined
     if (meeting.state !== 'live') return
+    meeting.shareTest?.cameraDropped()
     meeting.state = 'away'
     const session = meeting.session
     if (!session || stopping) return // stop() asks its bot to leave, and endSessions ends the session
@@ -577,11 +609,12 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
    * Creates a Recall bot that joins the meeting with the agent page as its camera and microphone. brief: the meeting's
    * own brief, which it then answers from instead of the shared one (undefined: the shared one). speakerProbe: true to
    * measure who is speaking in this meeting (a test meeting: only /api/join asks for it, and only with SPEAKER_PROBE on).
+   * shareTest: true for the screen-share test (a test meeting: only /api/join asks for it).
    */
   async function startBot(
     meetingUrl: unknown,
-    { brief, speakerProbe }: { brief?: unknown; speakerProbe?: unknown } = {},
-  ): Promise<{ bot_id: string; platform: recall.Platform; key: string; brief: BriefInUse; speakerProbe: boolean }> {
+    { brief, speakerProbe, shareTest }: { brief?: unknown; speakerProbe?: unknown; shareTest?: unknown } = {},
+  ): Promise<{ bot_id: string; platform: recall.Platform; key: string; brief: BriefInUse; speakerProbe: boolean; shareTest: boolean }> {
     const platform = typeof meetingUrl === 'string' ? recall.meetingPlatform(meetingUrl) : null
     if (typeof meetingUrl !== 'string' || !platform) {
       throw new JoinError('Pass a Zoom, Google Meet or Microsoft Teams meeting link.')
@@ -596,6 +629,11 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     }
     const probing = speakerProbe === true
     if (probing && !cfg.speakerProbe) throw new JoinError(PROBE_OFF)
+    if (shareTest !== undefined && shareTest !== null && typeof shareTest !== 'boolean') {
+      throw new JoinError('share_test has to be true or false.')
+    }
+    const sharing = shareTest === true
+    if (sharing && shareTestPage.problem) throw new JoinError(shareTestPage.problem)
     if (!cfg.agentPageToken) throw new JoinError('Set AGENT_PAGE_TOKEN in .env first.')
     // A page the bot can't load would leave it in the meeting, silent, until the page wait runs out or it is asked to leave.
     const unreachable = publicUrlProblem(cfg.publicUrl)
@@ -629,6 +667,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     const pageWait = cfg.pageWaitMs ?? PAGE_WAIT_MS
     const meeting: Meeting<S> = { key, botId: bot.id, platform, state: 'waiting', deadline: Date.now() + pageWait, brief: own }
     if (probing) meeting.events = recallEvents(meeting, platform, eventsToken)
+    if (sharing) meeting.shareTest = newShareTest(bot.id)
     meetings.set(key, meeting)
     save()
     // Stopped while Recall created it: stop() asks it to leave along with the others.
@@ -638,9 +677,42 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     meeting.timer.unref()
     // The bot's id is enough to find it in Recall. The meeting's link stays out of the log, which nothing deletes: for
     // Google Meet even a link without its query string lets anyone join. Nor does any of a brief go there.
-    const extras = [own === undefined ? '' : 'a brief of its own', probing ? 'the speaker probe' : ''].filter(Boolean).join(' and ')
+    const extras = [own === undefined ? '' : 'a brief of its own', probing ? 'the speaker probe' : '', sharing ? 'the screen-share test' : '']
+      .filter(Boolean)
+      .join(' and ')
     console.log(`[join] bot ${bot.id} is joining a ${recall.PLATFORM_NAMES[platform]} meeting${extras ? `, with ${extras}` : ''}`)
-    return { bot_id: bot.id, platform, key, brief: own !== undefined ? 'meeting' : sharedBrief().trim() ? 'shared' : 'none', speakerProbe: probing }
+    const briefInUse: BriefInUse = own !== undefined ? 'meeting' : sharedBrief().trim() ? 'shared' : 'none'
+    return { bot_id: bot.id, platform, key, brief: briefInUse, speakerProbe: probing, shareTest: sharing }
+  }
+
+  /** A meeting's screen-share test: its page's address on the tunnel, with each share's token, and Recall's calls. */
+  function newShareTest(botId: string): ShareTest {
+    const pageOrigin = URL.parse(cfg.publicUrl)?.origin ?? ''
+    return new ShareTest({
+      botId,
+      pageUrl: token => `${cfg.publicUrl}${SHARE_TEST_PAGE_PATH}?${new URLSearchParams({ t: token })}`,
+      pageOrigin,
+      start: url => screenshare.start(botId, url),
+      stop: () => screenshare.stop(botId),
+      timing: cfg.shareTestTiming,
+    })
+  }
+
+  /** The live share (or one in its grace) whose token this is, and its meeting: none for a meeting that is ending. */
+  function shareFor(token: string): { meeting: Meeting<S>; share: Share } | null {
+    if (!token || stopping) return null
+    for (const meeting of meetings.values()) {
+      if (!meeting.shareTest || meeting.state === 'leaving') continue
+      const share = meeting.shareTest.shareFor(token)
+      if (share) return { meeting, share }
+    }
+    return null
+  }
+
+  /** The meeting of this bot, if it was joined with the share test and its bot is not out of the call yet. */
+  function shareTestMeeting(botId: unknown): (Meeting<S> & { shareTest: ShareTest }) | undefined {
+    if (typeof botId !== 'string' || !botId) return undefined
+    return [...meetings.values()].find((m): m is Meeting<S> & { shareTest: ShareTest } => m.botId === botId && m.shareTest !== undefined)
   }
 
   /** A meeting's participant events and the probe that measures them, for a meeting joined with the speaker probe. */
@@ -714,6 +786,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
   const audioWss = new WebSocketServer({ noServer: true, maxPayload: MAX_AUDIO_MESSAGE_BYTES })
   const bridgeWss = new WebSocketServer({ noServer: true, maxPayload: MAX_BRIDGE_MESSAGE_BYTES })
   const recallWss = new WebSocketServer({ noServer: true, maxPayload: MAX_RECALL_MESSAGE_BYTES, perMessageDeflate: false })
+  const shareTestWss = new WebSocketServer({ noServer: true, maxPayload: LINK_MAX_BYTES, perMessageDeflate: false })
 
   /**
    * Starts the conversation for a page that connected to /audio. Null if it could not start: the page is told so, and
@@ -747,6 +820,13 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     if (req.method === 'GET' && file) return send(res, 200, file.body, file.type)
     // Anyone can reach this through the tunnel, so it says nothing about meetings or the session link.
     if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, JSON.stringify({ ok: true }), 'application/json')
+    // The screen-share test's page: only while a share is on, with its token. Otherwise not found, as any other path.
+    if (req.method === 'GET' && url.pathname === SHARE_TEST_PAGE_PATH) {
+      const host = URL.parse(cfg.publicUrl)?.host
+      if (host && shareTestPage.html && shareFor(url.searchParams.get('t') ?? '')) {
+        return send(res, 200, shareTestPage.html, 'text/html; charset=utf-8', shareTestHeaders(shareTestPage, host))
+      }
+    }
     send(res, 404, 'not found')
   }
 
@@ -756,6 +836,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     if (!url) return refuse(socket, 400, 'bad request')
     // Recall's participant events, only with SPEAKER_PROBE on: otherwise not found, as any other path.
     if (cfg.speakerProbe && url.pathname === recall.RECALL_EVENTS_PATH) return onRecallUpgrade(req, socket, head, url, handOver)
+    if (url.pathname === SHARE_TEST_LINK_PATH) return onShareTestUpgrade(req, socket, head, url, handOver)
     // Only the bot page's audio.
     if (url.pathname !== '/audio') return refuse(socket, 404, 'not found')
     if (!cfg.agentPageToken || !sameSecret(url.searchParams.get('token') ?? '', cfg.agentPageToken)) return refuse(socket, 403, 'forbidden')
@@ -782,10 +863,12 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
       const session = meeting.session
       if (!session || !session.resumes(url.searchParams.get('rejoin') ?? '')) {
         console.warn(`[audio] refused a page for bot ${meeting.botId} without its meeting's secret: the meeting has its page`)
+        meeting.shareTest?.cameraRefused()
         return refuse(socket, 409, 'this meeting already has its page')
       }
       if (attempt === undefined || attempt <= (meeting.attempt ?? -1)) {
         console.warn(`[audio] refused an earlier try of bot ${meeting.botId}'s page: a later one has connected`)
+        meeting.shareTest?.cameraRefused()
         return refuse(socket, 409, 'this meeting already has its page')
       }
       handOver()
@@ -797,6 +880,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
         meeting.state = 'live'
         meeting.page = ws
         meeting.attempt = attempt
+        meeting.shareTest?.cameraAttached()
         watch(ws, meeting.botId)
         ws.on('close', () => pageGone(meeting, ws))
         session.attach(ws, { got: count(url.searchParams.get('got')) })
@@ -816,6 +900,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
       meeting.session = session
       meeting.page = ws
       meeting.attempt = attempt
+      meeting.shareTest?.cameraAttached()
       if (meeting.startedAt === undefined) {
         // MAX_MEETING_MINUTES caps what one meeting can cost: from when its page first connected, whether or not a
         // page is connected when it runs out.
@@ -866,6 +951,20 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     recallWss.handleUpgrade(req, socket, head, ws => events.take(ws))
   }
 
+  /**
+   * The screen-share test page's link, for a share that is starting or live (or replaced, in its grace) with its token,
+   * compared in constant time. Anything else is not found, as any other path, so the path says nothing when no share is
+   * on; so is everything once the service is stopping. The newest connection wins (src/sharetest/share-test.ts).
+   */
+  function onShareTestUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer, url: URL, handOver: () => void): void {
+    const found = shareFor(url.searchParams.get('t') ?? '')
+    if (!found?.meeting.shareTest) return refuse(socket, 404, 'not found')
+    const test = found.meeting.shareTest
+    handOver()
+    // The callback runs before any other upgrade is handled. take() listens for errors before any frame can arrive.
+    shareTestWss.handleUpgrade(req, socket, head, ws => test.take(ws, found.share, req.headers.origin))
+  }
+
   // --- Control listener: a Unix socket only you can open -------------------------------------------------
 
   async function handleControl(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -886,7 +985,94 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
       return send(res, 200, JSON.stringify(health), 'application/json')
     }
     if (req.method === 'POST' && url.pathname === '/api/join') return join(req, res)
+    if (req.method === 'GET' && url.pathname === '/api/share-test/status') return shareTestStatus(req, res, url)
+    if (req.method === 'POST' && url.pathname === '/api/share-test/action') return shareTestAction(req, res)
     send(res, 404, 'not found')
+  }
+
+  /**
+   * Whether a screen-share test request is refused, as /api/join refuses one: from a web page (it has an Origin header),
+   * or without the local token. The log never has the Origin: it is a web page's address.
+   */
+  function shareTestRefused(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+    if (req.headers.origin !== undefined) {
+      console.warn('[security] refused /api/share-test from a web page')
+      send(res, 403, 'forbidden: /api/share-test is not for web pages')
+      return true
+    }
+    if (!hasLocalToken(req, cfg.localToken)) {
+      console.warn('[security] refused /api/share-test without the local token')
+      send(res, 401, 'The local token is missing or wrong (npm run join sends the one in the data folder).')
+      return true
+    }
+    return false
+  }
+
+  /** GET /api/share-test/status?bot=<bot_id>: the meeting and its share test, for npm run join --share-test. */
+  function shareTestStatus(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+    if (shareTestRefused(req, res)) return
+    const meeting = shareTestMeeting(url.searchParams.get('bot'))
+    if (!meeting) return send(res, 404, 'No meeting with the screen-share test for that bot.')
+    const status = meeting.shareTest.status(meeting.state, meeting.session ? (meeting.session.consentDone ?? null) : null)
+    send(res, 200, JSON.stringify(status), 'application/json')
+  }
+
+  /** POST /api/share-test/action {bot_id, action, step?}: one step of the test, once those asked before it are done. */
+  async function shareTestAction(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (shareTestRefused(req, res)) return
+    if (!isJson(req)) return send(res, 415, 'Send JSON, with Content-Type: application/json.')
+    let body: Record<string, unknown>
+    try {
+      body = await readJson(req)
+    } catch (err) {
+      return send(res, err instanceof BodyError ? err.status : 400, (err as Error).message)
+    }
+    const { bot_id, action, step } = body
+    if (typeof action !== 'string' || !(SHARE_TEST_ACTIONS as readonly string[]).includes(action)) {
+      return send(res, 400, `action has to be one of ${SHARE_TEST_ACTIONS.join(', ')}.`)
+    }
+    const meeting = shareTestMeeting(bot_id)
+    if (!meeting) return send(res, 404, 'No meeting with the screen-share test for that bot.')
+    if (stopping) return send(res, 503, STOPPING)
+    if (meeting.state === 'leaving') return send(res, 409, 'The bot is leaving the meeting.')
+    const ctx = {
+      // For the log only: S1 to S9.
+      step: typeof step === 'string' && /^S[1-9]$/.test(step) ? step : undefined,
+      name: identity.name,
+      say: (text: string) => sayTestLine(meeting, text),
+      leave: () => shareTestLeave(meeting),
+    }
+    let result: unknown
+    try {
+      result = await meeting.shareTest.act(action as ShareTestAction, ctx)
+    } catch (err) {
+      if (err instanceof ShareTestOver) return send(res, 409, 'The bot is leaving the meeting.')
+      throw err
+    }
+    send(res, 200, JSON.stringify(result), 'application/json')
+  }
+
+  /** The test line, through the meeting's session: never a rejection, whatever the session does. */
+  function sayTestLine(meeting: Meeting<S>, text: string): Promise<TestLineOutcome> {
+    const session = meeting.session
+    if (!session?.sayTestLine || meeting.state !== 'live') return Promise.resolve(meeting.state === 'away' ? 'no_page' : 'not_now')
+    return Promise.resolve()
+      .then(() => session.sayTestLine!(text))
+      .catch(err => {
+        console.error(`[share-test] bot ${meeting.botId}: the test line failed (${errorName(err)})`)
+        return 'failed' as const
+      })
+  }
+
+  /** The end of the test: the assistant leaves by its normal path ("please leave"), or the bot is asked to if it has none. */
+  function shareTestLeave(meeting: Meeting<S>): void {
+    const session = meeting.session
+    try {
+      if (session?.leaveAsAsked && !session.leftMeeting) return session.leaveAsAsked()
+    } catch (err) {
+      console.error(`[share-test] bot ${meeting.botId}: leaving failed (${errorName(err)}), so the bot is asked to leave`)
+    }
+    leave(meeting, 'the screen-share test is over')
   }
 
   /** Starts a meeting bot, for npm run join. */
@@ -906,10 +1092,19 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     // A form or a "simple" cross-site request can't send JSON without the browser asking first.
     if (!isJson(req)) return send(res, 415, 'Send JSON, with Content-Type: application/json.')
     try {
-      const { meetingUrl, brief, speaker_probe } = await readJson(req)
-      const started = await startBot(meetingUrl, { brief, speakerProbe: speaker_probe })
+      const { meetingUrl, brief, speaker_probe, share_test } = await readJson(req)
+      const started = await startBot(meetingUrl, { brief, speakerProbe: speaker_probe, shareTest: share_test })
       const { bot_id, platform } = started
-      const answer = { bot_id, platform, brief: started.brief, brief_note: briefNote(started.brief), speaker_probe: started.speakerProbe, tip: joinTip() }
+      const answer = {
+        bot_id,
+        platform,
+        brief: started.brief,
+        brief_note: briefNote(started.brief),
+        speaker_probe: started.speakerProbe,
+        tip: joinTip(),
+        // Only for a meeting with the screen-share test: any other answer is what it always was.
+        ...(started.shareTest ? { share_test: true } : {}),
+      }
       return send(res, 200, JSON.stringify(answer), 'application/json')
     } catch (err) {
       const status = err instanceof JoinError ? 400 : err instanceof BodyError ? err.status : 500
@@ -998,6 +1193,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
           clearTimers(meeting)
           // Nothing more of the meeting is measured: its session writes what it has as it ends (endSessions).
           meeting.events?.terminate()
+          meeting.shareTest?.end()
           return askToLeave(meeting)
         })
         await within(Promise.allSettled(asked), until - Date.now())
@@ -1009,8 +1205,11 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     },
     async close() {
       closed = true
-      for (const meeting of meetings.values()) clearTimers(meeting)
-      for (const ws of [...audioWss.clients, ...bridgeWss.clients, ...recallWss.clients]) ws.terminate()
+      for (const meeting of meetings.values()) {
+        clearTimers(meeting)
+        meeting.shareTest?.end()
+      }
+      for (const ws of [...audioWss.clients, ...bridgeWss.clients, ...recallWss.clients, ...shareTestWss.clients]) ws.terminate()
       await closeServers()
     },
   }
@@ -1108,6 +1307,7 @@ async function main(): Promise<void> {
       leaveCall: recall.leaveCall,
       startSession: (ws, opts, { bridge, brief, reconnectMs, speakerProbe }) =>
         new MeetingSession(ws, opts, { brain, bridge, brief, speak: lines.speak, reconnectMs, speakerProbe }),
+      screenshare: { start: recall.startScreenshare, stop: recall.stopScreenshare },
     },
   )
 

@@ -357,11 +357,11 @@ test('get_brief answers unknown_meeting for a key that is made up or not a key, 
 
 test('the control /health lists what the service can do, and every bridge link hears it first', async t => {
   const s = await start(t)
-  assert.deepEqual(JSON.parse((await request(s.control, { path: '/health' })).body).features, ['meeting_brief', 'why_not_answered'])
+  assert.deepEqual(JSON.parse((await request(s.control, { path: '/health' })).body).features, ['meeting_brief', 'why_not_answered', 'share_test'])
   for (let i = 0; i < 2; i++) {
     const link = await bridgeLink(t, s)
     await until(() => link.got.length > 0)
-    assert.deepEqual(link.got[0], { type: 'service', features: ['meeting_brief', 'why_not_answered'] })
+    assert.deepEqual(link.got[0], { type: 'service', features: ['meeting_brief', 'why_not_answered', 'share_test'] })
   }
 })
 

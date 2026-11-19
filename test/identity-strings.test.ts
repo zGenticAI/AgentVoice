@@ -289,7 +289,10 @@ test('the channel and the voice service write what reading .env warned about at 
 })
 
 test('the bot page gets the names, HTML-escaped, in its text and in data-agent-name for its script', () => {
-  assert.deepEqual(fs.readdirSync(path.join(ROOT, 'public')).filter(f => f.endsWith('.html')), ['agent.html'], 'the only page is the bot\'s')
+  assert.deepEqual(fs.readdirSync(path.join(ROOT, 'public')).filter(f => f.endsWith('.html')), ['agent.html', 'share-test.html'], 'the bot\'s page, and the share test\'s')
+  // The share test's page shows nothing of the assistant, its owner or the meeting, so it has no names to fill in.
+  const shareTest = fs.readFileSync(path.join(ROOT, 'public', 'share-test.html'), 'utf8')
+  assert.doesNotMatch(shareTest, /\{\{\w+\}\}|Alex|Sam/)
   const html = fs.readFileSync(path.join(ROOT, 'public', 'agent.html'), 'utf8')
   assert.match(html, /<body data-agent-name="\{\{name\}\}">/)
   const filled = fillPage(html, { name: 'Nova', owner: "Seán O'Brien", company: '' })

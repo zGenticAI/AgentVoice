@@ -26,8 +26,9 @@ import { identity } from './identity.ts'
  * to the join CLI in the control /health. A newer channel or CLI refuses what an older service would quietly ignore.
  * meeting_brief: a meeting's own brief (join_meeting's and /api/join's brief, and get_brief).
  * why_not_answered: what Alex did with the latest lines of a meeting, and why.
+ * share_test: the screen-share test (npm run join --share-test only: neither join_meeting nor the bridge can ask for it).
  */
-export const SERVICE_FEATURES = ['meeting_brief', 'why_not_answered'] as const
+export const SERVICE_FEATURES = ['meeting_brief', 'why_not_answered', 'share_test'] as const
 
 /** What get_brief says of a meeting's brief: its own (with its text), the shared one, or none (no such meeting now). */
 export type BriefFor = { brief_for: 'this_meeting'; text: string } | { brief_for: 'shared' } | { brief_for: 'unknown_meeting' }
