@@ -1,5 +1,7 @@
 # agent-voice
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/zgenticai-agentvoice-16488l?v=197a9936ef5ef1c6d7dddad2f6056696)](https://m8ven.ai/mcp/zgenticai-agentvoice-16488l?s=readme)
+
 A self-hosted AI meeting assistant. It joins your Zoom, Google Meet and Microsoft Teams meetings as a voice participant, says that it is an AI, and answers questions people ask it by name. It answers quick questions itself, from a brief you prepare for the meeting. It hands deeper ones to your own Claude Code session, which can look through your notes and documents, and then speaks the answer. After the meeting, it writes the minutes.
 
 It runs on your own computer, with your own accounts at the services it uses. Nothing is hosted for you.
