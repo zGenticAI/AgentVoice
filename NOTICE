@@ -12,3 +12,17 @@ Version 2.0:
 - test/attention.test.ts and test/fixtures/name-corpus.json: a few test sentences
   come from AMP's test/attention.test.ts and test/asr.test.ts, with the name
   changed.
+
+It depends on these packages, which npm installs; they are not part of this
+repository:
+- pdf.js (pdfjs-dist), Copyright Mozilla Foundation, licensed under the Apache
+  License, Version 2.0. It bundles, each under its own licence in the package:
+  the standard fonts (Foxit fonts, under PDFium's BSD 3-Clause licence, and
+  Liberation Sans, under the GPL v2 with a font exception), Adobe's CMaps
+  (BSD 3-Clause), and WebAssembly decoders: OpenJPEG (BSD 2-Clause), a JBIG2
+  decoder from PDFium (BSD 3-Clause), qcms (MIT) and QuickJS (MIT), with
+  Mozilla's code around them (Apache 2.0, BSD 2-Clause and MIT), and an ICC
+  profile (CC0). Their licence files are in node_modules/pdfjs-dist.
+- @napi-rs/canvas, licensed under the MIT License, a binding to Skia (BSD
+  3-Clause). Its platform package lists the Rust crates it is built from, with
+  their licences, in sbom.cdx.json.

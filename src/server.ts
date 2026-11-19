@@ -37,6 +37,7 @@ import { MeetingSession, PAGE_CLOSE, PAGE_ERRORS, type SessionOptions, endSessio
 import { PROFILE } from './profile.ts'
 import * as recall from './recall.ts'
 import { type LiveSession, sessionHandlers } from './sessions.ts'
+import { decksDir, prepareDecksDir, sweepOldDecks } from './slides/deck.ts'
 import { MAX_RECALL_MESSAGE_BYTES, RecallEvents } from './speakers/connection.ts'
 import { PROBE_OFF, PROBE_ON, SpeakerProbe } from './speakers/probe.ts'
 import { RECORD_DIRS, sweepOldRecords } from './transcript.ts'
@@ -1052,16 +1053,29 @@ export function stopper<S>(
 
 /**
  * At start and then hourly, since the service runs for weeks: the chat notice promises the deletion. The log has counts
- * and an error's code only: the files' names hold their meetings' keys, and nothing deletes the log.
+ * and an error's code only: the files' names hold their meetings' keys, and nothing deletes the log. Prepared slide
+ * decks (data/decks) go the same way, DECK_RETENTION_DAYS after they were last used, with unfinished prepares; their
+ * ids and labels are never logged.
  */
-export function sweep(now = Date.now(), dirs: readonly string[] = RECORD_DIRS): void {
+export function sweep(now = Date.now(), dirs: readonly string[] = RECORD_DIRS, decks = decksDir(config.dataDir)): void {
+  const failure = (err: unknown) => {
+    const code = (err as NodeJS.ErrnoException)?.code
+    console.error(`[retention] the sweep failed (${typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'error'})`)
+  }
   try {
     const { removed, failed, code } = sweepOldRecords(now, dirs)
     if (removed) console.log(`[retention] deleted ${removed} transcript, minutes and speaker-probe files older than ${config.retentionDays} days`)
     if (failed) console.error(`[retention] could not delete ${failed} file${failed === 1 ? '' : 's'} older than ${config.retentionDays} days (${code}): the next sweep, within the hour, tries again`)
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code
-    console.error(`[retention] the sweep failed (${typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'error'})`)
+    failure(err)
+  }
+  try {
+    const { removed, unfinished, failed, code } = sweepOldDecks(decks, config.deckRetentionDays, now)
+    if (removed) console.log(`[retention] deleted ${removed} prepared slide deck${removed === 1 ? '' : 's'} not used for ${config.deckRetentionDays} days`)
+    if (unfinished) console.log(`[retention] deleted ${unfinished} unfinished slide prepare${unfinished === 1 ? '' : 's'}`)
+    if (failed) console.error(`[retention] could not delete ${failed} prepared slide deck${failed === 1 ? '' : 's'} (${code}): the next sweep, within the hour, tries again`)
+  } catch (err) {
+    failure(err)
   }
 }
 
@@ -1082,6 +1096,7 @@ async function main(): Promise<void> {
   for (const warning of [...retiredSettings(process.env), ...PROFILE.warnings]) console.warn(warning)
   // Transcripts, minutes, the brief, the local token and the control socket: reachable by you only.
   prepareDataDir(config.dataDir)
+  prepareDecksDir(decksDir(config.dataDir))
   const localToken = ensureLocalToken(config.dataDir)
 
   const brain = new Brain()

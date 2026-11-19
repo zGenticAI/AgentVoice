@@ -1,0 +1,298 @@
+// What npm run slides does: prepare, check, list and delete, each returning the lines to print and an exit code, so the
+// tests can run them without a terminal. None needs a key or the network. Nothing printed here goes to the service's
+// log: it is the owner's own terminal, so slide titles and file names may appear in it.
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
+import { PrepareError, prepareDeck } from './convert.ts'
+import { DeckError, DeckStore, TEMP_PREFIX } from './deck.ts'
+import { DECK_ID, type Manifest, WARNINGS } from './manifest.ts'
+import {
+  type Checked, MAX_SCRIPT_FILE_BYTES, type Problem, checkScript, mergeScript, parseScript, shellArg, skeleton, structureProblems,
+} from './script.ts'
+import { type SheetSlide, contactSheet, writeSheet } from './sheet.ts'
+
+export interface Outcome {
+  lines: string[]
+  code: number
+}
+
+/** Where a file is, as the owner should read it: from the folder they ran the command in, when it is inside it. */
+export function shown(file: string, cwd: string): string {
+  const rel = path.relative(cwd, file)
+  return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : file
+}
+
+/** The script beside a PDF: deck.pdf has deck.script.md. */
+export const scriptFor = (pdf: string) => path.join(path.dirname(pdf), `${path.basename(pdf).replace(/\.pdf$/i, '')}.script.md`)
+
+/** "page 4, line 23: " */
+export function where(p: Problem): string {
+  const parts = [p.page ? `page ${p.page}` : '', p.line ? `line ${p.line}` : ''].filter(Boolean)
+  return parts.length ? `${parts.join(', ')}: ` : ''
+}
+
+/** A script file's text, or why it can't be read: a regular file, at most 1 MiB. */
+function readScript(file: string): string {
+  const stat = fs.lstatSync(file, { throwIfNoEntry: false })
+  if (!stat) throw new PrepareError(`${path.basename(file)} was not found.`)
+  if (!stat.isFile()) throw new PrepareError(`${path.basename(file)} is not a plain file${stat.isSymbolicLink() ? ' (it is a symbolic link)' : ''}.`)
+  if (stat.size > MAX_SCRIPT_FILE_BYTES) throw new PrepareError(`${path.basename(file)} is over ${MAX_SCRIPT_FILE_BYTES} bytes.`)
+  return fs.readFileSync(file, 'utf8')
+}
+
+/** Writes a script: a new one readable by you only, an existing one replaced at once, keeping its mode. */
+function writeScript(file: string, text: string, existing: boolean): void {
+  if (!existing) {
+    fs.writeFileSync(file, text, { mode: 0o600, flag: 'wx' })
+    return
+  }
+  const mode = fs.statSync(file).mode & 0o777
+  const temp = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomBytes(4).toString('hex')}.tmp`)
+  try {
+    fs.writeFileSync(temp, text, { mode, flag: 'wx' })
+    fs.chmodSync(temp, mode)
+    fs.renameSync(temp, file)
+  } finally {
+    fs.rmSync(temp, { force: true })
+  }
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+const pages = (list: readonly number[]) => `${list.length === 1 ? 'page' : 'pages'} ${list.join(', ')}`
+const minutes = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`)
+
+/** One line about a checked script. */
+function summary(checked: Checked): string {
+  const parts = [`${plural(checked.narrated, 'slide')} to present`]
+  const aside = [checked.onRequest ? `${checked.onRequest} on request` : '', checked.excluded ? `${checked.excluded} excluded` : ''].filter(Boolean)
+  const of = checked.script?.minutes ? ` of your ${checked.script.minutes}` : ''
+  return `${parts[0]}${aside.length ? ` (${aside.join(', ')})` : ''}, about ${minutes(checked.totalMs)}${of}`
+}
+
+/** What the sheet shows for each slide, from a checked script. */
+export function sheetSlides(checked: Checked, manifest: Manifest): Map<number, SheetSlide> {
+  const out = new Map<number, SheetSlide>()
+  const sections = new Map(checked.script?.sections.map(s => [s.page, s]) ?? [])
+  for (const slide of manifest.slides) {
+    const section = sections.get(slide.n)
+    const problems = [...checked.errors.map(e => ({ ...e, error: true })), ...checked.warnings]
+      .filter(p => p.page === slide.n && !p.fromDeck)
+      .map(p => `${'error' in p ? 'Error' : 'Warning'}: ${p.message}.`)
+    const seconds = checked.estimates.get(slide.n)
+    let status = 'No section in the script: not shown.'
+    if (section?.exclude) status = 'Excluded in the script: never shown.'
+    else if (section?.onRequest) status = `On request: shown only when someone asks for it${seconds ? `, about ${Math.round(seconds / 1000)} s` : ''}.`
+    else if (section) status = `Narrated${seconds ? `, about ${Math.round(seconds / 1000)} s` : ''}${section.hold ? `, after ${section.hold} s to read it` : ''}${section.pause ? `, then ${section.pause} s of silence` : ''}.`
+    out.set(slide.n, { status, narration: section && !section.exclude ? section.paragraphs : [], problems })
+  }
+  return out
+}
+
+/** Writes the sheet for a deck, with the script's view of it when there is one. */
+function refreshSheet(store: DeckStore, manifest: Manifest, checked: Checked | null, scriptName: string): void {
+  const dir = store.folder(manifest.id)
+  const html = contactSheet({
+    manifest,
+    ...(checked
+      ? {
+          slides: sheetSlides(checked, manifest),
+          summary: `${summary(checked)}; ${plural(checked.errors.length, 'error')}, ${plural(checked.warnings.length, 'warning')}.`,
+          scriptName,
+          title: checked.script?.title ?? undefined,
+        }
+      : {}),
+  })
+  writeSheet(store.dir, dir, html)
+}
+
+export interface PrepareInput {
+  /** The PDF, absolute. */
+  input: string
+  exclude: readonly number[]
+  label?: string
+  decksDir: string
+  /** The assistant's name, for the script's note. */
+  name: string
+  cwd: string
+  /** Tests only. */
+  childScript?: string
+  timeoutMs?: number
+}
+
+/** npm run slides -- prepare: the deck, then the script beside the PDF (new, or updated), then the contact sheet. */
+export async function runPrepare(input: PrepareInput): Promise<Outcome> {
+  const lines: string[] = []
+  const store = new DeckStore(input.decksDir)
+  const scriptFile = scriptFor(input.input)
+  const scriptName = path.basename(scriptFile)
+  // An existing script is checked first: one whose structure can't be followed is never rewritten, and nothing is rendered.
+  let existing: string | null = null
+  try {
+    if (fs.lstatSync(scriptFile, { throwIfNoEntry: false })) existing = readScript(scriptFile)
+  } catch (err) {
+    return { lines: [`${(err as Error).message} It is beside the PDF, where prepare writes the script: move it aside, then prepare again.`], code: 1 }
+  }
+  if (existing !== null) {
+    const problems = structureProblems(existing)
+    if (problems.length) {
+      return {
+        lines: [`${scriptName} can't be updated until these are fixed (or move it aside, and prepare writes a new one):`, ...problems.map(p => `  ${where(p)}${p.message}`)],
+        code: 1,
+      }
+    }
+  }
+
+  let prepared
+  try {
+    prepared = await prepareDeck({ input: input.input, decksDir: input.decksDir, exclude: input.exclude, label: input.label, childScript: input.childScript, timeoutMs: input.timeoutMs })
+  } catch (err) {
+    if (err instanceof PrepareError) return { lines: [err.message], code: 1 }
+    throw err
+  }
+  const { manifest } = prepared
+  const excluded = manifest.excluded ? ` (${manifest.excluded} excluded)` : ''
+  lines.push(`Prepared ${manifest.id}: ${plural(manifest.slides.length, 'page')} rendered${excluded} from ${path.basename(input.input)}.`)
+
+  let text: string
+  try {
+    if (existing === null) {
+      text = skeleton(manifest, { name: input.name, scriptName, notes: prepared.notes })
+      writeScript(scriptFile, text, false)
+      lines.push(`Script: ${shown(scriptFile, input.cwd)} (new): ${plural(manifest.slides.length, 'section')} to write (TODO).`)
+    } else {
+      const oldId = parseScript(existing).script?.deck ?? ''
+      let old: Manifest | null = null
+      try {
+        if (DECK_ID.test(oldId)) old = store.load(oldId).manifest
+      } catch {
+        old = null
+      }
+      const merged = mergeScript(existing, old, manifest, prepared.notes)
+      text = merged.text
+      writeScript(scriptFile, text, true)
+      const what = [
+        merged.changed.length ? `${pages(merged.changed)} changed (check: changed)` : '',
+        merged.added.length ? `${pages(merged.added)} new (TODO)` : '',
+        merged.gone.length ? `${pages(merged.gone)} no longer in the deck (exclude: yes)` : '',
+      ].filter(Boolean)
+      lines.push(`Script: ${shown(scriptFile, input.cwd)} (updated for the new deck): ${what.length ? what.join('; ') : 'no slide changed'}. Your written paragraphs are unchanged.`)
+      if (!old && DECK_ID.test(oldId)) lines.push(`  The deck it was written for (${oldId}) is gone, so every section is marked check: changed.`)
+      if (old && oldId !== manifest.id) {
+        store.delete(oldId)
+        lines.push(`  Deleted the deck it was written for (${oldId}).`)
+      }
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code ?? 'error'
+    return { lines: [...lines, `Could not write ${scriptName} (${code}). The deck is prepared: put "deck: ${manifest.id}" in your script by hand.`], code: 1 }
+  }
+
+  for (const slide of manifest.slides) for (const code of slide.warnings) lines.push(`  page ${slide.n} ${WARNINGS[code]}.`)
+  if (prepared.otherWarnings) lines.push(`  The PDF reader noted ${plural(prepared.otherWarnings, 'other problem')} while rendering (not shown: they can quote the file).`)
+  const checked = checkScript(parseScript(text), manifest)
+  refreshSheet(store, manifest, checked, scriptName)
+  lines.push(`Contact sheet: ${shown(path.join(store.folder(manifest.id), 'sheet.html'), input.cwd)}`)
+  lines.push('Next: write the sections (or ask your Claude Code session to draft them), then')
+  lines.push(`  npm run slides -- check ${shellArg(shown(scriptFile, input.cwd))}`)
+  return { lines, code: 0 }
+}
+
+export interface CheckInput {
+  file: string
+  decksDir: string
+  retentionDays: number
+  cwd: string
+  now?: Date
+}
+
+/** npm run slides -- check: the script's errors and warnings, against its deck; the estimate; a fresh contact sheet. */
+export function runCheck(input: CheckInput): Outcome {
+  const store = new DeckStore(input.decksDir)
+  let text: string
+  try {
+    text = readScript(input.file)
+  } catch (err) {
+    return { lines: [(err as Error).message], code: 1 }
+  }
+  const parsed = parseScript(text)
+  let manifest: Manifest | null = null
+  const deckErrors: Problem[] = []
+  const id = parsed.script?.deck ?? ''
+  if (parsed.script && DECK_ID.test(id)) {
+    try {
+      manifest = store.load(id, { images: 'all' }).manifest
+    } catch (err) {
+      if (!(err instanceof DeckError)) throw err
+      deckErrors.push({
+        message: err.code === 'missing'
+          ? `the prepared deck ${id} is gone (decks are deleted ${input.retentionDays} days after they were last used, or by slides delete). Run npm run slides -- prepare <your PDF> again: your script is kept, and updated for the new deck`
+          : err.message.replace(/\.$/, ''),
+      })
+    }
+  }
+  const checked = checkScript({ ...parsed, errors: [...deckErrors, ...parsed.errors] }, manifest)
+  // In the file's order: by line, then the ones about a page with no line, then the whole script's.
+  const order = (p: Problem) => p.line ?? (p.page ? 1e6 + p.page : 2e6)
+  checked.errors.sort((a, b) => order(a) - order(b))
+  checked.warnings.sort((a, b) => order(a) - order(b))
+  const name = path.basename(input.file)
+  const lines: string[] = []
+  if (checked.script) lines.push(`${name}${manifest ? ` (deck ${manifest.id})` : ''}: ${summary(checked)}.`)
+  if (checked.errors.length) {
+    lines.push(`${plural(checked.errors.length, 'error')}: the script can't be used until ${checked.errors.length === 1 ? 'it is' : 'they are'} fixed.`)
+    for (const e of checked.errors) lines.push(`  ${where(e)}${e.message}.`)
+  }
+  if (checked.warnings.length) {
+    lines.push(`${plural(checked.warnings.length, 'warning')}:`)
+    for (const w of checked.warnings) lines.push(`  ${where(w)}${w.message}.`)
+  }
+  if (!checked.errors.length) lines.push('No errors. The estimate comes from the script\'s length: the real timing is known only in a meeting.')
+  if (manifest) {
+    refreshSheet(store, manifest, checked, name)
+    store.touch(manifest.id, input.now)
+    lines.push(`Contact sheet: ${shown(path.join(store.folder(manifest.id), 'sheet.html'), input.cwd)}`)
+  }
+  return { lines, code: checked.errors.length ? 1 : 0 }
+}
+
+/** npm run slides -- list: each deck, its slides, and when it was last used and will be deleted. */
+export function runList(input: { decksDir: string; retentionDays: number; cwd: string }): Outcome {
+  const store = new DeckStore(input.decksDir)
+  const ids = store.ids()
+  const lines: string[] = []
+  for (const id of ids) {
+    try {
+      const deck = store.load(id)
+      const used = deck.usedAt
+      const goes = new Date(used.getTime() + input.retentionDays * 86_400_000)
+      lines.push(`${id}  "${deck.manifest.label}": ${plural(deck.manifest.slides.length, 'slide')}, prepared ${deck.manifest.created.slice(0, 10)}, last used ${used.toISOString().slice(0, 10)} (deleted after ${goes.toISOString().slice(0, 10)} unless used)`)
+    } catch (err) {
+      lines.push(`${id}  ${err instanceof DeckError ? err.message.replace(/^The prepared deck \S+ /, '') : "can't be used: it could not be read."}`)
+    }
+  }
+  const unfinished = fs.existsSync(input.decksDir) ? fs.readdirSync(input.decksDir).filter(n => n.startsWith(TEMP_PREFIX)).length : 0
+  if (!ids.length) lines.push(`No prepared decks in ${shown(input.decksDir, input.cwd)}.`)
+  if (unfinished) lines.push(`${plural(unfinished, 'unfinished prepare')} (${TEMP_PREFIX}*): the voice service removes them once they are an hour old.`)
+  return { lines, code: 0 }
+}
+
+/** npm run slides -- delete: decks by id, or all of them. */
+export function runDelete(input: { decksDir: string; ids: readonly string[]; all: boolean }): Outcome {
+  const store = new DeckStore(input.decksDir)
+  const ids = input.all ? store.ids() : input.ids
+  const lines: string[] = []
+  let code = 0
+  for (const id of ids) {
+    if (!DECK_ID.test(id)) {
+      lines.push(`"${id.slice(0, 40)}" is not a deck id (npm run slides -- list shows them).`)
+      code = 1
+    } else if (store.delete(id)) lines.push(`Deleted ${id}.`)
+    else {
+      lines.push(`There is no deck ${id}.`)
+      code = 1
+    }
+  }
+  if (input.all && !ids.length) lines.push('There were no decks to delete.')
+  return { lines, code }
+}

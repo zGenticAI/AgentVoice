@@ -1,0 +1,322 @@
+// npm run slides -- prepare: the parent's side of turning a PDF into a prepared deck. It checks the file (a regular
+// file, at most 100 MiB, a PDF by its first bytes), copies it into a temporary folder in data/decks, and has the
+// converter child (render-child.ts) render it there. The child gets an environment made from scratch, PATH, HOME and
+// its own TMPDIR, so none of the keys this process loaded from .env are in it; its stdin is closed, its stdout is
+// JSON lines, and its stderr is kept from the terminal. Its whole process group is killed after 3 minutes, the only
+// hard limit on time and memory. The result is checked with the same loader the service uses, then moved into place.
+import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { DeckError, DeckStore, MANIFEST, TEMP_PREFIX, prepareDecksDir, sha256 } from './deck.ts'
+import { type Kind, folderKind, linkKind, refusal, sniff } from './detect.ts'
+import {
+  DECK_ID, MAX_INPUT_BYTES, MAX_LABEL, MAX_PAGES, MAX_PAGE_TEXT, MAX_TITLE, type Manifest, type ManifestSlide, WARNINGS, type WarningCode,
+  slideFile,
+} from './manifest.ts'
+import { cleanText, oneLine } from './page-text.ts'
+import type { ChildMessage, Job } from './child-protocol.ts'
+
+/** Why prepare refused, in words for the owner: never a path beyond the file's own name. */
+export class PrepareError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PrepareError'
+  }
+}
+
+export const CANVAS_MISSING = 'Slide rendering needs @napi-rs/canvas: run npm install (without --omit=optional).'
+export const PASSWORD_REFUSAL = 'This PDF is password-protected: export it again without a password.'
+/** The hard limit on one prepare: the child's whole process group is killed then. */
+export const PREPARE_TIMEOUT_MS = 180_000
+const CHILD = fileURLToPath(new URL('./render-child.ts', import.meta.url))
+// What the parent reads of the child's output, at most: its lines carry page text (4,000 characters a page).
+const MAX_STDOUT = 32 * 1024 * 1024
+const MAX_LINE = 1024 * 1024
+
+/** The child's environment: nothing from this process's but PATH and HOME, so no API key is in it. */
+export function childEnv(env: NodeJS.ProcessEnv, tmp: string): NodeJS.ProcessEnv {
+  return { PATH: env.PATH ?? '/usr/bin:/bin', HOME: env.HOME ?? tmp, TMPDIR: tmp }
+}
+
+/** The id's slug: the label ASCII-folded, a-z, 0-9 and hyphens, at most 24 characters. */
+export function slugOf(label: string): string {
+  const slug = label
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24)
+    .replace(/-+$/, '')
+  return slug || 'deck'
+}
+
+const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567'
+
+/** A new id for a deck: the slug and 6 random base32 letters, not taken in the folder. */
+export function newDeckId(slug: string, taken: (id: string) => boolean): string {
+  for (;;) {
+    const id = `${slug}-${[...crypto.randomBytes(6)].map(b => BASE32[b & 31]).join('')}`
+    if (DECK_ID.test(id) && !taken(id)) return id
+  }
+}
+
+/**
+ * The PDF's bytes, or a PrepareError that says what the file is and how to make a PDF of it. Detection is by the
+ * bytes, never the name; a link, a folder, a symbolic link or a file over 100 MiB is refused before it is read.
+ */
+export function readInput(file: string): Buffer {
+  const name = path.basename(file)
+  const link = linkKind(file)
+  if (link) throw new PrepareError(refusal(link as Exclude<Kind, 'pdf'>, file.length > 80 ? `${file.slice(0, 77)}...` : file))
+  const stat = fs.lstatSync(file, { throwIfNoEntry: false })
+  if (!stat) throw new PrepareError(`${name} was not found.`)
+  if (stat.isSymbolicLink()) throw new PrepareError(`${name} is a symbolic link: give the PDF itself.`)
+  if (stat.isDirectory()) throw new PrepareError(refusal(folderKind(fs.readdirSync(file)) as Exclude<Kind, 'pdf'>, name))
+  if (!stat.isFile()) throw new PrepareError(`${name} is not a file.`)
+  if (stat.size > MAX_INPUT_BYTES) throw new PrepareError(`${name} is over 100 MiB. Export it again with smaller images, or split it.`)
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+  let bytes: Buffer
+  try {
+    const opened = fs.fstatSync(fd)
+    if (!opened.isFile() || opened.size > MAX_INPUT_BYTES) throw new PrepareError(`${name} is over 100 MiB, or not a file.`)
+    bytes = fs.readFileSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+  if (!bytes.length) throw new PrepareError(`${name} is empty.`)
+  const kind = sniff(bytes)
+  if (kind !== 'pdf') throw new PrepareError(refusal(kind, name))
+  return bytes
+}
+
+export interface PrepareOptions {
+  /** The PDF. */
+  input: string
+  /** data/decks. */
+  decksDir: string
+  /** Page numbers never to render: they leave nothing behind but a count. */
+  exclude?: readonly number[]
+  /** The deck's label, and its id's slug: the file's name unless given. */
+  label?: string
+  now?: Date
+  /** Tests only: another child, and a shorter limit. */
+  childScript?: string
+  timeoutMs?: number
+}
+
+export interface Prepared {
+  manifest: Manifest
+  /** The deck's folder. */
+  dir: string
+  /** Sticky notes by page (Marp's speaker notes), for the skeleton script only: never kept in the deck. */
+  notes: Map<number, string>
+  /** pdf.js warnings that were not about a skipped or undecodable image: only counted. */
+  otherWarnings: number
+}
+
+/** What the child said, read strictly: anything else ends the prepare. */
+function parseMessage(line: string): ChildMessage | null {
+  let m: unknown
+  try {
+    m = JSON.parse(line)
+  } catch {
+    return null
+  }
+  if (typeof m !== 'object' || m === null) return null
+  const msg = m as Record<string, unknown>
+  const whole = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 1e6
+  switch (msg.type) {
+    case 'open':
+      return whole(msg.pages) ? (msg as ChildMessage) : null
+    case 'done':
+      return whole(msg.other) ? (msg as ChildMessage) : null
+    case 'refused':
+      return typeof msg.reason === 'string' ? (msg as ChildMessage) : null
+    case 'page':
+      if (!whole(msg.n) || !whole(msg.other) || typeof msg.title !== 'string' || typeof msg.text !== 'string' || typeof msg.notes !== 'string') return null
+      if (msg.pageLabel !== null && typeof msg.pageLabel !== 'string') return null
+      if (!Array.isArray(msg.warnings) || !msg.warnings.every(w => typeof w === 'string' && Object.hasOwn(WARNINGS, w))) return null
+      return msg as ChildMessage
+    default:
+      return null
+  }
+}
+
+/** An error's class name from the child, never anything else it might say. */
+const safeName = (name: unknown) => (typeof name === 'string' && /^[A-Za-z]{1,40}$/.test(name) ? name : 'Error')
+
+/** The owner's words for why the child stopped. */
+function refusedMessage(msg: Extract<ChildMessage, { type: 'refused' }>, name: string): string {
+  const page = msg.page ?? 0
+  switch (msg.reason) {
+    case 'no-canvas':
+      return CANVAS_MISSING
+    case 'password':
+      return PASSWORD_REFUSAL
+    case 'too-many-pages':
+      return `${name} has ${msg.pages} pages: at most ${MAX_PAGES} can be prepared. Split it, or export only the slides you need.`
+    case 'exclude-range':
+      return `--exclude ${page}: ${name} has only ${msg.pages} page${msg.pages === 1 ? '' : 's'}.`
+    case 'all-excluded':
+      return '--exclude leaves no pages to prepare.'
+    case 'page-failed':
+      return `Page ${page} could not be drawn (${safeName(msg.name)}). Export the PDF again, or leave that page out with --exclude ${page}.`
+    case 'page-slow':
+      return `Page ${page} took too long to render. Export the PDF again, or leave that page out with --exclude ${page}.`
+    case 'page-too-big':
+      return `Page ${page} can't be saved under 2 MiB, even at a lower quality. Simplify it, or leave it out with --exclude ${page}.`
+    case 'memory':
+      return `${name} needs too much memory to render (it stopped after page ${page}). Export it again with smaller images, or split it.`
+    default:
+      return `${name} could not be read as a PDF (${safeName(msg.name)}). Export it again, or save it as a PDF from another viewer.`
+  }
+}
+
+/** Runs the child on the job, and gives its messages; kills its process group on the time limit, or when this process stops. */
+function runChild(job: Job, root: string, tmp: string, script: string, timeoutMs: number): Promise<{ messages: ChildMessage[]; timedOut: boolean; code: number | null; signal: string | null; bad: boolean }> {
+  return new Promise(resolve => {
+    const child = spawn(process.execPath, ['--max-old-space-size=1536', '--import', import.meta.resolve('tsx'), script, JSON.stringify(job)], {
+      cwd: root,
+      env: childEnv(process.env, tmp),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    })
+    const messages: ChildMessage[] = []
+    let timedOut = false
+    let bad = false
+    let buffered = ''
+    let total = 0
+    const killGroup = () => {
+      try {
+        if (child.pid) process.kill(-child.pid, 'SIGKILL')
+      } catch {
+        // Already gone.
+      }
+    }
+    const timer = setTimeout(() => {
+      timedOut = true
+      killGroup()
+    }, timeoutMs)
+    const onSignal = (signal: NodeJS.Signals) => {
+      killGroup()
+      fs.rmSync(root, { recursive: true, force: true })
+      process.exit(signal === 'SIGINT' ? 130 : 143)
+    }
+    process.once('SIGINT', onSignal)
+    process.once('SIGTERM', onSignal)
+    process.once('exit', killGroup)
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      total += chunk.length
+      buffered += chunk
+      if (total > MAX_STDOUT || buffered.length > MAX_LINE * 2) {
+        bad = true
+        killGroup()
+        return
+      }
+      let end: number
+      while ((end = buffered.indexOf('\n')) >= 0) {
+        const line = buffered.slice(0, end)
+        buffered = buffered.slice(end + 1)
+        const msg = line.length <= MAX_LINE ? parseMessage(line) : null
+        if (msg) messages.push(msg)
+        else {
+          bad = true
+          killGroup()
+        }
+      }
+    })
+    // Kept from the terminal: it could quote the file. Read and dropped, so the child never blocks on a full pipe.
+    child.stderr.on('data', () => {})
+    let finished = false
+    const finish = (code: number | null, signal: string | null) => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      process.removeListener('SIGINT', onSignal)
+      process.removeListener('SIGTERM', onSignal)
+      process.removeListener('exit', killGroup)
+      resolve({ messages, timedOut, code, signal, bad })
+    }
+    child.on('close', finish)
+    child.on('error', () => {
+      bad = true
+      finish(null, null)
+    })
+  })
+}
+
+/** Renders a PDF into a new prepared deck in decksDir, checked by the loader, or throws a PrepareError. */
+export async function prepareDeck(opts: PrepareOptions): Promise<Prepared> {
+  const name = path.basename(opts.input)
+  const exclude = [...new Set(opts.exclude ?? [])].sort((a, b) => a - b)
+  if (exclude.some(n => !Number.isInteger(n) || n < 1 || n > MAX_PAGES)) throw new PrepareError(`--exclude takes page numbers from 1 to ${MAX_PAGES}.`)
+  const bytes = readInput(opts.input)
+  const label = oneLine(opts.label ?? name.replace(/\.pdf$/i, ''), MAX_LABEL) || 'deck'
+  const store = new DeckStore(opts.decksDir)
+  prepareDecksDir(opts.decksDir)
+
+  const root = fs.mkdtempSync(path.join(opts.decksDir, TEMP_PREFIX))
+  try {
+    fs.chmodSync(root, 0o700)
+    const out = path.join(root, 'deck')
+    const tmp = path.join(root, 'tmp')
+    fs.mkdirSync(out, { mode: 0o700 })
+    fs.mkdirSync(tmp, { mode: 0o700 })
+    const input = path.join(root, 'input.pdf')
+    fs.writeFileSync(input, bytes, { mode: 0o600, flag: 'wx' })
+
+    const run = await runChild({ input, out, exclude }, root, tmp, opts.childScript ?? CHILD, opts.timeoutMs ?? PREPARE_TIMEOUT_MS)
+    if (run.timedOut) throw new PrepareError(`${name} took more than ${Math.round((opts.timeoutMs ?? PREPARE_TIMEOUT_MS) / 1000)} s to render, so it was stopped. Export it again with smaller images, or leave the slowest pages out with --exclude.`)
+    const refused = run.messages.find(m => m.type === 'refused')
+    if (refused?.type === 'refused') throw new PrepareError(refusedMessage(refused, name))
+    const open = run.messages.find(m => m.type === 'open')
+    const done = run.messages.find(m => m.type === 'done')
+    if (run.bad || run.code !== 0 || open?.type !== 'open' || done?.type !== 'done') {
+      throw new PrepareError(`The converter stopped unexpectedly (${run.signal ?? `exit ${run.code}`}). Export the PDF again, or save it as a PDF from another viewer.`)
+    }
+    const pages = run.messages.filter(m => m.type === 'page')
+    const expected = Array.from({ length: open.pages }, (_, i) => i + 1).filter(n => !exclude.includes(n))
+    if (pages.length !== expected.length || pages.some((p, i) => p.n !== expected[i])) {
+      throw new PrepareError('The converter did not render every page. Export the PDF again, or save it as a PDF from another viewer.')
+    }
+
+    const id = newDeckId(slugOf(label), candidate => fs.existsSync(path.join(opts.decksDir, candidate)))
+    const notes = new Map<number, string>()
+    const slides: ManifestSlide[] = pages.map(page => {
+      const file = slideFile(page.n)
+      const image = fs.readFileSync(path.join(out, file))
+      const text = cleanText(page.text, MAX_PAGE_TEXT).text
+      const note = cleanText(page.notes, MAX_PAGE_TEXT).text
+      if (note) notes.set(page.n, note)
+      return {
+        n: page.n,
+        title: oneLine(page.title, MAX_TITLE),
+        pageLabel: page.pageLabel ? oneLine(page.pageLabel, MAX_TITLE) || null : null,
+        text,
+        file,
+        bytes: image.length,
+        sha256: sha256(image),
+        textHash: sha256(text),
+        warnings: [...new Set(page.warnings as WarningCode[])],
+      }
+    })
+    const created = (opts.now ?? new Date()).toISOString().replace(/\.\d{3}Z$/, 'Z')
+    const manifest: Manifest = { format: 1, id, label, created, pages: open.pages, excluded: exclude.length, slides }
+    fs.writeFileSync(path.join(out, MANIFEST), `${JSON.stringify(manifest, null, 1)}\n`, { mode: 0o600, flag: 'wx' })
+    const dir = path.join(opts.decksDir, id)
+    fs.renameSync(out, dir)
+    try {
+      store.load(id, { images: 'all' })
+    } catch (err) {
+      fs.rmSync(dir, { recursive: true, force: true })
+      throw new PrepareError(`The rendered deck failed its check, so it was not kept: ${err instanceof DeckError ? err.message : 'an unexpected error'}`)
+    }
+    return { manifest, dir, notes, otherWarnings: done.other + pages.reduce((sum, p) => sum + p.other, 0) }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}

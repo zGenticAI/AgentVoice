@@ -17,6 +17,7 @@
     "record-name-corpus": "tsx src/cli/record-name-corpus.ts",
     "speaker-report": "tsx src/cli/speaker-report.ts",
     "flux-probe": "tsx src/cli/flux-probe.ts",
+    "slides": "tsx src/cli/slides.ts",
     "test": "AGENT_NAME=Alex AGENT_NAME_VARIANTS= AGENT_NAME_MISHEARD= AGENT_BOT_NAME= ALEX_BOT_NAME= OWNER_NAME=Sam OWNER_FULL_NAME= COMPANY_NAME= PROFILE_FILE=test/fixtures/no-profile.md AGENT_PAGE_FILE= SERVICE_LABEL= RECALL_REGION=us-east-1 DEEPGRAM_KEYTERMS= ZOOM_JOIN_TELEGRAM_CHATS= SPEAKER_PROBE= ALEX_DATA_DIR=$(mktemp -d) node --import tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
@@ -24,6 +25,7 @@
     "@anthropic-ai/sdk": "^1.0.0",
     "@modelcontextprotocol/sdk": "1.32.1",
     "dotenv": "^18.0.8",
+    "pdfjs-dist": "6.5.438",
     "tsx": "^4.23.15",
     "ws": "^8.22.0"
   },
@@ -31,5 +33,8 @@
     "@types/node": "^24.19.2",
     "@types/ws": "^8.18.2",
     "typescript": "^7.0.2"
+  },
+  "optionalDependencies": {
+    "@napi-rs/canvas": "1.1.1"
   }
 }
