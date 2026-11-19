@@ -239,7 +239,11 @@ async function withFakeChild(plan: object, opts: { timeoutMs?: number } = {}) {
 test("the child's environment is PATH, HOME and its own TMPDIR only: no API key, though this process has them", async () => {
   const { home, decksDir } = await withFakeChild({ env: true, exit: 1 })
   const env = JSON.parse(fs.readFileSync(path.join(home, 'child-env.json'), 'utf8')) as Record<string, string>
-  assert.deepEqual(Object.keys(env).sort(), ['HOME', 'PATH', 'TMPDIR'])
+  // macOS adds __CF_USER_TEXT_ENCODING (the user's text encoding, such as 0x1F5:0x0:0x0) to a process as it starts,
+  // after `env -i` has cleared the rest: the operating system's, not ours, and never a key. Only it is let through,
+  // and only there.
+  const fromTheSystem = (k: string) => process.platform === 'darwin' && k === '__CF_USER_TEXT_ENCODING'
+  assert.deepEqual(Object.keys(env).filter(k => !fromTheSystem(k)).sort(), ['HOME', 'PATH', 'TMPDIR'])
   assert.ok(!Object.keys(env).some(k => /KEY|TOKEN|SECRET/.test(k)))
   assert.ok(!Object.values(env).some(v => v.includes('sk-test')))
   assert.ok(env.TMPDIR.startsWith(path.join(decksDir, '.tmp-')), 'a temporary folder of its own, removed after')
