@@ -229,12 +229,24 @@ export async function runPrepare(given: PrepareInput): Promise<Outcome> {
       writeScript(scriptFile, merged.text, true)
       text = merged.text
       wrote = true
+      const moves = merged.moved
       const what = [
+        moves.length && merged.renumbered ? `${pages(moves.map(m => m.from))} moved to ${moves.map(m => m.to).join(', ')} (headings renumbered)` : '',
+        moves.length && !merged.renumbered ? `${moves.map(m => `page ${m.from} is now page ${m.to}`).join(', ')} (check: changed: move each section to its page)` : '',
         merged.changed.length ? `${pages(merged.changed)} changed (check: changed)` : '',
+        merged.back.length ? `${pages(merged.back)} back in the deck (check: changed)` : '',
         merged.added.length ? `${pages(merged.added)} new (TODO)` : '',
         merged.gone.length ? `${pages(merged.gone)} no longer in the deck (exclude: yes)` : '',
       ].filter(Boolean)
       lines.push(`Script: ${shown(scriptFile, input.cwd)} (updated for the new deck): ${what.length ? what.join('; ') : 'no slide changed'}. Your written paragraphs are unchanged.`)
+      if (merged.scrubbed.length) {
+        const one = merged.scrubbed.length === 1
+        lines.push(`  ${pages(merged.scrubbed)} left out: prepare's notes of ${one ? 'its' : 'their'} slide text are gone from the script, but your heading${one ? '' : 's'} and paragraphs for ${one ? 'it' : 'them'} are kept. Delete them if they must not appear anywhere.`)
+      }
+      if (merged.excludedRendered.length) {
+        const list = merged.excludedRendered
+        lines.push(`  ${pages(list)} ${list.length === 1 ? 'is' : 'are'} rendered, though ${list.length === 1 ? 'its section says' : 'their sections say'} exclude: yes. If ${list.length === 1 ? 'its' : 'their'} text must not be kept at all, prepare with --exclude ${list.join(',')}.`)
+      }
       if (!old && DECK_ID.test(oldId)) lines.push(`  The deck it was written for (${oldId}) is gone, so every section is marked check: changed.`)
       if (old && oldId !== manifest.id) {
         store.delete(oldId)

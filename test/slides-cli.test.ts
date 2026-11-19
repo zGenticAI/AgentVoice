@@ -11,6 +11,7 @@ import { ROOT } from '../src/config.ts'
 import { pageList, slidesArgs } from '../src/cli/slides-args.ts'
 import { ranges, runCheck, runDelete, runList, runPrepare, scriptFor, shown } from '../src/slides/actions.ts'
 import { DeckStore } from '../src/slides/deck.ts'
+import { parseScript } from '../src/slides/script.ts'
 import { makePdf } from './fixtures/slides/make-pdf.ts'
 import { makeZip } from './fixtures/slides/make-zip.ts'
 
@@ -140,6 +141,45 @@ test('from a PDF to a checked script: prepare, write, check; prepare again after
   const gone = runCheck({ file: scriptFile, decksDir, retentionDays: 30, cwd: work })
   assert.equal(gone.code, 1)
   assert.ok(gone.lines.includes(`  the prepared deck ${newId} is gone (decks are deleted 30 days after they were last used, or by slides delete). Run npm run slides -- prepare <your PDF> again: your script is kept, and updated for the new deck.`))
+})
+
+test('prepare again: a slide inserted renumbers the sections after it; --exclude takes the slide text out; a page back is read again', async () => {
+  const work = fs.mkdtempSync(path.join(DIR, 'again-'))
+  const decksDir = path.join(work, 'data', 'decks')
+  const pdf = path.join(work, 'talk.pdf')
+  const slides = (titles: string[]) => makePdf(titles.map(t => ({ texts: [{ text: t, size: 40 }, { text: `About ${t.toLowerCase()}`, size: 24 }] })))
+  const prepare = async (exclude: number[] = []) => {
+    const out = await runPrepare({ input: pdf, exclude, decksDir, name: 'Alex', cwd: work })
+    assert.equal(out.code, 0, out.lines.join('\n'))
+    return out.lines
+  }
+  const scriptFile = path.join(work, 'talk.script.md')
+  fs.writeFileSync(pdf, slides(['Intro', 'Problem', 'Solution']))
+  await prepare()
+  fs.writeFileSync(scriptFile, fs.readFileSync(scriptFile, 'utf8').replace(/check: yes\n\nTODO/g, '\nWe talk about it here.').replace('## 3 · Solution\n', '## 3 · Solution\nhold: 3s\n'))
+  // A slide inserted as page 2: the sections after it are renumbered, and only it gets a TODO.
+  fs.writeFileSync(pdf, slides(['Intro', 'Customer story', 'Problem', 'Solution']))
+  assert.equal((await prepare())[1], 'Script: talk.script.md (updated for the new deck): pages 2, 3 moved to 3, 4 (headings renumbered); page 2 new (TODO). Your written paragraphs are unchanged.')
+  assert.deepEqual(parseScript(fs.readFileSync(scriptFile, 'utf8')).script?.sections.map(s => [s.page, s.heading, s.hold]), [[1, 'Intro', null], [2, 'Customer story', null], [3, 'Problem', null], [4, 'Solution', 3]])
+  fs.writeFileSync(scriptFile, fs.readFileSync(scriptFile, 'utf8').replace(/check: yes\n\nTODO/, '\nA customer story.'))
+  assert.equal(runCheck({ file: scriptFile, decksDir, retentionDays: 30, cwd: work }).code, 0)
+
+  // --exclude 3 on a deck prepared before: the slide's text and title leave the script; the owner's words stay.
+  const left = await prepare([3])
+  assert.equal(left[1], 'Script: talk.script.md (updated for the new deck): page 3 no longer in the deck (exclude: yes). Your written paragraphs are unchanged.')
+  assert.equal(left[2], "  page 3 left out: prepare's notes of its slide text are gone from the script, but your heading and paragraphs for it are kept. Delete them if they must not appear anywhere.")
+  assert.ok(!/Problem|about problem/i.test(fs.readFileSync(scriptFile, 'utf8')), 'the left-out slide is nowhere in the script')
+
+  // Prepared again without --exclude: the page is back, and its section must be read again before it is shown.
+  const back = await prepare()
+  assert.equal(back[1], 'Script: talk.script.md (updated for the new deck): page 3 back in the deck (check: changed). Your written paragraphs are unchanged.')
+  const stale = runCheck({ file: scriptFile, decksDir, retentionDays: 30, cwd: work })
+  assert.equal(stale.code, 1)
+  assert.ok(stale.lines.some(l => /page 3, line \d+: the slide changed after this was written/.test(l)), stale.lines.join('\n'))
+
+  // A section the owner excluded, whose page is rendered: prepare says its text is in the deck.
+  fs.writeFileSync(scriptFile, fs.readFileSync(scriptFile, 'utf8').replace('## 4 · Solution\n', '## 4 · Solution\nexclude: yes\n').replace('hold: 3s\n', ''))
+  assert.ok((await prepare()).includes('  page 4 is rendered, though its section says exclude: yes. If its text must not be kept at all, prepare with --exclude 4.'))
 })
 
 test('prepare never renders, nor rewrites, when the script beside the PDF has a structure it cannot follow', async () => {

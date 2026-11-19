@@ -89,7 +89,7 @@ Next: write the sections (or ask your Claude Code session to draft them), then
 ```
 
 - **The deck** goes into `data/decks/<id>/`: one 1280x720 WebP image per page, `manifest.json` (each slide's title and text, for Alex's answers about the slide on screen, and what prepare noticed about it), and `sheet.html`, the contact sheet. The id is the file's name and six random letters: a handle on your computer, not a secret. The deck holds no speaker notes, and not the PDF's path: of its script, only a mark made with a key kept in `data/decks`, so check can tell the deck's own script from any other file.
-- **`--exclude 3,9`** (or `4-6`) leaves pages out completely: they are never rendered, and nothing of them is kept. Use it for a slide whose text must not appear anywhere.
+- **`--exclude 3,9`** (or `4-6`) leaves pages out completely: they are never rendered, and nothing of them is kept in the deck or in a new script. Use it for a slide whose text must not appear anywhere. Give it on every prepare of that deck: a page prepared again without it is rendered again. In a script written before, prepare takes out its own notes of the slide's text, and the heading's title if it is the slide's, but keeps your paragraphs and any heading you wrote: delete them if they must not be kept.
 - **`--label`** names the deck, and its id, instead of the file's name.
 - **The script** is written next to the PDF: `decks/q4-roadmap.pdf` gets `decks/q4-roadmap.script.md`, readable only by you. Keep both in `decks/` (gitignored) or outside this folder. If it is already there, prepare updates it instead (see [After you change the deck](#after-you-change-the-deck)).
 - A deck of 30 slides takes a few seconds. A PDF may have at most 100 pages and 100 MiB, a page's image at most 2 MiB (prepare lowers the quality a little first, and says so), and all a deck's images together at most 40 MiB. A long deck of detailed photos can reach that: prepare stops at the page that goes over, and says so. Export it again with lighter images, split it, or leave some pages out with `--exclude`. Prepare stops a PDF that takes more than 3 minutes.
@@ -129,7 +129,7 @@ Here are the details of our security certifications.
 exclude: yes
 ```
 
-- **The front matter:** `deck` is the prepared deck's id (prepare writes it). `title` names the presentation. `minutes` is how long you have: check compares its estimate with it.
+- **The front matter:** `deck` is the prepared deck's id (prepare writes it). `title` names the presentation. `minutes` is how long you have: check compares its estimate with it. A `#` after a space starts a comment there, so write "No. 2" or "#2", with no space before the `#`.
 - **One section per slide**, headed `## <page> · <title>`, with the PDF page number (`-`, `–` or `:` work in place of `·`). Sections run in page order. The title in the heading is for you.
 - **Keys go directly under the heading. Then a blank line, then what Alex says.** A line such as `Note: ...` under a heading is an unknown key: an error, never spoken and never dropped.
 - **Paragraphs** are separated by blank lines. You can wrap a paragraph over several lines: Alex says it in whole sentences all the same.
@@ -181,13 +181,15 @@ Only the script prepare wrote for the deck (the one beside its PDF) is compared 
 
 Export the PDF again and run `prepare` on it again. It makes a new deck and updates the script beside the PDF:
 - the `deck:` line gets the new id;
-- a section whose slide's text changed gets `check: changed`, a comment saying so, and the slide's new text in a comment. It is an error until you have read the section against the slide and deleted the line, so narration written for the old slide is never presented over the new one;
+- a slide that moved (you inserted or deleted a slide before it) is found by its text, and its section's heading is renumbered, with a comment saying so. If your sections would then be out of order (you moved slides around), the headings are left as they are, and each such section gets `check: changed` and a comment saying which page its slide is on now: move it there;
+- a section whose slide changed, in its text or its picture, gets `check: changed`, a comment saying so, and the slide's new text in a comment. It is an error until you have read the section against the slide and deleted the line, so narration written for the old slide is never presented over the new one. A re-export that changes a picture only slightly (a photo compressed again) marks it too: read it and delete the line;
 - a new page gets a new section, with `TODO`;
-- a section for a page that is gone (or that you left out with `--exclude`) gets `exclude: yes`;
-- **your written paragraphs are never changed**, and every line you wrote stays where it was;
+- a section for a page that is gone (or that you left out with `--exclude`) gets `exclude: yes` (an `exclude: no` becomes yes, and an `on-request: yes` becomes a comment, to put back if the page returns). A page left out with `--exclude` also loses prepare's own comments quoting it, and its heading's title if it is the slide's;
+- a page prepare excluded that is back in the deck loses that `exclude: yes`, and gets `check: changed`, to be read again before it is shown;
+- **your written paragraphs are never changed**, and every line you wrote stays where it was, but for a heading's page number or slide title as above;
 - then the old deck is deleted.
 
-Prepare compares the slides' text with the old deck's. If the old deck is gone already, it can't tell which slides changed, so it marks every section `check: changed`. A script whose structure prepare can't follow (no front matter or `deck:` line, a comment left open, sections out of order) is never rewritten: prepare says what to fix, and renders nothing.
+Prepare compares each slide's text and picture with the old deck's. Slides with no text, or with the same text as another, are compared only on the same page. If the old deck is gone already, it can't tell which slides changed, so it marks every section `check: changed`. A script whose structure prepare can't follow (no front matter or `deck:` line, a comment left open, sections out of order) is never rewritten: prepare says what to fix, and renders nothing.
 
 ## Keeping and deleting decks
 
