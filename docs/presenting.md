@@ -198,12 +198,13 @@ npm run slides -- delete --all
 - `data/decks` and each deck's folder are readable only by you (0700, files 0600). The loader refuses a deck that isn't: any file another user could read or write, a symbolic link, a file it doesn't expect, an image that isn't exactly what prepare made.
 - A deck is deleted `DECK_RETENTION_DAYS` (30 unless set) after it was last used: prepared or checked. The voice service checks when it starts and every hour, with the transcripts. Your script is yours: nothing deletes it, and `prepare` makes the deck again from your PDF.
 - `delete` deletes at once. `list` shows each deck, its slides, when it was last used, and when it will be deleted.
+- While prepare runs, a copy of your PDF is in a temporary `data/decks/.tmp-*` folder, removed when it ends or when you stop it. If it was killed outright, the next prepare or `delete --all` removes that folder once it is 10 minutes old (`list` says when one is there).
 
 ## How a PDF is converted, and what that protects
 
 A PDF you were sent can be hostile. Prepare reads it with pdf.js in a separate process, which:
 - gets an environment made from scratch, with no API keys in it, and never loads `.env` itself;
-- is stopped after 3 minutes, with anything it started;
+- is stopped after 3 minutes, with anything it started, and when you stop prepare (Ctrl-C, or closing its terminal);
 - never runs the PDF's JavaScript, and never fetches anything the PDF links to;
 - writes images that prepare encodes itself, so no byte of your PDF reaches the meeting bot's image decoder.
 

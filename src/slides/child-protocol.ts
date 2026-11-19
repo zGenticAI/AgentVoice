@@ -10,6 +10,8 @@ export interface Job {
   out: string
   /** Page numbers never to render or read. */
   exclude: number[]
+  /** The parent's time limit: the child ends itself after it too, should the parent be gone. */
+  timeoutMs: number
 }
 
 /** Why the child stopped without a deck. */

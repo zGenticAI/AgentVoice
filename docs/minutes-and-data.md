@@ -32,7 +32,8 @@ Only with `SPEAKER_PROBE` on, and only for a test meeting joined with `npm run j
 
 ## Prepared slide decks
 
-`npm run slides -- prepare` (see [Presenting slides](presenting.md)) keeps each deck you prepare in `data/decks/<id>/`: one image per slide, each slide's title and text, what prepare noticed about it, and the contact sheet, with your narration once `check` has run. Never the PDF itself, its path, or your speaker notes. Readable only by you (0700 and 0600).
+`npm run slides -- prepare` (see [Presenting slides](presenting.md)) keeps each deck you prepare in `data/decks/<id>/`: one image per slide, each slide's title and text, what prepare noticed about it, and the contact sheet, with your narration once `check` has run. A deck keeps neither the PDF's path nor your speaker notes. Readable only by you (0700 and 0600).
+- **While prepare runs**, a copy of the PDF is in a temporary `data/decks/.tmp-*` folder, removed when it ends, or when you stop it (Ctrl-C, or closing its terminal). If prepare is killed outright, the next prepare or `npm run slides -- delete --all` removes the folder once it is 10 minutes old, and so does the voice service's hourly sweep once it is an hour old.
 - **Retention:** deleted `DECK_RETENTION_DAYS` (30 unless set) after it was last used (prepared or checked), when the service starts and every hour. `npm run slides -- delete <id>` (or `--all`) deletes at once, and `npm run slides -- list` says when each will go.
 - **Your script** (`<deck>.script.md`, next to your PDF) is yours: nothing deletes it.
 

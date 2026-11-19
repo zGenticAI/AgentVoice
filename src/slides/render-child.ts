@@ -4,7 +4,7 @@
 // importing env.ts loads .env, and every key with it (test/import-graph.test.ts checks). That is not a sandbox: code
 // running here could still read .env from disk (docs/security.md says so).
 //
-// It takes one argument, a JSON job {input, out, exclude}, and writes JSON lines to stdout: 'open', a 'page' for each
+// It takes one argument, a JSON job {input, out, exclude, timeoutMs}, and writes JSON lines to stdout: 'open', a 'page' for each
 // page rendered, then 'done', or a 'refused' line that says why it stopped. It never echoes pdf.js's messages, which
 // can quote the file: it turns the two that matter into warnings, and only counts the rest.
 import fs from 'node:fs'
@@ -16,7 +16,10 @@ import {
 import type { ChildMessage, Job } from './child-protocol.ts'
 import { type TextItem, cleanText, hasSmallText, oneLine, titleOf } from './page-text.ts'
 
-/** Best effort only: a synchronous image decode blocks this timer, so the parent's kill is the hard bound. */
+/**
+ * Best effort only, and for drawing a page: a synchronous image decode blocks this timer, and opening the document and
+ * reading a page's text have no budget here. The parent's kill and the CPU-time limit are the hard bounds.
+ */
 const PAGE_BUDGET_MS = 10_000
 /** Above this, the child stops after the page it is on. It can't bound a single page. */
 const MAX_RSS = 2.5 * 1024 ** 3
@@ -35,6 +38,15 @@ const send = (message: ChildMessage) =>
 
 async function main(): Promise<void> {
   const job = JSON.parse(process.argv[2] ?? '{}') as Job
+  // Should the parent die without killing this process (SIGKILL, a crash), it ends itself: once the parent is gone, at
+  // its time limit, or when its output has nowhere to go. All are late while a long step blocks, which is why the
+  // parent also starts it under a CPU-time limit.
+  const parent = process.ppid
+  setInterval(() => {
+    if (process.ppid !== parent) process.exit(1)
+  }, 1000).unref()
+  if (Number.isFinite(job.timeoutMs) && job.timeoutMs > 0) setTimeout(() => process.exit(1), job.timeoutMs).unref()
+  process.stdout.on('error', () => process.exit(1))
   const require = createRequire(import.meta.url)
   let canvasModule: typeof import('@napi-rs/canvas')
   try {

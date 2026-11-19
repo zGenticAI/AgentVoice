@@ -5,7 +5,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { PrepareError, prepareDeck } from './convert.ts'
-import { DeckError, DeckStore, TEMP_PREFIX, scriptKey, scriptMark } from './deck.ts'
+import { DeckError, DeckStore, TEMP_PREFIX, UNFINISHED_MAX_AGE_MS, scriptKey, scriptMark, sweepUnfinished } from './deck.ts'
 import { DECK_ID, type Manifest, WARNINGS } from './manifest.ts'
 import {
   type Checked, MAX_SCRIPT_FILE_BYTES, type Problem, checkScript, mergeScript, parseScript, shellArg, skeleton, structureProblems, unclear,
@@ -288,7 +288,9 @@ export function runList(input: { decksDir: string; retentionDays: number; cwd: s
   }
   const unfinished = fs.existsSync(input.decksDir) ? fs.readdirSync(input.decksDir).filter(n => n.startsWith(TEMP_PREFIX)).length : 0
   if (!ids.length) lines.push(`No prepared decks in ${shown(input.decksDir, input.cwd)}.`)
-  if (unfinished) lines.push(`${plural(unfinished, 'unfinished prepare')} (${TEMP_PREFIX}*): the voice service removes them once they are an hour old.`)
+  if (unfinished) {
+    lines.push(`${plural(unfinished, 'unfinished prepare')} (${TEMP_PREFIX}*, with a copy of its PDF): the next prepare or delete --all removes ${unfinished === 1 ? 'it' : 'them'} once ${unfinished === 1 ? 'it is' : 'they are'} ${UNFINISHED_MAX_AGE_MS / 60_000} minutes old, and the voice service once an hour old.`)
+  }
   return { lines, code: 0 }
 }
 
@@ -308,6 +310,18 @@ export function runDelete(input: { decksDir: string; ids: readonly string[]; all
       code = 1
     }
   }
-  if (input.all && !ids.length) lines.push('There were no decks to delete.')
+  if (input.all) {
+    // A prepare that was killed left a copy of its PDF: --all removes that too, but never one that may be running.
+    const swept = sweepUnfinished(input.decksDir, UNFINISHED_MAX_AGE_MS)
+    if (swept.removed) lines.push(`Deleted ${plural(swept.removed, 'unfinished prepare')}, with the copy of its PDF.`)
+    if (swept.left) {
+      lines.push(`${plural(swept.left, 'unfinished prepare')} from the last ${UNFINISHED_MAX_AGE_MS / 60_000} minutes ${swept.left === 1 ? 'was' : 'were'} left: if no prepare is running, run delete --all again later.`)
+    }
+    if (swept.failed) {
+      lines.push(`Could not delete ${plural(swept.failed, 'unfinished prepare')} (${swept.code}).`)
+      code = 1
+    }
+    if (!ids.length && !swept.removed && !swept.left && !swept.failed) lines.push('There were no decks to delete.')
+  }
   return { lines, code }
 }

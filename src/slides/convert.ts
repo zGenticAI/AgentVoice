@@ -2,14 +2,19 @@
 // file, at most 100 MiB, a PDF by its first bytes), copies it into a temporary folder in data/decks, and has the
 // converter child (render-child.ts) render it there. The child gets an environment made from scratch, PATH, HOME and
 // its own TMPDIR, so none of the keys this process loaded from .env are in it; its stdin is closed, its stdout is
-// JSON lines, and its stderr is kept from the terminal. Its whole process group is killed after 3 minutes, the only
-// hard limit on time and memory. The result is checked with the same loader the service uses, then moved into place.
+// JSON lines, and its stderr is kept from the terminal. Its whole process group is killed after 3 minutes, or when
+// this process is stopped by a signal. Should this process die without a word (SIGKILL, a crash), the child still
+// stops: the kernel ends it on a CPU-time limit, and it ends itself once its parent is gone or its time is up. The
+// result is checked with the same loader the service uses, then moved into place.
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DeckError, DeckStore, MANIFEST, TEMP_PREFIX, prepareDecksDir, scriptKey, scriptMark, sha256 } from './deck.ts'
+import {
+  DeckError, DeckStore, MANIFEST, TEMP_PREFIX, UNFINISHED_MAX_AGE_MS, prepareDecksDir, scriptKey, scriptMark, sha256, sweepUnfinished,
+} from './deck.ts'
 import { type Kind, folderKind, linkKind, refusal, sniff } from './detect.ts'
 import {
   DECK_ID, MAX_INPUT_BYTES, MAX_LABEL, MAX_PAGES, MAX_PAGE_TEXT, MAX_TITLE, type Manifest, type ManifestSlide, WARNINGS, type WarningCode,
@@ -177,10 +182,28 @@ function refusedMessage(msg: Extract<ChildMessage, { type: 'refused' }>, name: s
   }
 }
 
+// The signals that stop this process in order, as they stop the service (server.ts), and SIGQUIT. Closing the terminal
+// sends SIGHUP to this process but not to the child, which is in a session of its own: without a handler this process
+// would die and leave the child running with no limit, and the copy of the PDF behind.
+const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const
+
+/**
+ * The command that starts the child: node, under a CPU-time limit the kernel enforces even while the child is stuck
+ * in one long step, and after this process is gone. Generous, as it counts every thread's time.
+ */
+export function childCommand(script: string, job: Job, timeoutMs: number): [string, string[]] {
+  const node = [process.execPath, '--max-old-space-size=1536', '--import', import.meta.resolve('tsx'), script, JSON.stringify(job)]
+  if (process.platform === 'win32') return [node[0], node.slice(1)]
+  const cpuSeconds = Math.max(1, Math.ceil((2 * timeoutMs) / 1000))
+  // env -i: the shell adds variables of its own (PWD), and the child gets childEnv's three only.
+  return ['/bin/sh', ['-c', `ulimit -t ${cpuSeconds} && exec /usr/bin/env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" "$0" "$@"`, ...node]]
+}
+
 /** Runs the child on the job, and gives its messages; kills its process group on the time limit, or when this process stops. */
 function runChild(job: Job, root: string, tmp: string, script: string, timeoutMs: number): Promise<{ messages: ChildMessage[]; timedOut: boolean; code: number | null; signal: string | null; bad: boolean }> {
   return new Promise(resolve => {
-    const child = spawn(process.execPath, ['--max-old-space-size=1536', '--import', import.meta.resolve('tsx'), script, JSON.stringify(job)], {
+    const [command, args] = childCommand(script, job, timeoutMs)
+    const child = spawn(command, args, {
       cwd: root,
       env: childEnv(process.env, tmp),
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -205,10 +228,9 @@ function runChild(job: Job, root: string, tmp: string, script: string, timeoutMs
     const onSignal = (signal: NodeJS.Signals) => {
       killGroup()
       fs.rmSync(root, { recursive: true, force: true })
-      process.exit(signal === 'SIGINT' ? 130 : 143)
+      process.exit(128 + (os.constants.signals[signal] ?? 15))
     }
-    process.once('SIGINT', onSignal)
-    process.once('SIGTERM', onSignal)
+    for (const s of STOP_SIGNALS) process.once(s, onSignal)
     process.once('exit', killGroup)
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
@@ -238,8 +260,7 @@ function runChild(job: Job, root: string, tmp: string, script: string, timeoutMs
       if (finished) return
       finished = true
       clearTimeout(timer)
-      process.removeListener('SIGINT', onSignal)
-      process.removeListener('SIGTERM', onSignal)
+      for (const s of STOP_SIGNALS) process.removeListener(s, onSignal)
       process.removeListener('exit', killGroup)
       resolve({ messages, timedOut, code, signal, bad })
     }
@@ -260,6 +281,8 @@ export async function prepareDeck(opts: PrepareOptions): Promise<Prepared> {
   const label = oneLine(opts.label ?? name.replace(/\.pdf$/i, ''), MAX_LABEL) || 'deck'
   const store = new DeckStore(opts.decksDir)
   prepareDecksDir(opts.decksDir)
+  // A prepare that was killed (SIGKILL, a crash) left its folder, with a copy of its PDF: gone once it can't be running.
+  sweepUnfinished(opts.decksDir, UNFINISHED_MAX_AGE_MS)
 
   const root = fs.mkdtempSync(path.join(opts.decksDir, TEMP_PREFIX))
   try {
@@ -271,7 +294,8 @@ export async function prepareDeck(opts: PrepareOptions): Promise<Prepared> {
     const input = path.join(root, 'input.pdf')
     fs.writeFileSync(input, bytes, { mode: 0o600, flag: 'wx' })
 
-    const run = await runChild({ input, out, exclude }, root, tmp, opts.childScript ?? CHILD, opts.timeoutMs ?? PREPARE_TIMEOUT_MS)
+    const timeoutMs = opts.timeoutMs ?? PREPARE_TIMEOUT_MS
+    const run = await runChild({ input, out, exclude, timeoutMs }, root, tmp, opts.childScript ?? CHILD, timeoutMs)
     if (run.timedOut) throw new PrepareError(`${name} took more than ${Math.round((opts.timeoutMs ?? PREPARE_TIMEOUT_MS) / 1000)} s to render, so it was stopped. Export it again with smaller images, or leave the slowest pages out with --exclude.`)
     const refused = run.messages.find(m => m.type === 'refused')
     if (refused?.type === 'refused') throw new PrepareError(refusedMessage(refused, name))

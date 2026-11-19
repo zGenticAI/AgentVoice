@@ -9,7 +9,7 @@ import path from 'node:path'
 import { createCanvas } from '@napi-rs/canvas'
 import { config } from '../src/config.ts'
 import { sweep } from '../src/server.ts'
-import { DeckError, DeckStore, imageProblem, sha256, sweepOldDecks, webpSize } from '../src/slides/deck.ts'
+import { DeckError, DeckStore, UNFINISHED_MAX_AGE_MS, imageProblem, sha256, sweepOldDecks, sweepUnfinished, webpSize } from '../src/slides/deck.ts'
 import { type Manifest, manifestProblem } from '../src/slides/manifest.ts'
 import { contactSheet, writeSheet } from '../src/slides/sheet.ts'
 
@@ -222,6 +222,25 @@ test('the retention sweep deletes decks unused for DECK_RETENTION_DAYS, and unfi
   assert.deepEqual(sweepOldDecks(decksDir, 30, now), { removed: 2, unfinished: 1, failed: 0, code: '' })
   assert.deepEqual(fs.readdirSync(decksDir).sort(), ['.tmp-def456', 'Not A Deck', 'new-deck-abcdef'])
   assert.deepEqual(sweepOldDecks(path.join(DIR, 'no-such-folder'), 30, now), { removed: 0, unfinished: 0, failed: 0, code: '' })
+})
+
+test('unfinished prepares (each with a copy of its PDF) are removed past the age given, by their own time, and never a deck', () => {
+  const now = Date.parse('2026-11-19T12:00:00Z')
+  const { decksDir, id } = makeDeck({ id: 'kept-deck-abcdef' })
+  const minute = 60_000
+  for (const [name, age] of [['.tmp-a', 11 * minute], ['.tmp-b', 9 * minute], ['.tmp-c', 2 * 3_600_000]] as const) {
+    fs.mkdirSync(path.join(decksDir, name))
+    fs.writeFileSync(path.join(decksDir, name, 'input.pdf'), 'a copy of the PDF')
+    fs.utimesSync(path.join(decksDir, name), new Date(now - age), new Date(now - age))
+  }
+  assert.equal(UNFINISHED_MAX_AGE_MS, 10 * minute)
+  // At an hour (the service's sweep): only the one over an hour old.
+  assert.deepEqual(sweepUnfinished(decksDir, 3_600_000, now), { removed: 1, left: 2, failed: 0, code: '' })
+  assert.deepEqual(fs.readdirSync(decksDir).sort(), ['.tmp-a', '.tmp-b', id])
+  // At 10 minutes (prepare, delete --all): the 11-minute one too, never the 9-minute one, which may be running.
+  assert.deepEqual(sweepUnfinished(decksDir, UNFINISHED_MAX_AGE_MS, now), { removed: 1, left: 1, failed: 0, code: '' })
+  assert.deepEqual(fs.readdirSync(decksDir).sort(), ['.tmp-b', id])
+  assert.deepEqual(sweepUnfinished(path.join(DIR, 'no-such-folder'), 0, now), { removed: 0, left: 0, failed: 0, code: '' })
 })
 
 test("the service's hourly sweep covers the decks folder, and logs counts only: never a deck's id or label", t => {

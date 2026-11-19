@@ -208,14 +208,33 @@ test("check reads only a <deck>.script.md file, and only the deck's own script i
   assert.deepEqual(fs.readFileSync(sheet), shown)
 })
 
-test("list says which decks can't be used, and unfinished prepares; delete --all empties the folder", () => {
+test("list says which decks can't be used, and unfinished prepares; delete --all empties the folder, a killed prepare's copy of the PDF included", () => {
   const decksDir = path.join(fs.mkdtempSync(path.join(DIR, 'list-')), 'decks')
   fs.mkdirSync(path.join(decksDir, 'bad-deck-abcdef'), { recursive: true, mode: 0o700 })
   fs.chmodSync(decksDir, 0o700)
   fs.mkdirSync(path.join(decksDir, '.tmp-x1'))
   const list = runList({ decksDir, retentionDays: 30, cwd: '/' })
-  assert.deepEqual(list.lines, ["bad-deck-abcdef  can't be used: it has no manifest.", '1 unfinished prepare (.tmp-*): the voice service removes them once they are an hour old.'])
-  assert.deepEqual(runDelete({ decksDir, ids: [], all: true }), { lines: ['Deleted bad-deck-abcdef.'], code: 0 })
+  assert.deepEqual(list.lines, [
+    "bad-deck-abcdef  can't be used: it has no manifest.",
+    '1 unfinished prepare (.tmp-*, with a copy of its PDF): the next prepare or delete --all removes it once it is 10 minutes old, and the voice service once an hour old.',
+  ])
+  // A killed prepare's folder holds a copy of the PDF: --all removes an old one, and leaves one that may be running.
+  fs.writeFileSync(path.join(decksDir, '.tmp-x1', 'input.pdf'), 'a copy of the PDF')
+  fs.mkdirSync(path.join(decksDir, '.tmp-old'))
+  fs.writeFileSync(path.join(decksDir, '.tmp-old', 'input.pdf'), 'a copy of the PDF')
+  const old = new Date(Date.now() - 11 * 60_000)
+  fs.utimesSync(path.join(decksDir, '.tmp-old'), old, old)
+  assert.deepEqual(runDelete({ decksDir, ids: [], all: true }), {
+    lines: [
+      'Deleted bad-deck-abcdef.',
+      'Deleted 1 unfinished prepare, with the copy of its PDF.',
+      '1 unfinished prepare from the last 10 minutes was left: if no prepare is running, run delete --all again later.',
+    ],
+    code: 0,
+  })
+  assert.deepEqual(fs.readdirSync(decksDir), ['.tmp-x1'])
+  fs.utimesSync(path.join(decksDir, '.tmp-x1'), old, old)
+  assert.deepEqual(runDelete({ decksDir, ids: [], all: true }), { lines: ['Deleted 1 unfinished prepare, with the copy of its PDF.'], code: 0 })
   assert.deepEqual(runDelete({ decksDir, ids: [], all: true }), { lines: ['There were no decks to delete.'], code: 0 })
 })
 

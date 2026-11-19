@@ -5,13 +5,15 @@
 // (the child's environment, the time limit, what it reads of the child) runs against a fake child.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { createCanvas, loadImage } from '@napi-rs/canvas'
-import { CANVAS_MISSING, PASSWORD_REFUSAL, PrepareError, type Prepared, childEnv, newDeckId, prepareDeck, slugOf } from '../src/slides/convert.ts'
+import { ROOT } from '../src/config.ts'
+import { CANVAS_MISSING, PASSWORD_REFUSAL, PrepareError, type Prepared, childCommand, childEnv, newDeckId, prepareDeck, slugOf } from '../src/slides/convert.ts'
 import { DeckStore, webpSize } from '../src/slides/deck.ts'
 import { DECK_ID } from '../src/slides/manifest.ts'
 import { skeleton } from '../src/slides/script.ts'
@@ -236,17 +238,66 @@ test('a child that runs past the time limit is killed with its whole process gro
   assert.match(message, /^deck\.pdf took more than 2 s to render, so it was stopped\./)
   assert.ok(Date.now() - started < 15_000)
   const pids = JSON.parse(fs.readFileSync(path.join(home, 'child-pids.json'), 'utf8')) as number[]
-  const alive = (pid: number) => {
-    try {
-      process.kill(pid, 0)
-      return true
-    } catch {
-      return false
-    }
-  }
   for (let i = 0; i < 50 && pids.some(alive); i++) await new Promise(resolve => setTimeout(resolve, 100))
   assert.deepEqual(pids.map(alive), [false, false], 'the child and its grandchild')
   assert.deepEqual(fs.readdirSync(decksDir), [])
+})
+
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+test('closing the terminal (SIGHUP) or SIGQUIT stops the prepare in order: the child and its group killed, the copy of the PDF removed', async () => {
+  for (const [signal, code] of [['SIGHUP', 129], ['SIGQUIT', 131]] as const) {
+    const c = setup(makePdf([{}]))
+    const home = fs.mkdtempSync(path.join(DIR, 'home-'))
+    fs.writeFileSync(path.join(home, 'fake-child.json'), JSON.stringify({ hang: true }))
+    const parent = spawn(process.execPath, ['--import', 'tsx', path.join(import.meta.dirname, 'fixtures/slides/prepare-parent.ts'), c.input, c.decksDir, FAKE_CHILD], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: home },
+      stdio: 'ignore',
+    })
+    const exited = new Promise<number | null>(resolve => parent.on('exit', (status, sig) => resolve(status ?? (sig ? -1 : null))))
+    const pidsFile = path.join(home, 'child-pids.json')
+    for (let i = 0; i < 200 && !fs.existsSync(pidsFile); i++) await new Promise(resolve => setTimeout(resolve, 100))
+    const pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8')) as number[]
+    try {
+      parent.kill(signal)
+      assert.equal(await exited, code, signal)
+      for (let i = 0; i < 50 && pids.some(alive); i++) await new Promise(resolve => setTimeout(resolve, 100))
+      assert.deepEqual(pids.map(alive), [false, false], `${signal}: the child and its grandchild`)
+      assert.deepEqual(fs.readdirSync(c.decksDir).filter(n => n.startsWith('.tmp-')), [], `${signal}: no copy of the PDF left`)
+    } finally {
+      for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL')
+    }
+  }
+})
+
+test('the child starts under a CPU-time limit, twice the time limit, that holds once its parent is gone', () => {
+  const [command, args] = childCommand('/x/child.ts', { input: '/i', out: '/o', exclude: [], timeoutMs: 180_000 }, 180_000)
+  if (process.platform === 'win32') return
+  assert.equal(command, '/bin/sh')
+  assert.deepEqual(args.slice(0, 3), ['-c', 'ulimit -t 360 && exec /usr/bin/env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" "$0" "$@"', process.execPath])
+  assert.equal(args.at(-2), '/x/child.ts')
+  assert.deepEqual(JSON.parse(args.at(-1) ?? ''), { input: '/i', out: '/o', exclude: [], timeoutMs: 180_000 })
+})
+
+test('prepare first removes what a killed prepare left (once it is 10 minutes old), never one that may be running', async () => {
+  const c = setup(makePdf([{}]))
+  fs.mkdirSync(c.decksDir, { recursive: true, mode: 0o700 })
+  for (const name of ['.tmp-old', '.tmp-new']) {
+    fs.mkdirSync(path.join(c.decksDir, name))
+    fs.writeFileSync(path.join(c.decksDir, name, 'input.pdf'), 'a copy of the PDF')
+  }
+  const old = new Date(Date.now() - 11 * 60_000)
+  fs.utimesSync(path.join(c.decksDir, '.tmp-old'), old, old)
+  await prepareDeck({ input: c.input, decksDir: c.decksDir })
+  assert.deepEqual(fs.readdirSync(c.decksDir).filter(n => n.startsWith('.tmp-')), ['.tmp-new'])
 })
 
 test("the parent reads the child strictly: a refusal's words are its own, and anything malformed stops the prepare", async () => {

@@ -13,9 +13,17 @@ import {
 export const decksDir = (dataDir: string) => path.join(dataDir, 'decks')
 export const MANIFEST = 'manifest.json'
 export const SHEET = 'sheet.html'
-/** An unfinished prepare: removed when it ends, and by the sweep once it is older than this. */
+/**
+ * An unfinished prepare, which holds a copy of the PDF: removed when it ends; by the next prepare and by delete --all
+ * once it is UNFINISHED_MAX_AGE_MS old, should prepare have been killed; and by the service's sweep after an hour.
+ */
 export const TEMP_PREFIX = '.tmp-'
 const TEMP_MAX_AGE_MS = 3_600_000
+/**
+ * A prepare running now is never this old: its folder's time is set as it starts and as it ends, and it is stopped
+ * after 3 minutes (PREPARE_TIMEOUT_MS). The margin is for a slow disk.
+ */
+export const UNFINISHED_MAX_AGE_MS = 10 * 60_000
 
 /** A deck the loader refused, and why, in words for the owner. Never a path. */
 export class DeckError extends Error {
@@ -262,6 +270,55 @@ export interface DecksSwept {
   code: string
 }
 
+/** An error's code for a count, never its message (which names the path). */
+const codeOf = (err: unknown) => {
+  const code = (err as NodeJS.ErrnoException)?.code
+  return typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'error'
+}
+
+/** What a sweep of unfinished prepares did: counts and a code only. */
+export interface UnfinishedSwept {
+  removed: number
+  /** Ones newer than the age given: a prepare may be running. */
+  left: number
+  failed: number
+  code: string
+}
+
+/**
+ * Deletes the unfinished prepares (TEMP_PREFIX folders, each with a copy of its PDF) older than `olderThanMs`, by the
+ * folder's own time. Never throws.
+ */
+export function sweepUnfinished(dir: string, olderThanMs: number, now = Date.now()): UnfinishedSwept {
+  const swept: UnfinishedSwept = { removed: 0, left: 0, failed: 0, code: '' }
+  let names: string[]
+  try {
+    if (!fs.existsSync(dir)) return swept
+    names = fs.readdirSync(dir).filter(name => name.startsWith(TEMP_PREFIX))
+  } catch (err) {
+    swept.failed++
+    swept.code = codeOf(err)
+    return swept
+  }
+  for (const name of names) {
+    const folder = path.join(dir, name)
+    try {
+      const stat = fs.lstatSync(folder, { throwIfNoEntry: false })
+      if (!stat) continue
+      if (stat.mtimeMs >= now - olderThanMs) {
+        swept.left++
+        continue
+      }
+      fs.rmSync(folder, { recursive: stat.isDirectory(), force: true })
+      swept.removed++
+    } catch (err) {
+      swept.failed++
+      swept.code ||= codeOf(err)
+    }
+  }
+  return swept
+}
+
 /**
  * Deletes the decks not used for `days` days (by their manifest's time, or the folder's when the manifest can't be
  * read), and unfinished prepares over an hour old (a prepare is killed after 3 minutes). Never throws.
@@ -270,8 +327,7 @@ export function sweepOldDecks(dir: string, days: number, now = Date.now()): Deck
   const swept: DecksSwept = { removed: 0, unfinished: 0, failed: 0, code: '' }
   const failed = (err: unknown) => {
     swept.failed++
-    const code = (err as NodeJS.ErrnoException)?.code
-    swept.code ||= typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'error'
+    swept.code ||= codeOf(err)
   }
   let names: string[]
   try {
@@ -281,20 +337,17 @@ export function sweepOldDecks(dir: string, days: number, now = Date.now()): Deck
     failed(err)
     return swept
   }
+  const unfinished = sweepUnfinished(dir, TEMP_MAX_AGE_MS, now)
+  swept.unfinished = unfinished.removed
+  swept.failed = unfinished.failed
+  swept.code = unfinished.code
   const cutoff = now - days * 86_400_000
   for (const name of names) {
     const folder = path.join(dir, name)
     try {
+      if (!DECK_ID.test(name)) continue
       const stat = fs.lstatSync(folder, { throwIfNoEntry: false })
       if (!stat) continue
-      if (name.startsWith(TEMP_PREFIX)) {
-        if (stat.mtimeMs < now - TEMP_MAX_AGE_MS) {
-          fs.rmSync(folder, { recursive: true, force: true })
-          swept.unfinished++
-        }
-        continue
-      }
-      if (!DECK_ID.test(name)) continue
       const manifest = stat.isDirectory() ? fs.lstatSync(path.join(folder, MANIFEST), { throwIfNoEntry: false }) : undefined
       if ((manifest ?? stat).mtimeMs < cutoff) {
         fs.rmSync(folder, { recursive: stat.isDirectory(), force: true })
