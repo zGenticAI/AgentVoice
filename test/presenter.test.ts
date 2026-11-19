@@ -1,0 +1,668 @@
+// The Presenter in a real MeetingSession, with the session tests' fakes (the page's socket, Flux, the brain and the
+// voice), a fake SlideSurface, and short timings: the consent line first, the start and its check question, the script
+// in order and word for word, holds and how each resumes, commands and who may give them, the share's own problems,
+// the ending, and that a meeting without slides is exactly as it was.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import type { BrainEvent } from '../src/brain/brain.ts'
+import type { ToSession } from '../src/bridge.ts'
+import { JOIN_LINE, LEAVE_LINE, SLIDES_LINES } from '../src/consent.ts'
+import { SLIDES_LABEL } from '../src/identity.ts'
+import { MeetingSession, type SessionSlides } from '../src/pipeline/session.ts'
+import type { PresentationEvent, PresenterSlide, PresenterTiming } from '../src/slides/presenter.ts'
+import { presenterSlides } from '../src/slides/presenter.ts'
+import { parseScript } from '../src/slides/script.ts'
+import type { ShareEvent, SlideSurface, StartOutcome } from '../src/slides/surface.ts'
+
+class FakeSocket extends EventEmitter {
+  readyState = 1
+  sent: (Buffer | string)[] = []
+  send(data: Buffer | string) {
+    this.sent.push(data)
+  }
+  close() {
+    if (this.readyState === 3) return
+    this.readyState = 3
+    this.emit('close', 1005, Buffer.from(''))
+  }
+  terminate() {
+    this.close()
+  }
+  drop() {
+    this.readyState = 3
+    this.emit('close', 1006, Buffer.from(''))
+  }
+}
+
+class FakeFlux extends EventEmitter {
+  closed = false
+  send() {}
+  close() {
+    if (this.closed) return
+    this.closed = true
+    setImmediate(() => this.emit('close', 1005, ''))
+  }
+  forceEndTurn() {}
+  turn(event: string, transcript: string) {
+    this.emit('turn', { type: 'TurnInfo', event, turn_index: 0, transcript })
+  }
+}
+
+/** Stands in for the share: what was asked of it, in order, and what it answers. */
+class FakeSurface implements SlideSurface {
+  state: SlideSurface['state'] = 'off'
+  readonly calls: string[] = []
+  startOutcome: StartOutcome = 'loaded'
+  showOutcome: 'shown' | 'timeout' = 'shown'
+  /** Throws or rejects on each call when set. */
+  broken: 'throw' | 'reject' | null = null
+  private readonly listeners = new Map<ShareEvent, (() => void)[]>()
+  constructor(readonly count: number) {}
+  start(at: number) {
+    this.calls.push(`start ${at}`)
+    return this.answer(() => {
+      if (this.startOutcome === 'loaded') this.state = 'loaded'
+      return this.startOutcome
+    })
+  }
+  show(i: number) {
+    this.calls.push(`show ${i}`)
+    return this.answer(() => this.showOutcome)
+  }
+  frame(kind: string) {
+    this.calls.push(`frame ${kind}`)
+  }
+  stop() {
+    this.calls.push('stop')
+    return this.answer(() => void (this.state = 'off'))
+  }
+  close() {
+    this.calls.push('close')
+    if (this.broken === 'throw') throw new Error('surface broke')
+    this.state = 'off'
+  }
+  on(event: ShareEvent, fn: () => void) {
+    this.listeners.set(event, [...(this.listeners.get(event) ?? []), fn])
+  }
+  fire(event: ShareEvent) {
+    for (const fn of this.listeners.get(event) ?? []) fn()
+  }
+  /** The answer, or a throw as the call is made, or a rejection, as the test says. */
+  private answer<T>(value: () => T): Promise<T> {
+    if (this.broken === 'throw') throw new Error('surface broke')
+    if (this.broken === 'reject') return Promise.reject(new Error('surface rejected'))
+    return Promise.resolve(value())
+  }
+}
+
+// The test deck: five pages, page 3 excluded (not in the meeting), page 4 a backup slide.
+const SCRIPT = `---
+deck: test-deck-abcdef
+title: Q4 plan
+---
+
+## 1 · Welcome
+
+Hello everyone. This is the plan.
+
+## 2 · Pricing
+
+Team is twelve dollars. Business is twenty-nine. Any questions so far?
+
+## 3 · Customers
+exclude: yes
+
+## 4 · Security
+on-request: yes
+
+Here are the security details.
+
+## 5 · Next steps
+
+We ship in March. Thank you.
+`
+
+const MANIFEST = {
+  format: 1 as const,
+  id: 'test-deck-abcdef',
+  label: 'test',
+  created: '2026-11-19T10:00:00Z',
+  pages: 5,
+  excluded: 0,
+  script: null,
+  slides: [1, 2, 3, 4, 5].map(n => ({
+    n,
+    title: ['Welcome', 'Pricing', 'Customers', 'Security', 'Next steps'][n - 1],
+    pageLabel: null,
+    text: '',
+    file: `00${n}.webp`,
+    bytes: 1,
+    sha256: '0'.repeat(64),
+    textHash: '0'.repeat(64),
+    warnings: [],
+  })),
+}
+
+const SLIDES: PresenterSlide[] = presenterSlides(parseScript(SCRIPT).script!, MANIFEST)
+
+const FAST: Partial<PresenterTiming> = {
+  tickMs: 5,
+  leadMs: 10,
+  slideQuietMs: 20,
+  questionQuietMs: 40,
+  talkQuietMs: 40,
+  carryOnWindowMs: 150,
+  canSeeDelayMs: 10,
+  canSeeWindowMs: 200,
+  canSeeQuietMs: 40,
+  pageBackMs: 20,
+  voiceRetryMs: 10,
+  longHoldMs: 20_000,
+  heldLongMs: 400,
+  qaIdleMs: 300,
+}
+
+let meetings = 0
+
+interface Options {
+  answers?: BrainEvent[][]
+  /** Lines whose voice fails, every time. */
+  failing?: Set<string>
+  /** ms of voice for a line: 20 unless given. */
+  voice?: Record<string, number>
+  slides?: false
+  timing?: Partial<PresenterTiming>
+  from?: number
+}
+
+function start(opts: Options = {}) {
+  const ws = new FakeSocket()
+  const flux = new FakeFlux()
+  const surface = new FakeSurface(SLIDES.length)
+  const answers = [...(opts.answers ?? [])]
+  const answered: string[] = []
+  const spoken: string[] = []
+  const notified: ToSession[] = []
+  const events: PresentationEvent[] = []
+  const slides: SessionSlides | undefined =
+    opts.slides === false ? undefined : { surface, slides: SLIDES, platform: 'zoom', from: opts.from, timing: { ...FAST, ...opts.timing } }
+  const session = new MeetingSession(ws as any, { meetingKey: `presenter-${process.pid}-${++meetings}`, botId: `bot-${meetings}` }, {
+    brain: {
+      async *respond(i: { latest: string }) {
+        answered.push(i.latest)
+        for (const e of answers.shift() ?? []) yield e
+      },
+    } as any,
+    bridge: { ask: async () => null, notify: (m: ToSession) => void notified.push(m) } as any,
+    brief: () => '',
+    flux: () => flux as any,
+    speak: async function* (text: string) {
+      spoken.push(text)
+      if (opts.failing?.has(text)) throw new Error('voice failed')
+      yield Buffer.alloc((opts.voice?.[text] ?? 20) * 32)
+    },
+    recall: {
+      sendChat: async () => {},
+      leaveCall: async () => {},
+      deleteMedia: async () => true,
+      howBotEnded: async () => ({ kind: 'ended', sub_code: 'bot_received_leave_call' }) as const,
+    },
+    writeMinutes: async () => '/tmp/minutes.md',
+    greetDelayMs: 5,
+    sttFlushMs: 0,
+    leaveDelayMs: 0,
+    pauseMaxMs: 60_000,
+    reconnectMs: 60_000,
+    slides,
+  })
+  session.presenter?.onEvent(e => void events.push(e))
+  /** A line said in a quiet room: its turn starts and ends. */
+  const said = (text: string) => {
+    flux.turn('StartOfTurn', '')
+    flux.turn('EndOfTurn', text)
+  }
+  const alex = () => session.transcript.lines.filter(l => l.role === 'agent' && l.speaker !== SLIDES_LABEL).map(l => l.text)
+  const markers = () => session.transcript.lines.filter(l => l.speaker === SLIDES_LABEL).map(l => l.text)
+  const after = (line: string) => spoken.slice(spoken.lastIndexOf(line) + 1)
+  return { ws, flux, surface, session, answered, spoken, notified, events, said, alex, markers, after, presenter: session.presenter! }
+}
+
+const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
+async function until(ok: () => boolean, what = 'the condition', ms = 3000): Promise<void> {
+  const end = Date.now() + ms
+  while (!ok()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`)
+    await wait(5)
+  }
+}
+const done = (s: ReturnType<typeof start>) => {
+  s.session.end()
+  s.session.transcript.delete()
+}
+
+/** The consent line said, then the presentation started by the room, checked, and narrating. */
+async function narrating(s: ReturnType<typeof start>) {
+  await until(() => s.session.consentDone, 'the consent line')
+  s.said('Alex, start the presentation.')
+  await until(() => s.spoken.includes(SLIDES_LINES.canSee), 'the check question')
+  await until(() => s.presenter.current === 'narrating', 'narration')
+}
+
+// --- A meeting without slides ---------------------------------------------------------------------------------------
+
+test('a meeting without slides has no presenter, today\'s consent line, and reads slide commands as it always did', async () => {
+  const s = start({ slides: false, answers: [[{ kind: 'say', text: 'Slide five is pricing.' }]] })
+  assert.equal(s.session.presenter, null)
+  await until(() => s.session.consentDone)
+  assert.deepEqual(s.spoken, [JOIN_LINE])
+  s.said('Alex, next slide.')
+  s.said('Alex, go to slide 5.')
+  await until(() => s.answered.length === 1)
+  assert.deepEqual(s.answered, ['Alex, go to slide 5.'], '"next slide" is nothing asked, "go to slide 5" a question: as before')
+  const why = s.session.whyNotAnswered(5).lines!
+  assert.deepEqual(why.map(l => l.read), ['nothing_asked', 'asked'])
+  assert.equal(s.markers().length, 0)
+  done(s)
+})
+
+// --- Starting --------------------------------------------------------------------------------------------------------
+
+test('the consent line comes first: a start said during it waits for it, then the line, the share, the check, the script', async () => {
+  const s = start()
+  // Said as the consent line starts.
+  await until(() => s.spoken.length === 1)
+  s.said('Alex, start the presentation.')
+  await until(() => s.presenter.current === 'qa', 'the end of the deck', 5000)
+  assert.equal(s.spoken[0], SLIDES_LINES.join, 'the consent line of a meeting with slides')
+  assert.deepEqual(s.spoken.slice(1, 3), [SLIDES_LINES.sharing, SLIDES_LINES.canSee])
+  assert.deepEqual(s.after(SLIDES_LINES.canSee), [
+    'Hello everyone.',
+    'This is the plan.',
+    'Team is twelve dollars.',
+    'Business is twenty-nine.',
+    'Any questions so far?',
+    'We ship in March.',
+    'Thank you.',
+  ], 'the script word for word, in order: the backup slide skipped, the excluded one not in the meeting')
+  assert.deepEqual(s.surface.calls, ['start 0', 'show 1', 'show 3'])
+  assert.deepEqual(s.markers(), ['showing slide 1: Welcome', 'showing slide 2: Pricing', 'showing slide 5: Next steps'])
+  assert.deepEqual(s.events.map(e => e.event), ['started', 'finished'])
+  assert.deepEqual(s.events[0], { event: 'started', of: 4, note: 'The presentation started.', slide: 1, title: 'Welcome' })
+  // The command is not a question: never in the questions the meeting asked.
+  s.session.end()
+  await until(() => s.notified.some(n => n.type === 'meeting_ended'))
+  const ended = s.notified.find(n => n.type === 'meeting_ended') as Extract<ToSession, { type: 'meeting_ended' }>
+  assert.deepEqual(ended.questions, [])
+  assert.ok(s.surface.calls.includes('close'), 'the session ending closes the share, with no stop')
+  assert.ok(!s.surface.calls.includes('stop'))
+  s.session.transcript.delete()
+})
+
+test('a "no" to "Can everyone see my slides?" gives the platform hint, stops the share and keeps the bookmark', async () => {
+  const s = start({ timing: { canSeeQuietMs: 3000, canSeeWindowMs: 5000 } })
+  await until(() => s.session.consentDone)
+  s.said('Alex, start the presentation.')
+  await until(() => s.spoken.includes(SLIDES_LINES.canSee))
+  await wait(30)
+  s.said("No, we can't see anything.")
+  await until(() => s.events.some(e => e.event === 'not_seen'))
+  assert.deepEqual(s.after(SLIDES_LINES.canSee), [SLIDES_LINES.hints.zoom])
+  assert.deepEqual(s.surface.calls, ['start 0', 'stop'])
+  assert.equal(s.presenter.current, 'ready')
+  assert.equal(s.answered.length, 0, 'the answer to its own question is not a question')
+  // Started again: no second check question.
+  s.said('Alex, start the presentation.')
+  await until(() => s.presenter.current === 'narrating')
+  assert.equal(s.spoken.filter(l => l === SLIDES_LINES.canSee).length, 1)
+  done(s)
+})
+
+test('a share Recall refused, or that never loaded: the line, back to ready, and the event', async () => {
+  for (const [outcome, line, event] of [
+    ['failed', SLIDES_LINES.shareFailed, 'share_failed'],
+    ['not_loading', SLIDES_LINES.notLoading, 'not_loading'],
+    ['rate_limited', SLIDES_LINES.rateLimited, 'rate_limited'],
+  ] as const) {
+    const s = start()
+    s.surface.startOutcome = outcome
+    await until(() => s.session.consentDone)
+    s.said('Alex, start the presentation.')
+    await until(() => s.events.some(e => e.event === event), event)
+    await until(() => s.spoken.includes(line), line)
+    assert.equal(s.presenter.current, 'ready')
+    assert.ok(!s.spoken.includes(SLIDES_LINES.canSee))
+    done(s)
+  }
+})
+
+// --- Holds -------------------------------------------------------------------------------------------------------
+
+test('the next slide comes only once the last sentence has played and the room is quiet: never while someone talks', async () => {
+  const s = start({ voice: { 'This is the plan.': 300 } })
+  await narrating(s)
+  await until(() => s.spoken.includes('This is the plan.'))
+  // Someone starts talking as the slide's last sentence ends, and goes on.
+  await wait(150)
+  s.flux.turn('StartOfTurn', '')
+  await wait(200)
+  assert.deepEqual(s.surface.calls, ['start 0'], 'slide 2 waits')
+  s.flux.turn('EndOfTurn', 'Mm-hm.')
+  await until(() => s.surface.calls.includes('show 1'))
+  await until(() => s.spoken.includes('Team is twelve dollars.'), 'the next slide talked about only once it is up')
+  done(s)
+})
+
+// The sentence talked over plays for 1.5 s, so someone talking pauses it, and words stop it there.
+const LONG = { 'Team is twelve dollars.': 1500 }
+
+test('talked over: it stops at that sentence, asks "Shall I carry on?" once the room is quiet, and silence carries on there', async () => {
+  const s = start({ voice: LONG })
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  await wait(300)
+  s.flux.turn('StartOfTurn', '')
+  s.flux.turn('EndOfTurn', "That's interesting.")
+  assert.equal(s.presenter.status().held, 'talk')
+  assert.ok(!s.alex().includes('Team is twelve dollars.'), 'the transcript keeps only what was heard of it')
+  await until(() => s.spoken.includes(SLIDES_LINES.shallCarryOn), 'the question')
+  await until(() => s.spoken.includes(SLIDES_LINES.carryOn), 'silence is a yes')
+  await until(() => s.after(SLIDES_LINES.carryOn).length > 0)
+  assert.equal(s.after(SLIDES_LINES.carryOn)[0], 'Team is twelve dollars.', 'the sentence it stopped at, said again in full')
+  assert.equal(s.spoken.filter(l => l === SLIDES_LINES.shallCarryOn).length, 1, 'asked once')
+  assert.equal(s.answered.length, 0)
+  done(s)
+})
+
+test('"no" to "Shall I carry on?" holds until "carry on"; "yes" carries on at once', async () => {
+  const s = start({ voice: LONG, timing: { carryOnWindowMs: 2000 } })
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  await wait(300)
+  s.flux.turn('StartOfTurn', '')
+  s.flux.turn('EndOfTurn', 'Sorry, one thing first.')
+  await until(() => s.spoken.includes(SLIDES_LINES.shallCarryOn))
+  await wait(30)
+  s.said('Not yet.')
+  await until(() => s.presenter.status().held === 'asked')
+  await wait(100)
+  assert.ok(!s.spoken.includes(SLIDES_LINES.carryOn))
+  s.said('Alex, carry on.')
+  await until(() => s.after(SLIDES_LINES.shallCarryOn).includes('Team is twelve dollars.'))
+  done(s)
+})
+
+test('a question mid-narration is answered, then "Back to <title>." and the sentence it stopped at', async () => {
+  const s = start({ voice: LONG, answers: [[{ kind: 'say', text: 'It is per user, per month.' }]] })
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  await wait(300)
+  s.flux.turn('StartOfTurn', '')
+  s.flux.turn('EndOfTurn', 'Alex, is that per month?')
+  await until(() => s.spoken.includes('Back to Pricing.'), 'back to the slide')
+  assert.deepEqual(s.answered, ['Alex, is that per month?'])
+  const after = s.spoken.slice(s.spoken.indexOf('It is per user, per month.'))
+  assert.equal(after[1], 'Back to Pricing.')
+  await until(() => s.after('Back to Pricing.').length > 0)
+  assert.equal(s.after('Back to Pricing.')[0], 'Team is twelve dollars.')
+  assert.ok(!s.spoken.includes(SLIDES_LINES.shallCarryOn), 'a question is not side talk')
+  done(s)
+})
+
+test('a question asked in a quiet moment, after a slide was heard in full, goes on to the next slide with no "Back to"', async () => {
+  const s = start({ answers: [[{ kind: 'say', text: 'Yes.' }]], timing: { slideQuietMs: 400 } })
+  await narrating(s)
+  await until(() => s.spoken.includes('This is the plan.'))
+  await wait(150)
+  s.said('Alex, is this recorded?')
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  assert.ok(!s.spoken.some(l => l.startsWith('Back to')))
+  done(s)
+})
+
+test('"Alex, pause" holds until "Alex, carry on"; the owner\'s pause is sticky: only the owner resumes it', async () => {
+  const s = start()
+  await narrating(s)
+  s.said('Alex, pause.')
+  await until(() => s.presenter.status().held === 'asked')
+  const count = s.spoken.length
+  await wait(200)
+  assert.equal(s.spoken.length, count, 'nothing more while paused')
+  s.said('Alex, carry on.')
+  await until(() => s.presenter.current === 'narrating')
+  await until(() => s.spoken.length > count)
+  // The owner's pause.
+  assert.deepEqual(s.presenter.owner('pause'), { ok: true, note: 'Paused. Only you can resume it.' })
+  assert.equal(s.presenter.status().held, 'owner')
+  s.said('Alex, carry on.')
+  await until(() => s.spoken.includes(SLIDES_LINES.waitForOwner))
+  assert.equal(s.presenter.status().held, 'owner')
+  s.said('Alex, pause.')
+  assert.equal(s.presenter.status().held, 'owner')
+  assert.equal(s.presenter.owner('resume').ok, true)
+  await until(() => s.presenter.current === 'narrating')
+  done(s)
+})
+
+test('a detour keeps the bookmark: "go back" shows the slide before, "carry on" returns to the bookmark with "Back to"', async () => {
+  const s = start()
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  s.said('Alex, go back.')
+  await until(() => s.spoken.includes("Here's slide 1."))
+  assert.equal(s.presenter.status().detour, true)
+  assert.equal(s.presenter.status().slide, 1)
+  assert.equal(s.presenter.status().bookmark, 2)
+  s.said('Alex, carry on.')
+  await until(() => s.spoken.includes('Back to Pricing.'))
+  assert.equal(s.presenter.status().slide, 2)
+  done(s)
+})
+
+test('go to slide N: an excluded one is refused, a backup slide is a detour, one ahead is a move', async () => {
+  const s = start()
+  await narrating(s)
+  s.said('Alex, go to slide 3.')
+  await until(() => s.spoken.includes("I don't have slide 3 to show."))
+  s.said('Alex, go to slide 4.')
+  await until(() => s.spoken.includes("Here's slide 4."))
+  assert.equal(s.presenter.status().slide, 4)
+  assert.equal(s.presenter.status().detour, true)
+  s.said('Alex, go to slide 5.')
+  await until(() => s.spoken.includes('We ship in March.'))
+  assert.equal(s.presenter.status().bookmark, 5)
+  const why = s.session.whyNotAnswered(10).lines!
+  assert.ok(why.some(l => l.read === 'slides' && l.did === 'slide_command' && /go to slide 3/.test(l.why)))
+  assert.equal(s.answered.length, 0)
+  done(s)
+})
+
+test('the camera page away holds the slides; 2 s after it is back, "Back to <title>." and the sentence', async () => {
+  const s = start()
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  s.ws.drop()
+  assert.equal(s.presenter.status().held, 'page_away')
+  const page = new FakeSocket()
+  s.session.attach(page as any, {})
+  await until(() => s.spoken.includes('Back to Pricing.'))
+  done(s)
+})
+
+test('speech recognition lost: the sentence ends, the fixed line is said, and nothing more until hearing is back', async () => {
+  const s = start()
+  await narrating(s)
+  s.flux.emit('lost', 'test')
+  await until(() => s.spoken.includes(SLIDES_LINES.deaf))
+  assert.equal(s.presenter.status().held, 'deaf')
+  const count = s.spoken.length
+  await wait(150)
+  assert.equal(s.spoken.length, count, 'it never talks on when it cannot hear')
+  s.flux.emit('open')
+  await until(() => s.spoken.includes(SLIDES_LINES.shallCarryOn))
+  await until(() => s.spoken.includes(SLIDES_LINES.carryOn))
+  assert.ok(s.events.some(e => e.event === 'deaf'))
+  done(s)
+})
+
+test('a voice that fails twice: the kept line, voice_failed, and a hold until someone says carry on', async () => {
+  const s = start({ failing: new Set(['Team is twelve dollars.']) })
+  await narrating(s)
+  await until(() => s.spoken.includes(SLIDES_LINES.voice))
+  assert.equal(s.spoken.filter(l => l === 'Team is twelve dollars.').length, 2, 'one retry')
+  assert.equal(s.presenter.status().held, 'voice')
+  assert.ok(s.events.some(e => e.event === 'voice_failed'))
+  assert.ok(!s.ws.sent.some(m => typeof m === 'string' && m.includes("couldn't answer")), 'never the page error')
+  done(s)
+})
+
+test('stuck, contested and a fault of the share: the line, stopped, the event; camera_suspect is told to the owner', async () => {
+  for (const [event, line, told] of [
+    ['stuck', SLIDES_LINES.stuck, 'stuck'],
+    ['contested', SLIDES_LINES.problem, 'contested'],
+    ['failed', SLIDES_LINES.problem, 'share_failed'],
+  ] as const) {
+    const s = start()
+    await narrating(s)
+    s.surface.fire(event)
+    await until(() => s.spoken.includes(line), line)
+    assert.equal(s.presenter.current, 'stopped')
+    assert.ok(s.events.some(e => e.event === told))
+    done(s)
+  }
+  const s = start()
+  await narrating(s)
+  s.surface.fire('camera_suspect')
+  assert.ok(s.events.some(e => e.event === 'camera_suspect'))
+  done(s)
+})
+
+test('"stop presenting": the line, the share stopped, the bookmark kept; "start the presentation" picks it up again', async () => {
+  const s = start()
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  s.said('Alex, stop presenting.')
+  await until(() => s.surface.calls.includes('stop'))
+  assert.ok(s.spoken.includes(SLIDES_LINES.stopped))
+  assert.equal(s.presenter.current, 'stopped')
+  assert.ok(s.markers().includes('stopped sharing the slides'))
+  const bookmark = s.presenter.status().bookmark
+  assert.ok(bookmark === 2 || bookmark === 5, String(bookmark))
+  s.said('Alex, start the presentation.')
+  await until(() => s.surface.calls.filter(c => c.startsWith('start')).length === 2)
+  const index = [1, 2, 4, 5].indexOf(bookmark)
+  assert.equal(s.surface.calls.filter(c => c.startsWith('start')).at(-1), `start ${index}`, 'from the bookmark')
+  done(s)
+})
+
+test('the owner\'s end is for good: the room can no longer restart it; the owner can', async () => {
+  const s = start()
+  await narrating(s)
+  assert.equal(s.presenter.owner('end').ok, true)
+  await until(() => s.surface.calls.includes('stop'))
+  assert.equal(s.presenter.current, 'ended')
+  s.said('Alex, start the presentation.')
+  await until(() => s.spoken.includes(SLIDES_LINES.waitForOwner))
+  assert.equal(s.presenter.current, 'ended')
+  assert.equal(s.presenter.owner('start').ok, true)
+  await until(() => s.surface.calls.filter(c => c.startsWith('start')).length === 2)
+  done(s)
+})
+
+test('owner moves are said aloud; wrap_up jumps to the last slide', async () => {
+  const s = start()
+  await narrating(s)
+  assert.equal(s.presenter.owner('goto', 5).ok, true)
+  await until(() => s.spoken.includes('Moving to slide 5.'))
+  assert.equal(s.presenter.owner('goto', 3).ok, false)
+  assert.equal(s.presenter.owner('goto').ok, false)
+  assert.equal(s.presenter.owner('wrap_up').ok, true)
+  await until(() => s.spoken.includes(SLIDES_LINES.wrapUp))
+  done(s)
+})
+
+test('after the last slide, questions; two quiet minutes (short here) stop the share quietly, with a marker', async () => {
+  const s = start()
+  await narrating(s)
+  await until(() => s.presenter.current === 'qa', 'questions', 5000)
+  const lines = s.spoken.length
+  await until(() => s.surface.calls.includes('stop'), 'the quiet stop')
+  assert.equal(s.spoken.length, lines, 'quiet: nothing said')
+  assert.equal(s.presenter.current, 'stopped')
+  assert.ok(s.markers().includes('stopped sharing the slides'))
+  assert.deepEqual(s.presenter.summary(), { reached: 5, of: 4, finished: true })
+  done(s)
+})
+
+test('"please leave" mid-deck: the share closes at once (no stop), then the goodbye; nothing is kept', async () => {
+  const s = start()
+  await narrating(s)
+  s.said('Alex, please leave.')
+  await until(() => s.spoken.includes(LEAVE_LINE))
+  assert.ok(s.surface.calls.includes('close'))
+  assert.ok(!s.surface.calls.includes('stop'))
+  assert.equal(s.presenter.current, 'disposed')
+  await until(() => s.notified.some(n => n.type === 'meeting_ended'))
+  const ended = s.notified.find(n => n.type === 'meeting_ended') as any
+  assert.equal(ended.transcript_file, '')
+  assert.equal('presentation' in ended, false)
+})
+
+test('a deck presented to a silent room gets no minutes: markers and narration are the assistant\'s lines', async () => {
+  const s = start()
+  await until(() => s.session.consentDone)
+  assert.equal(s.presenter.owner('start').ok, true)
+  await until(() => s.presenter.current === 'qa', 'questions', 5000)
+  assert.ok(s.markers().length >= 3)
+  assert.ok(s.session.transcript.lines.every(l => l.role === 'agent'))
+  assert.equal(s.session.transcript.participantsSpoke(), false)
+  s.session.end()
+  await until(() => s.notified.some(n => n.type === 'meeting_ended'))
+  const ended = s.notified.find(n => n.type === 'meeting_ended') as any
+  assert.equal(ended.no_minutes, 'Nobody said anything, so there are no minutes.')
+  s.session.transcript.delete()
+})
+
+test('narration never opens a reply window by itself: a rhetorical "?" without pause is not answered', async () => {
+  const s = start()
+  await narrating(s)
+  await until(() => s.spoken.includes('Any questions so far?'))
+  await wait(30)
+  s.said('What about the enterprise plan?')
+  await wait(100)
+  assert.deepEqual(s.answered, [])
+  done(s)
+})
+
+test('a share that throws or rejects at every step never reaches uncaughtException or unhandledRejection', async () => {
+  const caught: unknown[] = []
+  const onError = (err: unknown) => void caught.push(err)
+  process.on('uncaughtException', onError)
+  process.on('unhandledRejection', onError)
+  try {
+    for (const broken of ['throw', 'reject'] as const) {
+      const s = start()
+      s.surface.broken = broken
+      await until(() => s.session.consentDone)
+      s.said('Alex, start the presentation.')
+      await wait(200)
+      s.said('Alex, next slide.')
+      s.said('Alex, stop presenting.')
+      s.presenter.owner('start')
+      await wait(200)
+      done(s)
+    }
+    await wait(50)
+    assert.deepEqual(caught, [])
+  } finally {
+    process.off('uncaughtException', onError)
+    process.off('unhandledRejection', onError)
+  }
+})
+
+test('the meeting\'s slides come from the script and the deck: excluded and unknown pages left out, in page order', () => {
+  assert.deepEqual(
+    SLIDES.map(s => [s.page, s.title, s.sentences.length, s.onRequest]),
+    [[1, 'Welcome', 2, false], [2, 'Pricing', 3, false], [4, 'Security', 1, true], [5, 'Next steps', 2, false]],
+  )
+})
