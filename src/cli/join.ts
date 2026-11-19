@@ -108,7 +108,9 @@ if (args.shareTest) {
 
 /**
  * The screen-share test (src/cli/share-test-run.ts), with the terminal, the clock and the control socket. The first
- * Ctrl-C stops the test, which then stops the share and takes the assistant out; a second one quits at once.
+ * Ctrl-C stops the test, which then stops the share and takes the assistant out; a second one quits at once. Closing
+ * the terminal (SIGHUP) or SIGTERM stops it the same way, and never quits at once: a closing terminal sends SIGHUP
+ * twice, and the share and the assistant must still be taken out.
  */
 async function shareTest(args: JoinArgs): Promise<number> {
   const stop = new AbortController()
@@ -118,6 +120,12 @@ async function shareTest(args: JoinArgs): Promise<number> {
     stop.abort()
   }
   process.on('SIGINT', interrupt)
+  const hangUp = (signal: NodeJS.Signals) => stop.abort(signal === 'SIGHUP' ? 'the terminal closed' : `it was stopped (${signal})`)
+  process.on('SIGHUP', hangUp)
+  process.on('SIGTERM', hangUp)
+  // Writing to a terminal that has closed fails (EIO, or EPIPE on a pipe): with no listener, that error would end the
+  // process before the share is stopped and the assistant taken out. What can't be printed is lost, nothing more.
+  for (const stream of [process.stdout, process.stderr, process.stdin]) stream.on('error', () => {})
   const reach = async (method: 'GET' | 'POST', urlPath: string, body: string, timeoutMs: number): Promise<ServiceReply> => {
     const reply = await call(method, urlPath, body, timeoutMs)
     if (reply instanceof Error) throw new Error(unreachableText(reply))
@@ -192,6 +200,8 @@ function askLine(prompt: string, signal: AbortSignal, interrupt: () => void): Pr
     signal.addEventListener('abort', onAbort, { once: true })
     rl.on('SIGINT', interrupt)
     rl.on('close', () => settle(() => reject(new Error('the terminal closed'))))
+    // A terminal that closed under a question: readline passes its error on, and would end the process with it.
+    rl.on('error', () => settle(() => reject(new Error('the terminal closed'))))
     rl.question(`${prompt} `, answer => settle(() => resolve(answer)))
   })
 }

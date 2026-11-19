@@ -46,7 +46,7 @@ npm run join -- "<meeting link>" --share-test --keep                            
 
 It first says what will happen and which setting to check, then waits for Enter. Then it waits for Alex to be let in (as long as a waiting room can take, about 10 minutes) and for the consent line to finish. Progress and questions go to the terminal's error stream; the report goes to its output.
 
-Ctrl-C at any time stops the share, takes Alex out of the meeting (unless `--keep`), and prints what the test found so far. A second Ctrl-C quits at once. Every wait has a time limit, and a question left without an answer for 5 minutes stops the test the same way.
+Ctrl-C at any time stops the share, takes Alex out of the meeting (unless `--keep`), and prints what the test found so far. A second Ctrl-C quits at once. Closing the terminal, or SIGTERM, also stops the share and takes Alex out (the report is printed if there is still somewhere to print it). Every wait has a time limit, and a question left without an answer for 5 minutes stops the test the same way.
 
 ## The steps, and what each question means
 

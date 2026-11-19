@@ -741,3 +741,45 @@ test('npm run join --share-test asks the service first, says what will happen, a
   assert.equal(down.code, 1)
   assert.match(down.err, /The voice service is not running/)
 })
+
+test('closing the terminal (SIGHUP, twice) or SIGTERM, even with its output gone, stops the share and takes the assistant out', { timeout: 120_000 }, async t => {
+  for (const [signal, times, cutPipes] of [['SIGHUP', 2, false], ['SIGTERM', 1, false], ['SIGHUP', 1, true]] as const) {
+    const s = await start(t)
+    // node itself, not the tsx wrapper: a closing terminal signals the whole process group, which this stands for.
+    const child = spawn(process.execPath, ['--import', 'tsx', path.join(ROOT, 'src/cli/join.ts'), ZOOM, '--share-test'], {
+      cwd: ROOT,
+      env: { ...process.env, CONTROL_SOCKET: '', ALEX_DATA_DIR: s.dataDir },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let err = ''
+    let out = ''
+    child.stderr.on('data', c => (err += c))
+    child.stdout.on('data', c => (out += c))
+    const closed = new Promise<number | null>(resolve => child.on('close', (code, sig) => resolve(code ?? (sig ? -1 : null))))
+    await until(() => err.includes('Press Enter to send'), 2000)
+    child.stdin.write('\n')
+    await until(() => s.plans.length > 0, 2000)
+    const camera = await cameraPage(s, 0)
+    assert.equal(camera.outcome, 'open')
+    // Share 1 is posted: the CLI waits for its page's hello when the terminal goes.
+    await until(() => s.recall.some(r => r.call === 'start'), 2000)
+    const token = s.tokenOf(0)
+    if (cutPipes) {
+      child.stdout.destroy()
+      child.stderr.destroy()
+    }
+    for (let i = 0; i < times; i++) child.kill(signal)
+    const code = await closed
+    assert.equal(code, 130, `${signal}: ${err}`)
+    assert.deepEqual(s.recall.map(r => r.call), ['start', 'stop'], `${signal}: the share was stopped`)
+    await until(() => s.left.length > 0, 500)
+    assert.deepEqual(s.left, ['bot-1'], `${signal}: the assistant was taken out, once`)
+    assert.equal((await request(s.publicPort, { path: pagePath(token) })).status, 404, `${signal}: the test page is gone`)
+    if (!cutPipes) {
+      assert.match(out, /The test stopped early: (the terminal closed|it was stopped \(SIGTERM\))\./, out)
+      assert.match(out, /At the end: The share was stopped\. Alex was asked to leave/)
+    }
+    camera.ws.close()
+    await s.service.close()
+  }
+})

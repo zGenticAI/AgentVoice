@@ -90,7 +90,7 @@ export interface RunDeps {
   now(): number
   /** Waits ms; rejects once the run is stopped. */
   sleep(ms: number, signal: AbortSignal): Promise<void>
-  /** Ctrl-C. */
+  /** Ctrl-C, or a closed terminal: aborted with the reason in words, or none for Ctrl-C. */
   signal: AbortSignal
   /** Writes a file only its owner can read. */
   writeJson(file: string, text: string): void
@@ -149,9 +149,11 @@ export async function runShareTest(args: RunArgs, deps: RunDeps): Promise<number
     return 1
   }
 
-  const stopError = (err: unknown) => (deps.signal.aborted ? new Stopped() : err)
+  // Why it was stopped: the signal's reason when it gives one in words (the terminal closed), else Ctrl-C.
+  const stoppedNow = () => new Stopped(typeof deps.signal.reason === 'string' ? deps.signal.reason : '')
+  const stopError = (err: unknown) => (deps.signal.aborted ? stoppedNow() : err)
   const check = () => {
-    if (deps.signal.aborted) throw new Stopped()
+    if (deps.signal.aborted) throw stoppedNow()
   }
   const sleep = (ms: number) =>
     deps.sleep(Math.max(0, ms), deps.signal).then(check, err => {
@@ -163,7 +165,7 @@ export async function runShareTest(args: RunArgs, deps: RunDeps): Promise<number
     try {
       line = await deps.ask(scrub(prompt), deps.signal)
     } catch {
-      throw deps.signal.aborted ? new Stopped() : new Stopped('the terminal closed')
+      throw deps.signal.aborted ? stoppedNow() : new Stopped('the terminal closed')
     }
     check()
     if (line === null) throw new NoAnswer()
