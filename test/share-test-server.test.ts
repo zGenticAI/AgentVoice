@@ -489,6 +489,23 @@ test('replacing a share: the old token opens the page until the new page says he
   newer.ws.close()
 })
 
+test('a stop Recall refuses, or never answers, leaves the share as the one on: its token retired, and the next share a replace', async t => {
+  const logged: string[] = []
+  t.mock.method(console, 'log', (line: string) => void logged.push(line))
+  for (const stop of [() => 500, () => Promise.reject(new TypeError('fetch failed'))]) {
+    logged.length = 0
+    const s = await start(t, {}, { stop })
+    await sharing(s)
+    const stopped = await act(s, 'unshare')
+    assert.notEqual(stopped.result.status, 204)
+    const st = await statusOf(s)
+    assert.deepEqual([st.state, st.current], ['live', 1], 'Recall may still be showing it')
+    assert.equal((await request(s.publicPort, { path: pagePath(s.tokenOf(0)) })).status, 404, 'its token opens nothing')
+    assert.equal((await act(s, 'share')).result.replacing, true)
+    assert.ok(logged.some(l => /S2 share 2 \(replacing share 1\): Recall answered 200/.test(l)), logged.join('\n'))
+  }
+})
+
 // --- The camera page, and the actions ------------------------------------------------------------------------------
 
 test('the status counts each time the camera page connects, drops and is refused, and changes nothing about how that goes', async t => {

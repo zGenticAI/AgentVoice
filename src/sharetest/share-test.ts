@@ -476,8 +476,15 @@ export class ShareTest {
     }
     this.log(`${step}unshare${share ? ` ${share.view.epoch}` : ''}: ${status ? `Recall answered ${status}` : 'Recall did not answer'} in ${ms} ms`)
     if (!this.over) {
-      this.current = null
-      this.state = 'off'
+      if (share && !(status >= 200 && status < 300)) {
+        // Recall did not say it stopped (a refusal, or no answer): the share may still be shown, so it is still the one
+        // on, and a later share is a replace. Its token stays retired.
+        this.current = share
+        this.state = share.view.hello_at === null ? 'starting' : 'live'
+      } else {
+        this.current = null
+        this.state = 'off'
+      }
     }
     return { action: 'unshare', status, ms }
   }
