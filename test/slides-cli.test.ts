@@ -351,6 +351,12 @@ test("list says which decks can't be used, and unfinished prepares; delete --all
   assert.deepEqual(runDelete({ decksDir, ids: [], all: true }), { lines: ['There were no decks to delete.'], code: 0 })
 })
 
+test('your decks and their scripts are never committed: decks/, and a PDF or script prepared at the top of this folder, are gitignored', () => {
+  const files = ['deck.pdf', 'deck.script.md', 'Q4 Plan.pdf', 'Q4 Plan.script.md', 'decks/q4.pdf', 'decks/q4.script.md', 'src/slides/x.ts', 'test/fixtures/slides/red.jp2']
+  const ignored = spawnSync('git', ['check-ignore', '--no-index', ...files], { cwd: ROOT, encoding: 'utf8' })
+  assert.deepEqual(ignored.stdout.trim().split('\n'), files.slice(0, 6))
+})
+
 /** npm run slides, as npm runs it, from `cwd`, with no key at all in its environment. */
 function cli(args: string[], cwd: string, dataDir: string) {
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: process.env.HOME, AGENT_NAME: 'Alex', OWNER_NAME: 'Sam', ALEX_DATA_DIR: dataDir, INIT_CWD: cwd }

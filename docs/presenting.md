@@ -10,10 +10,12 @@ A meeting bot shares its screen only where the host allows it, and the setting d
 
 ## The steps
 
+Keep your PDFs in `decks/` in this folder, which is gitignored, or outside this folder: the repository is public, and the script is written beside the PDF. (`decks/` is yours; `data/decks/` is where prepare keeps the prepared decks.)
+
 1. Export your deck as a PDF (below). The PDF keeps your fonts and layout exactly.
-2. `npm run slides -- prepare deck.pdf`. It makes one image per slide, and writes `deck.script.md` next to your PDF, with a section for each slide.
+2. `npm run slides -- prepare decks/q4-roadmap.pdf`. It makes one image per slide, and writes `decks/q4-roadmap.script.md` next to your PDF, with a section for each slide.
 3. Write what Alex should say in each section, or ask your Claude Code session to draft it, then read it yourself.
-4. `npm run slides -- check deck.script.md`. It checks the script, estimates the time, and refreshes the contact sheet: every slide exactly as the meeting will see it.
+4. `npm run slides -- check decks/q4-roadmap.script.md`. It checks the script, estimates the time, and refreshes the contact sheet: every slide exactly as the meeting will see it.
 
 ## Exporting a PDF
 
@@ -69,27 +71,27 @@ The meeting gets a shared screen of 1280x720, which the platform compresses, and
 ## Preparing a deck
 
 ```bash
-npm run slides -- prepare deck.pdf
-npm run slides -- prepare deck.pdf --exclude 3,9
-npm run slides -- prepare deck.pdf --label "Q4 plan"
+npm run slides -- prepare decks/q4-roadmap.pdf
+npm run slides -- prepare decks/q4-roadmap.pdf --exclude 3,9
+npm run slides -- prepare decks/q4-roadmap.pdf --label "Q4 plan"
 ```
 
 It prints what it made:
 
 ```
 Prepared q4-roadmap-k7m2qa: 12 pages rendered (2 excluded) from q4-roadmap.pdf.
-Script: q4-roadmap.script.md (new): 12 sections to write (TODO).
+Script: decks/q4-roadmap.script.md (new): 12 sections to write (TODO).
   pages 4, 7-9: the slide has text under 20 px, which may be hard to read in a small share window.
   page 5 has no text, so it can be answered about only from your script.
 Contact sheet: data/decks/q4-roadmap-k7m2qa/sheet.html
 Next: write the sections (or ask your Claude Code session to draft them), then
-  npm run slides -- check q4-roadmap.script.md
+  npm run slides -- check decks/q4-roadmap.script.md
 ```
 
 - **The deck** goes into `data/decks/<id>/`: one 1280x720 WebP image per page, `manifest.json` (each slide's title and text, for Alex's answers about the slide on screen, and what prepare noticed about it), and `sheet.html`, the contact sheet. The id is the file's name and six random letters: a handle on your computer, not a secret. The deck holds no speaker notes, and not the PDF's path: of its script, only a mark made with a key kept in `data/decks`, so check can tell the deck's own script from any other file.
 - **`--exclude 3,9`** (or `4-6`) leaves pages out completely: they are never rendered, and nothing of them is kept. Use it for a slide whose text must not appear anywhere.
 - **`--label`** names the deck, and its id, instead of the file's name.
-- **The script** is written next to the PDF: `deck.pdf` gets `deck.script.md`, readable only by you. If it is already there, prepare updates it instead (see [After you change the deck](#after-you-change-the-deck)).
+- **The script** is written next to the PDF: `decks/q4-roadmap.pdf` gets `decks/q4-roadmap.script.md`, readable only by you. Keep both in `decks/` (gitignored) or outside this folder. If it is already there, prepare updates it instead (see [After you change the deck](#after-you-change-the-deck)).
 - A deck of 30 slides takes a few seconds. A PDF may have at most 100 pages and 100 MiB, a page's image at most 2 MiB (prepare lowers the quality a little first, and says so), and all a deck's images together at most 40 MiB. A long deck of detailed photos can reach that: prepare stops at the page that goes over, and says so. Export it again with lighter images, split it, or leave some pages out with `--exclude`. Prepare stops a PDF that takes more than 3 minutes.
 
 ## Writing the script
@@ -150,7 +152,7 @@ Limits: 40,000 characters of script without its comments (about 45 minutes), 4,0
 
 ### Asking your Claude Code session to draft it
 
-Ask the session to draft the TODO sections from your slides: "draft the narration in q4-roadmap.script.md from q4-roadmap.pdf". It can read the PDF, and the slide text in the skeleton's comments. Ask it to write figures as words, to use only what is on the slides or in your words, and to leave `check: yes` on every section it drafts. Then read each section yourself, change what you want, and delete its `check: yes`. Nothing enforces that you have read a draft: check warns about every section still marked `check: yes`.
+Ask the session to draft the TODO sections from your slides: "draft the narration in decks/q4-roadmap.script.md from decks/q4-roadmap.pdf". It can read the PDF, and the slide text in the skeleton's comments. Ask it to write figures as words, to use only what is on the slides or in your words, and to leave `check: yes` on every section it drafts. Then read each section yourself, change what you want, and delete its `check: yes`. Nothing enforces that you have read a draft: check warns about every section still marked `check: yes`.
 
 The session sees the whole file, comments included, when it reads it, and the PDF when it drafts from it: that goes to Anthropic under your Claude account, as everything the session reads does.
 
@@ -159,7 +161,7 @@ The session sees the whole file, comments included, when it reads it, and the PD
 ## Checking the script
 
 ```bash
-npm run slides -- check deck.script.md
+npm run slides -- check decks/q4-roadmap.script.md
 ```
 
 It needs no key and no network. It reads only a file named `<something>.script.md`, and never prints a line of it but the paragraphs' figures and abbreviations. It loads the script's deck, and prints:
