@@ -32,17 +32,36 @@ export interface TextItem {
   hasEOL: boolean
   /** Its height on the 1280x720 image. */
   px: number
+  /** What the page text put before it: nothing, a space (a gap along the line), or a new line. */
+  sep: '' | ' ' | '\n'
 }
 
-/** The first line of the page's largest text. */
+/** Digits alone, as in a page number or "1.": not a title, and not text too small to read. */
+const pageNumber = (s: string) => /^[\d\s./-]{1,6}$/.test(s.trim())
+
+/** Words or figures: not a bullet, a quote mark, an icon font's glyph or an emoji. */
+const titleText = (s: string) => /[\p{L}\p{N}]/u.test(s) && !pageNumber(s)
+
+/**
+ * The first line of the page's largest words, joined the way the page text joins them, so the title reads as the
+ * slide does. pdf.js gives the space between runs (a change of font, or a gap) as an item of its own, or as a gap:
+ * both are kept.
+ */
 export function titleOf(items: readonly TextItem[]): string {
-  const sized = items.filter(i => i.str.trim())
-  if (!sized.length) return ''
-  const largest = Math.max(...sized.map(i => i.px))
+  const pool = items.filter(i => titleText(i.str))
+  if (!pool.length) return ''
+  const largest = Math.max(...pool.map(i => i.px))
+  const big = (i: TextItem) => i.px >= largest * 0.9
   let title = ''
   for (const item of items) {
-    if (item.str.trim() && item.px >= largest * 0.9) title += item.str
-    else if (title.trim() && item.str.trim()) title += ' '
+    if (!title) {
+      if (big(item) && pool.includes(item)) title = item.str
+    } else {
+      if (item.sep === '\n') break
+      title += item.sep
+      // A run at the title's size joins it, spaces and signs included; anything else is a word apart.
+      title += big(item) ? item.str : ' '
+    }
     if (item.hasEOL && title.trim()) break
   }
   return oneLine(title, MAX_TITLE)
@@ -53,5 +72,5 @@ export function titleOf(items: readonly TextItem[]): string {
  * or nearly every slide of a numbered deck would warn.
  */
 export function hasSmallText(items: readonly TextItem[]): boolean {
-  return items.some(i => i.str.trim() && !/^[\d\s./-]{1,6}$/.test(i.str.trim()) && i.px < SMALL_TEXT_PX)
+  return items.some(i => i.str.trim() && !pageNumber(i.str) && i.px < SMALL_TEXT_PX)
 }

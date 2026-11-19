@@ -149,14 +149,18 @@ async function main(): Promise<void> {
       if (!('str' in item)) continue
       const [x, y] = [item.transform[4], item.transform[5]]
       const size = Math.hypot(item.transform[2], item.transform[3])
+      let sep: TextItem['sep'] = ''
       if (last && item.str && raw && !raw.endsWith('\n')) {
         const tall = Math.max(last.size, size)
-        if (Math.abs(y - last.y) > tall * 0.5) raw += '\n'
-        else if (x - (last.x + last.w) > tall * 0.15 && !/\s$/.test(raw) && !/^\s/.test(item.str)) raw += ' '
+        // A run that starts well back along the line (a chart's legend, a second column) is a new word too.
+        const gap = x - (last.x + last.w)
+        if (Math.abs(y - last.y) > tall * 0.5) sep = '\n'
+        else if ((gap > tall * 0.15 || gap < -tall) && !/\s$/.test(raw) && !/^\s/.test(item.str)) sep = ' '
       }
-      raw += item.str + (item.hasEOL ? '\n' : '')
+      raw += sep + item.str + (item.hasEOL ? '\n' : '')
       if (item.str) last = { x, y, w: item.width, size }
-      items.push({ str: item.str, hasEOL: item.hasEOL, px: size * scale })
+      // The title is read from these, with the same separators, so it reads as the page text does.
+      items.push({ str: item.str, hasEOL: item.hasEOL, px: size * scale, sep })
     }
     const { text, cut } = cleanText(raw, MAX_PAGE_TEXT)
     const notes = annotations

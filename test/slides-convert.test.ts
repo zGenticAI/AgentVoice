@@ -126,6 +126,13 @@ test("text and titles: the first line of the largest text, small text warned abo
   assert.equal(slides.get(4)?.text, '')
 })
 
+test("a title drawn as two runs keeps the space between them, as the page's text does", async () => {
+  const c = setup(makePdf([{ texts: [{ text: 'Gap', size: 40, x: 60, y: 440 }, { text: 'title', size: 40, x: 160, y: 440 }, { text: 'Body text', size: 24, x: 60, y: 300 }] }]))
+  const { manifest } = await prepareDeck({ input: c.input, decksDir: c.decksDir })
+  assert.equal(manifest.slides[0].title, 'Gap title')
+  assert.match(manifest.slides[0].text, /^Gap title\nBody text$/)
+})
+
 test('a 4:3 page is fitted into 1280x720 with 160 px bars in the colour of its edge', async () => {
   const bytes = image(2)
   assert.deepEqual(slides.get(2)?.warnings, ['no-text', 'letterboxed'])
