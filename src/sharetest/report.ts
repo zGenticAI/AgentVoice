@@ -121,9 +121,14 @@ export function cameraWords(camera: StepRecord['camera']): string {
 
 const cameraMoved = (camera: StepRecord['camera']) => Boolean(camera && (camera.drops || camera.attaches || camera.refused))
 
+const accepted = (step: StepRecord | undefined, call: 'share' | 'unshare') => Boolean(step?.recall.some(c => c.call === call && c.status >= 200 && c.status < 300))
+
 /**
- * "Slides look safe" only when the camera page never dropped or came back from S2 to S9 (every one of them run), the
- * owner saw the share (S2), and heard the assistant while sharing (S3) and after it stopped (S8).
+ * "Slides look safe" only when, from S2 to S9 (every one of them run to its end): the camera page never dropped or came
+ * back, and was known at the end; Recall accepted every share and stop, the replace in S7 included; the owner saw the
+ * share (S2) and saw it go (S8); and the assistant was heard and answered while sharing (S3, S4) and after the stop (S8).
+ * Hearing and speaking take separate paths in the camera page, so one can break while the other works. The test
+ * stands in for Gate 0, whose start, replace and stop must work as asked, not only leave the camera page alone.
  */
 export function verdict(input: Pick<ReportInput, 'name' | 'platform' | 'steps' | 'stopped'>): Verdict {
   const platform = PLATFORM_NAMES[input.platform]
@@ -133,8 +138,15 @@ export function verdict(input: Pick<ReportInput, 'name' | 'platform' | 'steps' |
     if (step.id === 'S1') continue
     if (cameraMoved(step.camera)) reasons.push(`the camera page ${cameraWords(step.camera)} in ${step.id} (${step.title})`)
   }
+  // A step whose closing status failed is counted in the next step that got one. After the last, nothing counts it.
+  const lastKnown = input.steps.findLastIndex(s => s.ran && s.camera)
+  const unknown = input.steps.filter((s, i) => s.id !== 'S1' && s.ran && !s.camera && i > lastKnown).map(s => s.id)
+  if (unknown.length) reasons.push(`the camera page is not known in ${unknown.join(', ')}`)
   const notRun = input.steps.filter(s => s.id !== 'S1' && !s.ran).map(s => s.id)
-  if (notRun.length) reasons.push(`the test stopped before ${notRun.join(', ')}${input.stopped ? ` (${input.stopped})` : ''}`)
+  const why = input.stopped ? ` (${input.stopped})` : ''
+  if (notRun.length) reasons.push(`the test stopped before ${notRun.join(', ')}${why}`)
+  // Every step started, yet it stopped: partway through the last one, whose end was never seen.
+  else if (input.stopped) reasons.push(`the test stopped partway through ${input.steps.at(-1)?.id ?? 'the last step'}${why}`)
   const seen = answerOf(byId.get('S2'), 'seen')
   if (byId.get('S2')?.ran && seen !== 'y') reasons.push(seen === 'n' ? 'you did not see the share in S2' : 'the share was not confirmed seen in S2')
   for (const id of ['S3', 'S8'] as const) {
@@ -142,6 +154,34 @@ export function verdict(input: Pick<ReportInput, 'name' | 'platform' | 'steps' |
     if (!step?.ran) continue
     const heard = answerOf(step, 'heard')
     if (heard !== 'y') reasons.push(heard === 'n' ? `you did not hear ${input.name} in ${id}` : `hearing ${input.name} was not confirmed in ${id}`)
+  }
+  for (const id of ['S4', 'S8'] as const) {
+    const step = byId.get(id)
+    if (!step?.ran) continue
+    const answered = answerOf(step, 'answered')
+    if (answered !== 'y') reasons.push(answered === 'n' ? `${input.name} did not answer you in ${id}` : `${input.name} answering was not confirmed in ${id}`)
+  }
+  // A share, a replace or a stop that Recall refused tested nothing: the camera page being untouched then proves nothing.
+  for (const id of ['S2', 'S9'] as const) {
+    const step = byId.get(id)
+    if (!step?.ran) continue
+    for (const call of step.recall) {
+      if (call.status >= 200 && call.status < 300) continue
+      const what = call.call === 'share' ? 'share' : 'stop'
+      reasons.push(`Recall ${call.status ? `answered ${call.status} to the ${what}` : `did not answer the ${what}`} in ${id} (${step.title})`)
+    }
+  }
+  if (byId.get('S5')?.ran && answerOf(byId.get('S5'), 'counted') === 'n') reasons.push('the number did not count up to 5 in S5')
+  const s7 = byId.get('S7')
+  if (s7?.ran) {
+    if (!accepted(s7, 'share')) reasons.push('Recall did not accept the new share in S7, so a replace was not tested')
+    else if (answerOf(s7, 'session') === 'n') reasons.push('the page did not show the new session in S7')
+  }
+  const s8 = byId.get('S8')
+  if (s8?.ran) {
+    if (!accepted(s8, 'unshare')) reasons.push('Recall did not stop the share in S8, so a stop was not tested')
+    const gone = answerOf(s8, 'gone')
+    if (gone !== 'y') reasons.push(gone === 'n' ? 'you said the share did not go in S8' : 'the share going was not confirmed in S8')
   }
   if (!reasons.length) return { safe: true, line: `Slides look safe on ${platform}.`, reasons }
   return { safe: false, line: `Not safe yet on ${platform}: ${reasons.join('; ')}.`, reasons }

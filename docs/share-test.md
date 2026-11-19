@@ -61,7 +61,7 @@ Answer `y` or `n`, or `s` to skip a question. Enter alone asks it again, except 
 | S5 slide changes | The big number on the page counts up to 5, every 2 s. The page says when it has shown each one. | "Did the big number count up to 5?" |
 | S6 hold | The share stays up for 60 s, while the page reports how it runs. | None. |
 | S7 replace | Alex shares a new page without stopping the first. This is the one Recall doesn't document. | "Does the page now show session 2?" (or the number it says) |
-| S8 stop | Alex stops the share, then says a test sentence. | "Has the screen share gone?" and "Did you hear Alex after the share stopped?" |
+| S8 stop | Alex stops the share, then says a test sentence, then you ask it a question by name. | "Has the screen share gone?", "Did you hear Alex after the share stopped?", then press Enter once it has answered, or type `n` if it didn't. |
 | S9 restart | Alex shares again, then stops. | None: timings only. |
 
 Then Alex leaves, unless `--keep`.
@@ -69,8 +69,8 @@ Then Alex leaves, unless `--keep`.
 ## Reading the report
 
 It starts with the app and Node versions, the platform and the date (UTC), then the verdict:
-- **Slides look safe on <platform>.** only if the camera page never dropped, connected again or loaded again from S2 to S9, you saw the share in S2, and you heard Alex in S3 and S8.
-- **Not safe yet on <platform>:** with each reason. A test stopped early is never safe.
+- **Slides look safe on <platform>.** only if, from S2 to S9: the camera page never dropped, connected again or loaded again, and its state was known at the end; Recall accepted every share and stop, the replace in S7 included; you saw the share in S2 and saw it go in S8; Alex was heard in S3 and S8, and answered your question in S4 and after the stop in S8; and nothing you were asked was answered no (the number counting in S5, the new session in S7). Hearing and speaking take separate paths in the camera page, so one can break while the other works.
+- **Not safe yet on <platform>:** with each reason. A test stopped early, even partway through S9, is never safe.
 
 Then:
 - **Camera page, step by step**: untouched, or how many times it dropped, connected again, or loaded again and was refused (a page loaded again has lost the secret that lets it back into the meeting).

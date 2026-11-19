@@ -540,14 +540,18 @@ export async function runShareTest(args: RunArgs, deps: RunDeps): Promise<number
       rec.timings['test line'] = said.ms
       rec.notes.push(`the test line: ${SAID[said.said]}`)
       const heard = await question(rec, 'heard', `Did you hear ${name} after the share stopped? (y/n, s to skip)`)
+      // Hearing after the stop, as in S4: the camera page's hearing can break while its voice still works.
+      log(`Ask ${name} a question now, by name (for example: "${name}, can you hear me?").`)
+      const answered = await question(rec, 'answered', "Press Enter once it has answered, or type n if it didn't.", readEnterOrNo, 'Press Enter, or type n (s to skip).')
       if (!stoppedShare) {
         rec.result = 'FAIL'
         rec.why.push('Recall did not stop the share')
-      } else if (gone === 'n' || heard === 'n') {
+      } else if (gone === 'n' || heard === 'n' || answered === 'n') {
         rec.result = 'FAIL'
         if (gone === 'n') rec.why.push('the share did not go')
         if (heard === 'n') rec.why.push(`you did not hear ${name}`)
-      } else rec.result = gone === 'y' && heard === 'y' ? 'PASS' : 'SKIPPED'
+        if (answered === 'n') rec.why.push(`${name} did not answer`)
+      } else rec.result = gone === 'y' && heard === 'y' && answered === 'y' ? 'PASS' : 'SKIPPED'
     })
 
     await step('S9', async rec => {

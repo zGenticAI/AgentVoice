@@ -313,6 +313,7 @@ test('the full run: every step passes, the verdict says safe, and the report goe
       'Does the page now show session 2',
       'Has the screen share gone',
       'Did you hear Alex after the share stopped',
+      'Press Enter once it has answered, or type n if it didn\'t',
     ],
   )
   const progress = h.log.join('\n')
@@ -438,6 +439,27 @@ test('Ctrl-C stops the share, takes the assistant out unless --keep, prints the 
   assert.match(reportOf(done), /At the end: Alex stays in the meeting \(--keep\): say "Alex, please leave", or remove it, when you are done\./)
 })
 
+test('stopped partway through S9, or a stop Recall refused, or the assistant not answering: never "Slides look safe"', async () => {
+  // Ctrl-C while S9's share waits for its page: every step started, but S9's end was never seen.
+  const late = harness({ onAction: (svc, action, step) => void (action === 'share' && step === 'S9' && late.ctl.abort()) })
+  assert.equal(await late.run(), 130)
+  assert.match(reportOf(late), /^Verdict: Not safe yet on Zoom: the test stopped partway through S9 \(you pressed Ctrl-C\)\.$/m)
+  // Every stop refused, and the share did not go: no stop was tested.
+  const refused = harness({ stopStatus: () => 400 }, [['Has the screen share gone', 'n']])
+  assert.equal(await refused.run(), 0)
+  assert.match(reportOf(refused), /^Verdict: Not safe yet on Zoom: Recall answered 400 to the stop in S9 \(restart\); Recall did not stop the share in S8, so a stop was not tested; you said the share did not go in S8\.$/m)
+  // The assistant does not answer while sharing, or after the stop.
+  const deaf = harness({}, [['Press Enter once it has answered', 'n']])
+  await deaf.run()
+  assert.match(reportOf(deaf), /^Verdict: Not safe yet on Zoom: Alex did not answer you in S4\.$/m)
+  const deafAfter = harness({}, [['Press Enter once it has answered', ''], ['Press Enter once it has answered', 'n']])
+  await deafAfter.run()
+  const report = reportOf(deafAfter)
+  assert.match(report, /^S8 stop: FAIL/m)
+  assert.match(report, /Why: Alex did not answer\./)
+  assert.match(report, /^Verdict: Not safe yet on Zoom: Alex did not answer you in S8\.$/m)
+})
+
 test('a meeting that ends under the test stops it, with nothing to clean up', async () => {
   const h = harness({ onAction: (svc, action, step) => void (action === 'say' && step === 'S3' && (svc.gone = true)) })
   assert.equal(await h.run(), 1)
@@ -509,7 +531,7 @@ test('answers: y, n and s spelt out or not, Enter as yes only where it says so, 
   assert.match(platformHint('zoom', 'Nova'), /"Who can share\?" must be "All participants"/)
 })
 
-test('the verdict is safe only with the camera page untouched from S2 to S9, the share seen, and the assistant heard in S3 and S8', () => {
+test('the verdict is safe only with the camera page untouched and known from S2 to S9, every share and stop accepted, the share seen and gone, and the assistant heard and answering in S3, S4 and S8', () => {
   const steps = () =>
     STEP_IDS.map(id => {
       const s = newStep(id)
@@ -518,8 +540,33 @@ test('the verdict is safe only with the camera page untouched from S2 to S9, the
       s.camera = { attaches: 0, drops: 0, refused: 0 }
       if (id === 'S2') s.answers.push({ key: 'seen', question: '', answer: 'y' })
       if (id === 'S3' || id === 'S8') s.answers.push({ key: 'heard', question: '', answer: 'y' })
+      if (id === 'S4' || id === 'S8') s.answers.push({ key: 'answered', question: '', answer: 'y' })
+      if (id === 'S8') s.answers.push({ key: 'gone', question: '', answer: 'y' })
+      if (id === 'S2' || id === 'S7' || id === 'S9') s.recall.push({ call: 'share', epoch: 1, status: 200, ms: 400 })
+      if (id === 'S8' || id === 'S9') s.recall.push({ call: 'unshare', epoch: 1, status: 204, ms: 200 })
       return s
     })
+  const lineOf = (edit: (s: ReturnType<typeof steps>) => void, stopped: string | null = null) => {
+    const s = steps()
+    edit(s)
+    return verdict({ name: 'Alex', platform: 'zoom', steps: s, stopped }).line
+  }
+  // Stopped partway through the last step, or the camera page not known at the end: never safe.
+  assert.equal(lineOf(() => {}, 'you pressed Ctrl-C'), 'Not safe yet on Zoom: the test stopped partway through S9 (you pressed Ctrl-C).')
+  assert.equal(lineOf(s => void (s[8].camera = null)), 'Not safe yet on Zoom: the camera page is not known in S9.')
+  assert.equal(lineOf(s => void (s[4].camera = null)), 'Slides look safe on Zoom.', 'S5 not known, but S6 counted from S4 on')
+  // Hearing while sharing and after the stop.
+  assert.equal(lineOf(s => void (s[3].answers[0].answer = 'n')), 'Not safe yet on Zoom: Alex did not answer you in S4.')
+  assert.equal(lineOf(s => void (s[7].answers[1].answer = 's')), 'Not safe yet on Zoom: Alex answering was not confirmed in S8.')
+  // A replace or a stop that Recall refused, a share that did not go, and the other answers.
+  assert.equal(lineOf(s => void (s[7].recall[0].status = 400)), 'Not safe yet on Zoom: Recall did not stop the share in S8, so a stop was not tested.')
+  assert.equal(lineOf(s => void (s[7].recall[0].status = 0)), 'Not safe yet on Zoom: Recall did not stop the share in S8, so a stop was not tested.')
+  assert.equal(lineOf(s => void (s[7].answers[2].answer = 'n')), 'Not safe yet on Zoom: you said the share did not go in S8.')
+  assert.equal(lineOf(s => void (s[7].answers[2].answer = 's')), 'Not safe yet on Zoom: the share going was not confirmed in S8.')
+  assert.equal(lineOf(s => void (s[6].recall[0].status = 400)), 'Not safe yet on Zoom: Recall did not accept the new share in S7, so a replace was not tested.')
+  assert.equal(lineOf(s => void s[6].answers.push({ key: 'session', question: '', answer: 'n' })), 'Not safe yet on Zoom: the page did not show the new session in S7.')
+  assert.equal(lineOf(s => void (s[8].recall[0].status = 403)), 'Not safe yet on Zoom: Recall answered 403 to the share in S9 (restart).')
+  assert.equal(lineOf(s => void s[4].answers.push({ key: 'counted', question: '', answer: 'n' })), 'Not safe yet on Zoom: the number did not count up to 5 in S5.')
   assert.deepEqual(verdict({ name: 'Alex', platform: 'microsoft_teams', steps: steps(), stopped: null }), { safe: true, line: 'Slides look safe on Microsoft Teams.', reasons: [] })
   const s1Moved = steps()
   s1Moved[0].camera = { attaches: 1, drops: 1, refused: 0 }
