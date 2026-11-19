@@ -149,6 +149,43 @@ test("the canonical text: front matter, headings, keys and paragraphs, no commen
   assert.deepEqual(again.script?.sections.map(s => s.sentences), parsed.script.sections.map(s => (s.exclude ? [] : s.sentences)))
 })
 
+test('every script check accepts has a canonical text that parses back to the same script: a paragraph, heading or title that would not is refused', () => {
+  // Taking out emphasis, code and links would leave a list, a key, a quote, a table, a rule, a heading, a URL, HTML or a
+  // comment where the file had none, or text that changes again on a second pass.
+  const refused: [string, RegExp][] = [
+    ['**1.** We ship in December.', /a list is not speech/],
+    ['`-` is how we start.', /a list is not speech/],
+    ['[- one](x) two.', /a list is not speech/],
+    ['*hold: 5s* is what I said.', /"hold:" looks like a key/],
+    ['**---**', /a rule/],
+    ['*> quoted*', /a quote block/],
+    ['`|` a pipe.', /a table/],
+    ['_## 2 · B_ is a heading.', /a heading must be/],
+    ['Visit **www**.example.com today.', /a URL is not speech/],
+    ['`<`b> bold.', /HTML is not speech/],
+    ['a **<**!-**-** b.', /HTML is not speech/],
+    ['``a`` is code.', /marks inside emphasis or code are not speech/],
+  ]
+  for (const [paragraph, why] of refused) {
+    const errors = parse(script(`## 1 · Intro\n\n${paragraph}\n\n## 2 · B\n\nHi.\n`)).errors
+    assert.ok(errors.some(e => e.line === 7 && why.test(e.message)), `${paragraph}: ${JSON.stringify(errors)}`)
+  }
+  // A comment marker left in a heading or the title by joining what was around a comment.
+  assert.deepEqual(parse(script('## 1 · A <!<!-- x -->-- B\n\nHello everyone.\n')).errors, [{ line: 5, page: 1, message: "the heading's title has a broken comment: a comment must be whole, <!-- like this -->" }])
+  assert.deepEqual(parse(script('## 1 · A\n\nHello everyone.\n', 'title: A <!<!-- x -->-- B\n')).errors, [{ line: 3, message: 'title: a comment must be whole: <!-- like this -->' }])
+  // What is accepted reads back the same, with no comment marker in it.
+  for (const paragraph of ['We ship in **December**.', 'Say `*hi*` now.', 'a *b **c** d* e.', 'See [the plan](x) today.']) {
+    const first = parse(script(`## 1 · Intro\n\n${paragraph}\n`, 'title: Plan <!-- for us --> B\n'))
+    assert.deepEqual(first.errors, [], paragraph)
+    const canonical = canonicalText(first.script!)
+    assert.ok(!canonical.includes('<!--'))
+    const again = parse(canonical)
+    assert.deepEqual(again.errors, [], paragraph)
+    assert.deepEqual(again.script?.sections.map(s => [s.paragraphs, s.sentences]), first.script?.sections.map(s => [s.paragraphs, s.sentences]))
+    assert.equal(canonicalText(again.script!), canonical)
+  }
+})
+
 test('errors: keys under the heading (an unknown one is never spoken nor dropped), and a blank line before the text', () => {
   assert.deepEqual(messages(errorsOf(script('## 5 · Pricing\npause: 5s\nNote: Team is twelve dollars per user per month.\n'))), [
     '"Note:" is not a key, so it is never spoken: keys are hold, pause, on-request, exclude, check. Spoken text goes after a blank line',

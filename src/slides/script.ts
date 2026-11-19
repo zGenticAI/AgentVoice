@@ -307,6 +307,9 @@ export function parseScript(source: string): Parsed {
     if (kv.key === 'deck') deckLine = n
     if (kv.key === 'title') {
       if (kv.value.length > MAX_HEADING || /[\p{Cc}\p{Cf}]/u.test(kv.value)) errors.push({ line: n, message: `title: must be one line of at most ${MAX_HEADING} characters` })
+      // Comments are stripped by joining what is around them, so "<!<!-- x -->--" leaves a marker: the canonical text
+      // must never hold one, or the service would refuse it.
+      else if (/<!--|-->/.test(kv.value)) errors.push({ line: n, message: 'title: a comment must be whole: <!-- like this -->' })
       else title = kv.value || null
     }
     if (kv.key === 'minutes') {
@@ -328,6 +331,7 @@ export function parseScript(source: string): Parsed {
       hold: null, pause: null, onRequest: false, exclude: false, check: null, paragraphs: [], sentences: [], todo: false,
     }
     if (raw.heading.length > MAX_HEADING || /[\p{Cc}\p{Cf}]/u.test(raw.heading)) errors.push({ ...at, message: `the heading's title is over ${MAX_HEADING} characters` })
+    else if (/<!--|-->/.test(raw.heading)) errors.push({ ...at, message: "the heading's title has a broken comment: a comment must be whole, <!-- like this -->" })
     const given = new Set<string>()
     for (const { key, value, written, index } of raw.keys) {
       const where = { line: index + 1, page: raw.page }
@@ -374,7 +378,12 @@ export function parseScript(source: string): Parsed {
         continue
       }
       const { text, problem } = spoken(p.lines)
-      if (problem) errors.push({ line: p.line, page: raw.page, message: problem })
+      // The canonical text holds the paragraph as spoken, so it must read back the same: taking out emphasis, code and
+      // links can leave a list marker, a key, a URL or a comment where the file had none. Such a paragraph is refused,
+      // never rewritten, so the narration stays the owner's word for word.
+      const again = problem || !text ? null : spoken([text])
+      const unstable = again ? notSpeech(text) || again.problem || (again.text !== text ? 'marks inside emphasis or code are not speech' : '') : ''
+      if (problem || unstable) errors.push({ line: p.line, page: raw.page, message: problem || unstable })
       else if (text) section.paragraphs.push(text)
     }
     section.todo = section.paragraphs.some(p => /\bTODO\b/.test(p))
