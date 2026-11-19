@@ -223,12 +223,16 @@ function outline(source: string, errors: Problem[]): Outline | null {
   }
   const result: Outline = { deck: null, deckLine: -1, frontEnd: -1, sections: [] }
   const seen = new Set<string>()
+  // Check reads whatever file it is given, so nothing of a line that is not a key is ever quoted, and only the first
+  // such line is named: a file that only looks like a script (YAML, notes) gives one line number, not its lines.
+  let unknown = false
   for (i++; i < lines.length && lines[i].text.trim() !== '---'; i++) {
     const { text, n } = lines[i]
-    if (!text.trim() || text.trim().startsWith('#')) continue
+    if (unknown || !text.trim() || text.trim().startsWith('#')) continue
     const kv = keyValue(text)
     if (!kv || !['deck', 'title', 'minutes'].includes(kv.key)) {
-      errors.push({ line: n, message: `"${text.trim().slice(0, 40)}" is not a front matter key: they are deck, title and minutes` })
+      errors.push({ line: n, message: 'this is not a front matter key: they are deck, title and minutes' })
+      unknown = true
       continue
     }
     if (seen.has(kv.key)) errors.push({ line: n, message: `${kv.key} is given twice` })
@@ -313,7 +317,7 @@ export function parseScript(source: string): Parsed {
   }
   const deck = shape.deck ?? ''
   if (shape.deck !== null && !DECK_ID.test(deck)) {
-    errors.push({ line: deckLine, message: `deck: "${deck.slice(0, 40)}" is not a deck id: it is the id prepare wrote, such as q4-roadmap-k7m2qa` })
+    errors.push({ line: deckLine, message: 'deck: is not a deck id: it is the id prepare wrote, such as q4-roadmap-k7m2qa' })
   }
 
   const sections: Section[] = []
@@ -378,7 +382,7 @@ export function parseScript(source: string): Parsed {
     const length = section.paragraphs.join(' ').length
     if (length > MAX_SECTION_CHARS) errors.push({ ...at, message: `the section's text is ${length} characters: at most ${MAX_SECTION_CHARS}` })
     for (const s of section.sentences) {
-      if (s.length > MAX_SENTENCE_CHARS) errors.push({ ...at, message: `a sentence is ${s.length} characters ("${s.slice(0, 40)}…"): at most ${MAX_SENTENCE_CHARS}, so it can be said and resumed` })
+      if (s.length > MAX_SENTENCE_CHARS) errors.push({ ...at, message: `a sentence is ${s.length} characters: at most ${MAX_SENTENCE_CHARS}, so it can be said and resumed` })
     }
     if (!section.exclude) {
       if (section.todo) errors.push({ ...at, message: 'TODO: write the narration, or add "exclude: yes"' })
@@ -430,9 +434,11 @@ export interface Checked extends Parsed {
 
 /**
  * The script checked against its deck: sections for pages the deck doesn't have, pages without a section, figures the
- * slide doesn't show, the estimate, and the deck's own warnings for the slides that will be shown.
+ * slide doesn't show, the estimate, and the deck's own warnings for the slides that will be shown. figures: false
+ * leaves the figures out, for a file that is not the deck's own script: naming the ones a slide lacks would let any
+ * file test guesses about what is on it.
  */
-export function checkScript(parsed: Parsed, manifest: Manifest | null): Checked {
+export function checkScript(parsed: Parsed, manifest: Manifest | null, opts: { figures?: boolean } = {}): Checked {
   const errors = [...parsed.errors]
   const warnings = [...parsed.warnings]
   const result: Checked = { script: parsed.script, errors, warnings, narrated: 0, onRequest: 0, excluded: 0, totalMs: 0, estimates: new Map() }
@@ -465,7 +471,7 @@ export function checkScript(parsed: Parsed, manifest: Manifest | null): Checked 
     }
     if (!slide) continue
     const onSlide = figures(slide.text)
-    const missing = [...figures(section.paragraphs.join(' '))].filter(f => !onSlide.has(f))
+    const missing = opts.figures === false ? [] : [...figures(section.paragraphs.join(' '))].filter(f => !onSlide.has(f))
     if (missing.length) warnings.push({ ...at, message: `${missing.slice(0, 5).join(', ')} ${missing.length === 1 ? 'is' : 'are'} not on the slide: check the figures` })
     if (ms > LONG_SECTION_MS) warnings.push({ ...at, message: `about ${Math.round(ms / 1000)} s on one slide: consider splitting it` })
     const speech = ms - LEAD_MS - QUIET_MS - (section.pause ?? 0) * 1000
@@ -575,6 +581,9 @@ export function structureProblems(source: string): Problem[] {
   outline(source, errors)
   return errors.filter(e => STRUCTURAL.has(e))
 }
+
+/** Whether a parsed script has one of the problems that leave its structure unclear (structureProblems' kind). */
+export const unclear = (parsed: Parsed) => parsed.errors.some(e => STRUCTURAL.has(e))
 
 export interface Merged {
   text: string

@@ -5,10 +5,10 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { PrepareError, prepareDeck } from './convert.ts'
-import { DeckError, DeckStore, TEMP_PREFIX } from './deck.ts'
+import { DeckError, DeckStore, TEMP_PREFIX, scriptKey, scriptMark } from './deck.ts'
 import { DECK_ID, type Manifest, WARNINGS } from './manifest.ts'
 import {
-  type Checked, MAX_SCRIPT_FILE_BYTES, type Problem, checkScript, mergeScript, parseScript, shellArg, skeleton, structureProblems,
+  type Checked, MAX_SCRIPT_FILE_BYTES, type Problem, checkScript, mergeScript, parseScript, shellArg, skeleton, structureProblems, unclear,
 } from './script.ts'
 import { type SheetSlide, contactSheet, writeSheet } from './sheet.ts'
 
@@ -32,8 +32,12 @@ export function where(p: Problem): string {
   return parts.length ? `${parts.join(', ')}: ` : ''
 }
 
-/** A script file's text, or why it can't be read: a regular file, at most 1 MiB. */
+/**
+ * A script file's text, or why it can't be read: named <something>.script.md, a regular file, at most 1 MiB. Check
+ * reads the file it is given itself, so a file of any other name is refused unread: its lines are never quoted.
+ */
 function readScript(file: string): string {
+  if (!/\.script\.md$/i.test(path.basename(file))) throw new PrepareError(`${path.basename(file)} is not a script: check takes the <deck>.script.md file prepare wrote.`)
   const stat = fs.lstatSync(file, { throwIfNoEntry: false })
   if (!stat) throw new PrepareError(`${path.basename(file)} was not found.`)
   if (!stat.isFile()) throw new PrepareError(`${path.basename(file)} is not a plain file${stat.isSymbolicLink() ? ' (it is a symbolic link)' : ''}.`)
@@ -145,7 +149,9 @@ export async function runPrepare(input: PrepareInput): Promise<Outcome> {
 
   let prepared
   try {
-    prepared = await prepareDeck({ input: input.input, decksDir: input.decksDir, exclude: input.exclude, label: input.label, childScript: input.childScript, timeoutMs: input.timeoutMs })
+    prepared = await prepareDeck({
+      input: input.input, decksDir: input.decksDir, exclude: input.exclude, label: input.label, scriptFile, childScript: input.childScript, timeoutMs: input.timeoutMs,
+    })
   } catch (err) {
     if (err instanceof PrepareError) return { lines: [err.message], code: 1 }
     throw err
@@ -217,11 +223,16 @@ export function runCheck(input: CheckInput): Outcome {
   }
   const parsed = parseScript(text)
   let manifest: Manifest | null = null
+  let own = false
   const deckErrors: Problem[] = []
   const id = parsed.script?.deck ?? ''
   if (parsed.script && DECK_ID.test(id)) {
     try {
       manifest = store.load(id, { images: 'all' }).manifest
+      // Only the script prepare wrote for this deck is compared with its slides' figures, or changes the deck: any
+      // other file could name the deck's id (list prints it) to test guesses about what is on a slide.
+      const key = manifest.script ? scriptKey(input.decksDir) : null
+      own = Boolean(key && manifest.script === scriptMark(key, input.file))
     } catch (err) {
       if (!(err instanceof DeckError)) throw err
       deckErrors.push({
@@ -231,7 +242,9 @@ export function runCheck(input: CheckInput): Outcome {
       })
     }
   }
-  const checked = checkScript({ ...parsed, errors: [...deckErrors, ...parsed.errors] }, manifest)
+  // A script whose structure is unclear (two sections for a page, say) is not compared with the slides either.
+  const compare = own && !unclear(parsed)
+  const checked = checkScript({ ...parsed, errors: [...deckErrors, ...parsed.errors] }, manifest, { figures: compare })
   // In the file's order: by line, then the ones about a page with no line, then the whole script's.
   const order = (p: Problem) => p.line ?? (p.page ? 1e6 + p.page : 2e6)
   checked.errors.sort((a, b) => order(a) - order(b))
@@ -248,8 +261,10 @@ export function runCheck(input: CheckInput): Outcome {
     for (const w of checked.warnings) lines.push(`  ${where(w)}${w.message}.`)
   }
   if (!checked.errors.length) lines.push('No errors. The estimate comes from the script\'s length: the real timing is known only in a meeting.')
-  if (manifest) {
-    refreshSheet(store, manifest, checked, name)
+  if (manifest && !own) {
+    lines.push(`This is not the script prepare wrote for ${manifest.id}, so its figures were not compared with the slides, and the deck and its contact sheet were left as they were. Prepare the deck again from the PDF beside this script.`)
+  } else if (manifest) {
+    if (compare) refreshSheet(store, manifest, checked, name)
     store.touch(manifest.id, input.now)
     lines.push(`Contact sheet: ${shown(path.join(store.folder(manifest.id), 'sheet.html'), input.cwd)}`)
   }

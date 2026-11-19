@@ -86,7 +86,7 @@ Next: write the sections (or ask your Claude Code session to draft them), then
   npm run slides -- check q4-roadmap.script.md
 ```
 
-- **The deck** goes into `data/decks/<id>/`: one 1280x720 WebP image per page, `manifest.json` (each slide's title and text, for Alex's answers about the slide on screen, and what prepare noticed about it), and `sheet.html`, the contact sheet. The id is the file's name and six random letters: a handle on your computer, not a secret. The deck holds no speaker notes, and not the PDF's path.
+- **The deck** goes into `data/decks/<id>/`: one 1280x720 WebP image per page, `manifest.json` (each slide's title and text, for Alex's answers about the slide on screen, and what prepare noticed about it), and `sheet.html`, the contact sheet. The id is the file's name and six random letters: a handle on your computer, not a secret. The deck holds no speaker notes, and not the PDF's path: of its script, only a mark made with a key kept in `data/decks`, so check can tell the deck's own script from any other file.
 - **`--exclude 3,9`** (or `4-6`) leaves pages out completely: they are never rendered, and nothing of them is kept. Use it for a slide whose text must not appear anywhere.
 - **`--label`** names the deck, and its id, instead of the file's name.
 - **The script** is written next to the PDF: `deck.pdf` gets `deck.script.md`, readable only by you. If it is already there, prepare updates it instead (see [After you change the deck](#after-you-change-the-deck)).
@@ -154,7 +154,7 @@ Ask the session to draft the TODO sections from your slides: "draft the narratio
 
 The session sees the whole file, comments included, when it reads it, and the PDF when it drafts from it: that goes to Anthropic under your Claude account, as everything the session reads does.
 
-`npm run slides -- prepare` reads any PDF it is given and writes its text into `data/decks`, so it always asks you before your session runs it: don't allow `Bash(npm run slides:*)`. At most, allow `Bash(npm run slides -- check:*)` and `Bash(npm run slides -- list)`. The committed `.claude/settings.json` stops a session reading `data/decks` itself: it never needs to (see [Your Claude Code session](claude-code.md)).
+`npm run slides -- prepare` reads any PDF it is given and writes its text into `data/decks`, and `check` opens the file it is given itself (so your deny rules don't apply to it) and writes the deck's contact sheet. So both ask you before your session runs them, and the prompt shows you the path: don't allow `Bash(npm run slides:*)` or `Bash(npm run slides -- check:*)`. At most, allow `Bash(npm run slides -- list)`. The committed `.claude/settings.json` stops a session reading `data/decks` itself: it never needs to (see [Your Claude Code session](claude-code.md)).
 
 ## Checking the script
 
@@ -162,12 +162,14 @@ The session sees the whole file, comments included, when it reads it, and the PD
 npm run slides -- check deck.script.md
 ```
 
-It needs no key and no network. It reads the script, loads its deck, and prints:
+It needs no key and no network. It reads only a file named `<something>.script.md`, and never prints a line of it but the paragraphs' figures and abbreviations. It loads the script's deck, and prints:
 - **Errors**, which a script must not have: a missing or broken deck, a section for a page the deck doesn't have (or that was left out with `--exclude`), `TODO` or nothing to say (without `hold`), an unknown key, `check: changed`, a list, URL or HTML, the limits above, and no slide to present at all.
 - **Warnings**, which never stop it: sections marked `check: yes`; signs, figures and abbreviations the voice may read wrongly; figures that aren't on the slide; a section over two minutes, or one so short people can't read the slide (add `hold`); narration over 70% of your `minutes`; pages with no section ("page 9 has no section, so it won't be shown"); and what prepare noticed about the slides: small text, no text, bars, a document page, an image left out or not drawn.
 - **The estimate:** how long the narration takes, from its length at about 150 words a minute, with the pauses around each slide. The real timing is known only in a meeting.
 
 It exits with 1 while the script has errors, and 0 once it has none.
+
+Only the script prepare wrote for the deck (the one beside its PDF) is compared with the slides' figures, refreshes the contact sheet, and counts as a use of the deck. Any other file that names the deck gets its other errors and warnings, and a line that says so: prepare the deck again from the PDF beside it. A script whose structure is unclear (two sections for one page, say) is not compared either, until it is fixed.
 
 ### The contact sheet
 

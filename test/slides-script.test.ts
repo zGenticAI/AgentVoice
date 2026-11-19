@@ -23,7 +23,7 @@ function deck(texts: string[], opts: { id?: string; excluded?: number[]; warning
       n, title: text.split('\n')[0], pageLabel: null, text, file: `${String(n).padStart(3, '0')}.webp`, bytes: 1000, sha256: sha256(`image ${n}`),
       textHash: sha256(text), warnings: opts.warnings?.[n] ?? [],
     }))
-  return { format: 1, id: opts.id ?? ID, label: 'Q4 roadmap', created: '2026-11-19T10:02:11Z', pages: texts.length, excluded: excluded.length, slides }
+  return { format: 1, id: opts.id ?? ID, label: 'Q4 roadmap', created: '2026-11-19T10:02:11Z', pages: texts.length, excluded: excluded.length, script: null, slides }
 }
 
 const DECK = deck([
@@ -198,17 +198,34 @@ test('errors: order, duplicates, pages the deck lacks or left out, check: change
   assert.match(messages(errorsOf(script('## 1 · A\ncheck: changed\n\nHi.\n')))[0], /the slide changed after this was written/)
   assert.deepEqual(messages(errorsOf(script('## 1 · A\non-request: yes\n\nHi.\n'))), ['nothing to present: every section is excluded or on request'])
   assert.deepEqual(messages(errorsOf('---\ntitle: x\n---\n\n## 1\n\nHi.\n')), ['the front matter has no "deck:" line: prepare writes it'])
-  assert.match(messages(errorsOf('---\ndeck: ../../etc\n---\n\n## 1\n\nHi.\n'))[0], /is not a deck id/)
+  assert.deepEqual(messages(errorsOf('---\ndeck: ../../etc\n---\n\n## 1\n\nHi.\n')), ['deck: is not a deck id: it is the id prepare wrote, such as q4-roadmap-k7m2qa'])
   assert.match(messages(errorsOf('## 1\n\nHi.\n'))[0], /must start with its front matter/)
-  assert.match(messages(errorsOf(script('## 1\n\nHi.\n', 'speaker: Sam\n')))[0], /is not a front matter key/)
+  assert.deepEqual(errorsOf(script('## 1\n\nHi.\n', 'speaker: Sam\n')), [{ line: 3, message: 'this is not a front matter key: they are deck, title and minutes' }])
   assert.match(messages(errorsOf(script('## 1\n\nHi.\n', 'minutes: soon\n')))[0], /minutes: must be a whole number/)
   assert.match(messages(errorsOf(script('Welcome!\n\n## 1\n\nHi.\n')))[0], /text before the first section is never spoken/)
   assert.deepEqual(messages(errorsOf(script(''))), ['the script has no sections: one "## <page> · <title>" per slide'])
 })
 
+test("check quotes nothing of a file that only looks like a script: a line number for its first line that is no key, never its text", () => {
+  // A YAML file's front matter, never closed: one line number, and nothing of any line.
+  const yaml = '---\napiVersion: v1\nkind: Secret\nstringData:\n  db_password: fake-example-value\n  api_token: fake-token-0123\n'
+  const unclosed = parse(yaml)
+  assert.equal(unclosed.script, null)
+  assert.deepEqual(unclosed.errors, [
+    { line: 2, message: 'this is not a front matter key: they are deck, title and minutes' },
+    { line: 7, message: 'the front matter is never closed with a "---" line' },
+  ])
+  // Closed, with a deck line that is no id, and keys of its own: still only line numbers.
+  const notes = parse('---\ndeck: fake-not-an-id-but-a-secret-value-123\nclient: Example Client Ltd\nfee: 250000\n---\n\n## 1\n\nHi.\n')
+  const all = JSON.stringify(notes.errors)
+  for (const secret of ['fake-not-an-id', 'Example Client', '250000', 'fake-example-value']) assert.ok(!all.includes(secret), secret)
+  assert.deepEqual(notes.errors.map(e => e.line).sort(), [2, 3])
+  assert.ok(!JSON.stringify(unclosed.errors).includes('fake'), 'nothing of the YAML')
+})
+
 test('errors: the caps on a sentence, a section, the script and the number of sections', () => {
   const long = `${'word '.repeat(90)}end.`
-  assert.match(messages(errorsOf(script(`## 1\n\n${long}\n`)))[0], /a sentence is 454 characters .*: at most 400/)
+  assert.deepEqual(messages(errorsOf(script(`## 1\n\n${long}\n`))), ['a sentence is 454 characters: at most 400, so it can be said and resumed'])
   const section = Array.from({ length: 90 }, () => 'This sentence is about fifty characters long, yes.').join(' ')
   assert.match(messages(errorsOf(script(`## 1\n\n${section}\n`)))[0], /the section's text is \d+ characters: at most 4000/)
   const sections = Array.from({ length: 12 }, (_, i) => `## ${i + 1}\n\n${section.slice(0, 3900)}.\n`).join('\n')

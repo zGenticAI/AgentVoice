@@ -9,7 +9,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DeckError, DeckStore, MANIFEST, TEMP_PREFIX, prepareDecksDir, sha256 } from './deck.ts'
+import { DeckError, DeckStore, MANIFEST, TEMP_PREFIX, prepareDecksDir, scriptKey, scriptMark, sha256 } from './deck.ts'
 import { type Kind, folderKind, linkKind, refusal, sniff } from './detect.ts'
 import {
   DECK_ID, MAX_INPUT_BYTES, MAX_LABEL, MAX_PAGES, MAX_PAGE_TEXT, MAX_TITLE, type Manifest, type ManifestSlide, WARNINGS, type WarningCode,
@@ -101,6 +101,8 @@ export interface PrepareOptions {
   exclude?: readonly number[]
   /** The deck's label, and its id's slug: the file's name unless given. */
   label?: string
+  /** The script this deck is for: only its keyed mark is kept (Manifest.script). */
+  scriptFile?: string
   now?: Date
   /** Tests only: another child, and a shorter limit. */
   childScript?: string
@@ -305,7 +307,9 @@ export async function prepareDeck(opts: PrepareOptions): Promise<Prepared> {
       }
     })
     const created = (opts.now ?? new Date()).toISOString().replace(/\.\d{3}Z$/, 'Z')
-    const manifest: Manifest = { format: 1, id, label, created, pages: open.pages, excluded: exclude.length, slides }
+    const key = opts.scriptFile ? scriptKey(opts.decksDir, true) : null
+    const script = key && opts.scriptFile ? scriptMark(key, opts.scriptFile) : null
+    const manifest: Manifest = { format: 1, id, label, created, pages: open.pages, excluded: exclude.length, script, slides }
     fs.writeFileSync(path.join(out, MANIFEST), `${JSON.stringify(manifest, null, 1)}\n`, { mode: 0o600, flag: 'wx' })
     const dir = path.join(opts.decksDir, id)
     fs.renameSync(out, dir)

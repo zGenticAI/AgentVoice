@@ -73,6 +73,53 @@ export function imageProblem(bytes: Buffer): string {
 
 export const sha256 = (data: Buffer | string) => crypto.createHash('sha256').update(data).digest('hex')
 
+/** The key for scripts' marks, in the decks folder: made by the first prepare, and never in a deck. */
+export const SCRIPT_KEY = '.script-key'
+
+/**
+ * The key a deck's script mark is made with, or null when there is none yet (and `create` is not set). Keyed, so a
+ * manifest alone says nothing of where your files are.
+ */
+export function scriptKey(dir: string, create = false): Buffer | null {
+  const file = path.join(dir, SCRIPT_KEY)
+  if (create && !fs.existsSync(file)) {
+    try {
+      fs.writeFileSync(file, crypto.randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' })
+    } catch (err) {
+      // Another prepare made it first.
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+    }
+  }
+  let fd: number
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+  } catch {
+    return null
+  }
+  try {
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile() || stat.size !== 64 || !private_(stat)) return null
+    const key = fs.readFileSync(fd, 'utf8')
+    return /^[0-9a-f]{64}$/.test(key) ? Buffer.from(key, 'hex') : null
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/**
+ * Which script a deck belongs to: a hash, keyed, of the script's real folder and its name. Check uses it to tell the
+ * deck's own script from any other file that names the deck.
+ */
+export function scriptMark(key: Buffer, scriptFile: string): string {
+  let where: string
+  try {
+    where = path.join(fs.realpathSync(path.dirname(scriptFile)), path.basename(scriptFile))
+  } catch {
+    where = path.resolve(scriptFile)
+  }
+  return crypto.createHmac('sha256', key).update(where).digest('hex')
+}
+
 const uid = () => process.getuid?.()
 
 /** Whether an entry is this user's, with no group or other access. */

@@ -158,6 +158,56 @@ test('prepare never renders, nor rewrites, when the script beside the PDF has a 
   assert.match((await runPrepare({ input: pdf, exclude: [], decksDir, name: 'Alex', cwd: work })).lines[0], /deck\.script\.md is not a plain file\. .* move it aside/)
 })
 
+test("check reads only a <deck>.script.md file, and only the deck's own script is compared with its slides or changes the deck", async () => {
+  const work = fs.mkdtempSync(path.join(DIR, 'own-'))
+  const decksDir = path.join(work, 'data', 'decks')
+  // A file of any other name is refused unread: nothing of it is quoted.
+  const yaml = path.join(work, 'k8s-secret.yaml')
+  fs.writeFileSync(yaml, '---\napiVersion: v1\nkind: Secret\nstringData:\n  db_password: Example-Secret-Value-42\n')
+  const refused = runCheck({ file: yaml, decksDir, retentionDays: 30, cwd: work })
+  assert.deepEqual(refused, { lines: ['k8s-secret.yaml is not a script: check takes the <deck>.script.md file prepare wrote.'], code: 1 })
+
+  // A deck prepared from a PDF in its own folder, and its own script.
+  const own = path.join(work, 'private')
+  fs.mkdirSync(own)
+  fs.writeFileSync(path.join(own, 'offer.pdf'), makePdf([{ texts: [{ text: 'Offer', size: 40 }] }, { texts: [{ text: 'Offer price 4,250,000', size: 30 }] }]))
+  const prepared = await runPrepare({ input: path.join(own, 'offer.pdf'), exclude: [], decksDir, name: 'Alex', cwd: work })
+  assert.equal(prepared.code, 0, prepared.lines.join('\n'))
+  const id = /^Prepared (offer-[a-z2-7]{6}):/.exec(prepared.lines[0])?.[1] ?? ''
+  const manifest = path.join(decksDir, id, 'manifest.json')
+  const sheet = path.join(decksDir, id, 'sheet.html')
+  assert.match(JSON.parse(fs.readFileSync(manifest, 'utf8')).script, /^[0-9a-f]{64}$/, 'a keyed mark, not a path')
+  assert.ok(!fs.readFileSync(manifest, 'utf8').includes(own), "the manifest holds no path")
+
+  // Another file that names the deck: no figure is named, and the deck and its sheet are left as they were.
+  const probe = path.join(work, 'probe.script.md')
+  fs.writeFileSync(probe, `---\ndeck: ${id}\n---\n\n## 1\n\nHello.\n\n## 2\n\nIt is 3900000 or 4250000 or 5100000.\n`)
+  const past = new Date('2026-01-01T00:00:00Z')
+  fs.utimesSync(manifest, past, past)
+  const before = fs.readFileSync(sheet)
+  const other = runCheck({ file: probe, decksDir, retentionDays: 30, cwd: work, now: new Date('2026-11-19T12:00:00Z') })
+  const said = other.lines.join('\n')
+  assert.ok(!said.includes('not on the slide'), said)
+  assert.ok(other.lines.includes(`This is not the script prepare wrote for ${id}, so its figures were not compared with the slides, and the deck and its contact sheet were left as they were. Prepare the deck again from the PDF beside this script.`), said)
+  assert.deepEqual(fs.readFileSync(sheet), before, 'the sheet is unchanged')
+  assert.equal(fs.statSync(manifest).mtime.toISOString(), past.toISOString(), 'the deck is not touched')
+
+  // The same narration in the deck's own script is compared, and refreshes the sheet.
+  const ownScript = path.join(own, 'offer.script.md')
+  fs.writeFileSync(ownScript, fs.readFileSync(probe, 'utf8'))
+  const checked = runCheck({ file: ownScript, decksDir, retentionDays: 30, cwd: work, now: new Date('2026-11-19T12:00:00Z') })
+  assert.ok(checked.lines.includes('  page 2, line 9: 3900000, 5100000 are not on the slide: check the figures.'), checked.lines.join('\n'))
+  assert.notDeepEqual(fs.readFileSync(sheet), before)
+  assert.equal(fs.statSync(manifest).mtime.toISOString(), '2026-11-19T12:00:00.000Z')
+
+  // Its own script, with two sections for one page: no figures, and no sheet, until its structure is clear.
+  fs.writeFileSync(ownScript, `---\ndeck: ${id}\n---\n\n## 2\n\nIt is 3900000.\n\n## 2\n\nOr 4250000.\n`)
+  const shown = fs.readFileSync(sheet)
+  const unclear = runCheck({ file: ownScript, decksDir, retentionDays: 30, cwd: work })
+  assert.ok(!unclear.lines.join('\n').includes('not on the slide'), unclear.lines.join('\n'))
+  assert.deepEqual(fs.readFileSync(sheet), shown)
+})
+
 test("list says which decks can't be used, and unfinished prepares; delete --all empties the folder", () => {
   const decksDir = path.join(fs.mkdtempSync(path.join(DIR, 'list-')), 'decks')
   fs.mkdirSync(path.join(decksDir, 'bad-deck-abcdef'), { recursive: true, mode: 0o700 })

@@ -46,7 +46,7 @@ Permissions for the session. Claude Code merges two settings files in this folde
 - `mcp__zoom-meeting__why_not_answered` is for your own session, not the agent, which doesn't have it. Allow it in `settings.local.json` if you don't want a prompt when you ask why Alex didn't answer.
 - Knowledge sources outside the project need reading allowed too: add their folders to `permissions.additionalDirectories`, or allow them with a rule such as `Read(//home/sam/work/acme-docs/**)` or `Read(~/work/acme-docs/**)` in `permissions.allow`. Otherwise its reads there are denied.
 - Add your own private paths (the ones in your profile's Never open, say) to `permissions.deny`.
-- Don't allow `Bash(npm run slides:*)`. `npm run slides -- prepare` reads any PDF it is given, even one in a folder the session may not read, and writes its text into `data/decks`, so it should always ask you first. At most, allow `Bash(npm run slides -- check:*)` and `Bash(npm run slides -- list)`, which only read a script and the decks (see [Presenting slides](presenting.md)).
+- Don't allow `Bash(npm run slides:*)`, nor `Bash(npm run slides -- check:*)`. `npm run slides -- prepare` reads any PDF it is given, even one in a folder the session may not read, and writes its text into `data/decks`. `check` opens the file it is given itself, so your deny rules don't apply to it, and it writes the deck's contact sheet. Both should ask you first: the prompt shows you the path before it runs. At most, allow `Bash(npm run slides -- list)` (see [Presenting slides](presenting.md)).
 - The project agent (`.claude/agents/meeting-assistant.md`) and both settings files load only when the session runs in this folder: start it here.
 
 For example (with your own paths):

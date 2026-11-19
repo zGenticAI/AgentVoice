@@ -52,7 +52,7 @@ function makeDeck(opts: { slides?: number; image?: (page: number) => Buffer; edi
     const text = `Slide ${page}\nSome text`
     return { n: page, title: `Slide ${page}`, pageLabel: null, text, file, bytes: bytes.length, sha256: sha256(bytes), textHash: sha256(text), warnings: [] }
   })
-  const manifest: Manifest = { format: 1, id, label: 'Q4 roadmap', created: '2026-11-19T10:02:11Z', pages: count, excluded: 0, slides }
+  const manifest: Manifest = { format: 1, id, label: 'Q4 roadmap', created: '2026-11-19T10:02:11Z', pages: count, excluded: 0, script: null, slides }
   opts.edit?.(manifest)
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest), { mode: 0o600 })
   return { decksDir, id, dir, store: new DeckStore(decksDir), manifest }
@@ -145,6 +145,7 @@ test('the manifest is strict: an unknown key, a wrong type or an over-long field
     ['bad file name', m => Object.assign(m.slides[0], { file: '../001.webp' }), /file name is not valid/],
     ['pages do not add up', m => Object.assign(m, { excluded: 2 }), /do not add up/],
     ['text hash', m => Object.assign(m.slides[2], { textHash: sha256('other') }), /text does not match its hash/],
+    ['a path for a script mark', m => Object.assign(m, { script: '/home/sam/deck.script.md' }), /script mark is not valid/],
   ]
   for (const [name, edit, why] of cases) {
     const deck = makeDeck({ edit })
