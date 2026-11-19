@@ -30,6 +30,12 @@ Only with `SPEAKER_PROBE` on, and only for a test meeting joined with `npm run j
 - **Retention:** deleted with the transcripts after `TRANSCRIPT_RETENTION_DAYS`. To clear them all: `rm -r data/speaker-probe`.
 - **Reading them:** `npm run speaker-report` (it changes nothing).
 
+## Prepared slide decks
+
+`npm run slides -- prepare` (see [Presenting slides](presenting.md)) keeps each deck you prepare in `data/decks/<id>/`: one image per slide, each slide's title and text, what prepare noticed about it, and the contact sheet, with your narration once `check` has run. Never the PDF itself, its path, or your speaker notes. Readable only by you (0700 and 0600).
+- **Retention:** deleted `DECK_RETENTION_DAYS` (30 unless set) after it was last used (prepared or checked), when the service starts and every hour. `npm run slides -- delete <id>` (or `--all`) deletes at once, and `npm run slides -- list` says when each will go.
+- **Your script** (`<deck>.script.md`, next to your PDF) is yours: nothing deletes it.
+
 ## Recordings at Recall, Deepgram and ElevenLabs
 
 Alex keeps no recording of the meeting, as the chat notice says, and neither does Recall:
