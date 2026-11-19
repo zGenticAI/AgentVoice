@@ -2,16 +2,22 @@
 // [--speaker-probe]
 // With --brief, the meeting answers from that file's brief instead of the shared one (data/brief.md), and no other
 // meeting sees it. With --speaker-probe, for a test meeting whose participants have agreed, the service measures who is
-// speaking (it needs SPEAKER_PROBE on: docs/speaker-probe.md).
+// speaking (it needs SPEAKER_PROBE on: docs/speaker-probe.md). With --share-test [--json <file>] [--keep], it runs the
+// screen-share test in a test meeting you host, asking you what you see and hear, and prints a report
+// (docs/share-test.md, src/cli/share-test-run.ts).
 import fs from 'node:fs'
 import http from 'node:http'
+import path from 'node:path'
+import readline from 'node:readline'
 import { briefProblem } from '../brief.ts'
-import { config } from '../config.ts'
+import { ROOT, config } from '../config.ts'
 import { controlSocketProblem, nothingListening } from '../control-socket.ts'
 import { identity } from '../identity.ts'
 import { readLocalToken } from '../local-token.ts'
+import { writePrivate } from '../probe/flux-probe.ts'
 import { PROBE_OFF } from '../speakers/probe.ts'
-import { JOIN_USAGE, joinArgs } from './join-args.ts'
+import { JOIN_USAGE, type JoinArgs, joinArgs } from './join-args.ts'
+import { QUESTION_WAIT_MS, type ServiceReply, runShareTest } from './share-test-run.ts'
 
 const args = joinArgs(process.argv.slice(2))
 if ('problem' in args) {
@@ -51,13 +57,16 @@ if (problem) {
   process.exit(1)
 }
 
-/** A request to the voice service on the control socket: its answer, or the error that kept it from coming. */
-function call(method: 'GET' | 'POST', path: string, body = ''): Promise<{ status: number; body: string } | Error> {
+/**
+ * A request to the voice service on the control socket: its answer, or the error that kept it from coming. With
+ * timeoutMs, one with no answer by then is given up on.
+ */
+function call(method: 'GET' | 'POST', urlPath: string, body = '', timeoutMs?: number): Promise<{ status: number; body: string } | Error> {
   return new Promise(resolve => {
     const req = http.request(
       {
         socketPath: config.controlSocket,
-        path,
+        path: urlPath,
         method,
         headers: {
           host: 'localhost',
@@ -74,17 +83,117 @@ function call(method: 'GET' | 'POST', path: string, body = ''): Promise<{ status
       },
     )
     req.on('error', resolve)
+    if (timeoutMs !== undefined) req.setTimeout(timeoutMs, () => req.destroy(new Error(`no answer within ${Math.round(timeoutMs / 1000)} s`)))
     req.end(body)
   })
 }
 
+function unreachableText(err: Error): string {
+  return nothingListening(err)
+    ? `The voice service is not running (nothing is listening on ${config.controlSocket}). Start it with npm start, or scripts/install-service.sh.`
+    : `Could not reach the voice service on ${config.controlSocket}: ${err.message}`
+}
+
 function unreachable(err: Error): never {
-  console.error(
-    nothingListening(err)
-      ? `The voice service is not running (nothing is listening on ${config.controlSocket}). Start it with npm start, or scripts/install-service.sh.`
-      : `Could not reach the voice service on ${config.controlSocket}: ${err.message}`,
-  )
+  console.error(unreachableText(err))
   process.exit(1)
+}
+
+if (args.shareTest) {
+  const code = await shareTest(args)
+  // The report may still be on its way to a pipe: exit once it has gone.
+  await new Promise(resolve => process.stdout.write('', resolve))
+  process.exit(code)
+}
+
+/**
+ * The screen-share test (src/cli/share-test-run.ts), with the terminal, the clock and the control socket. The first
+ * Ctrl-C stops the test, which then stops the share and takes the assistant out; a second one quits at once.
+ */
+async function shareTest(args: JoinArgs): Promise<number> {
+  const stop = new AbortController()
+  let interrupts = 0
+  const interrupt = () => {
+    if (++interrupts > 1) process.exit(130)
+    stop.abort()
+  }
+  process.on('SIGINT', interrupt)
+  const reach = async (method: 'GET' | 'POST', urlPath: string, body: string, timeoutMs: number): Promise<ServiceReply> => {
+    const reply = await call(method, urlPath, body, timeoutMs)
+    if (reply instanceof Error) throw new Error(unreachableText(reply))
+    return reply
+  }
+  // Every key and token here, so that nothing the test prints or writes can hold one.
+  const secrets = [token, ...Object.entries(process.env).filter(([n, v]) => /(KEY|TOKEN|SECRET)$/.test(n) && (v?.trim().length ?? 0) >= 8).map(([, v]) => (v as string).trim())]
+  let version = ''
+  try {
+    version = String(JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version ?? '')
+  } catch {
+    // Only for the report's first line.
+  }
+  return runShareTest(
+    { meetingUrl: args.meetingUrl, brief, jsonFile: args.jsonFile, keep: args.keep },
+    {
+      client: {
+        health: () => reach('GET', '/health', '', 10_000),
+        join: body => reach('POST', '/api/join', body, 60_000),
+        status: botId => reach('GET', `/api/share-test/status?${new URLSearchParams({ bot: botId })}`, '', 10_000),
+        // The longest: a share call waits up to 15 s for Recall, and a test line up to 10 s to play, behind any before it.
+        action: (botId, action, step) => reach('POST', '/api/share-test/action', JSON.stringify({ bot_id: botId, action, step }), 45_000),
+      },
+      ask: (prompt, signal) => askLine(prompt, signal, interrupt),
+      out: text => void process.stdout.write(`${text}\n`),
+      log: text => void process.stderr.write(`${text}\n`),
+      now: Date.now,
+      sleep: (ms, signal) =>
+        new Promise((resolve, reject) => {
+          if (signal.aborted) return reject(new Error('stopped'))
+          const onAbort = () => {
+            clearTimeout(timer)
+            reject(new Error('stopped'))
+          }
+          const timer = setTimeout(() => {
+            signal.removeEventListener('abort', onAbort)
+            resolve()
+          }, ms)
+          signal.addEventListener('abort', onAbort, { once: true })
+        }),
+      signal: stop.signal,
+      writeJson: writePrivate,
+      name: identity.name,
+      app: `agent-voice ${version}`.trim(),
+      node: process.version,
+      date: new Date(),
+      secrets,
+      publicUrl: config.publicUrl,
+    },
+  )
+}
+
+/**
+ * One question in the terminal: the owner's line, or null after QUESTION_WAIT_MS with none. Rejects when the test is
+ * stopped meanwhile, or the terminal closes. In a terminal, readline takes Ctrl-C itself: it stops the test all the same.
+ */
+function askLine(prompt: string, signal: AbortSignal, interrupt: () => void): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new Error('stopped'))
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
+    let settled = false
+    const settle = (done: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      rl.close()
+      done()
+    }
+    const onAbort = () => settle(() => reject(new Error('stopped')))
+    const timer = setTimeout(() => settle(() => resolve(null)), QUESTION_WAIT_MS)
+    signal.addEventListener('abort', onAbort, { once: true })
+    rl.on('SIGINT', interrupt)
+    rl.on('close', () => settle(() => reject(new Error('the terminal closed'))))
+    rl.question(`${prompt} `, answer => settle(() => resolve(answer)))
+  })
 }
 
 // What this join needs the running service to be able to do. One older than this command would ignore a meeting's

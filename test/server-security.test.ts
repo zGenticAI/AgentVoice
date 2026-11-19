@@ -544,7 +544,7 @@ test('the public /health says only that the service is up; the control one says 
   assert.equal(pub.status, 200)
   assert.equal(pub.body, '{"ok":true}', 'nothing about meetings or the session link')
   const control = JSON.parse((await request(s.control, { path: '/health' })).body)
-  assert.deepEqual(control, { ok: true, session_linked: false, meetings: 0, bot_meetings: 0, max_meetings: 3, features: ['meeting_brief', 'why_not_answered'], speaker_probe: false })
+  assert.deepEqual(control, { ok: true, session_linked: false, meetings: 0, bot_meetings: 0, max_meetings: 3, features: ['meeting_brief', 'why_not_answered', 'share_test'], speaker_probe: false })
 })
 
 test('a message over its limit closes the connection it came on: 1 MiB on /bridge, 64 KiB on /audio', async t => {
