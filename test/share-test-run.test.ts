@@ -548,6 +548,22 @@ test("the Origin another site's browser sent is kept as its scheme and host, in 
   }
 })
 
+test('--json stays JSON when a meeting link\'s query holds a value such as "true", and still holds none of the link', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'av-stt-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const teams = 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_abcdef%40thread.v2/0?context=%7b%7d&anon=true&directDl=true'
+  const file = path.join(dir, 'teams.json')
+  const h = harness({}, [], { jsonFile: file, meetingUrl: teams })
+  h.deps.writeJson = writePrivate
+  assert.equal(await h.run(), 0)
+  const text = fs.readFileSync(file, 'utf8')
+  const data = JSON.parse(text)
+  assert.equal(data.keep, false)
+  assert.equal(data.verdict.safe, true)
+  assert.ok(data.steps.every((s: { ran: unknown }) => s.ran === true))
+  for (const never of [teams, 'meetup-join', '19%3ameeting_abcdef%40thread.v2', LOCAL_TOKEN, BOT]) assert.ok(!text.includes(never), never)
+})
+
 // --- The pure parts ------------------------------------------------------------------------------------------------
 
 test('answers: y, n and s spelt out or not, Enter as yes only where it says so, and ladder sizes only from the ladder', () => {

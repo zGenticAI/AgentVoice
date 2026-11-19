@@ -643,7 +643,9 @@ export async function runShareTest(args: RunArgs, deps: RunDeps): Promise<number
       status: last,
     }
     try {
-      deps.writeJson(args.jsonFile, scrub(`${JSON.stringify(data, null, 2)}\n`))
+      // Each string is scrubbed, never the JSON's text: a meeting link's parts can be "true" or digits, and replacing
+      // those in the text would leave a file that is no longer JSON.
+      deps.writeJson(args.jsonFile, `${JSON.stringify(data, (_key, value: unknown) => (typeof value === 'string' ? scrub(value) : value), 2)}\n`)
       log(`Wrote the raw step records to ${args.jsonFile} (readable only by you).`)
     } catch (err) {
       log(`Could not write ${args.jsonFile}: ${(err as NodeJS.ErrnoException).code ?? 'error'}`)
