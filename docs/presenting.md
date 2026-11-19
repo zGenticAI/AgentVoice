@@ -79,7 +79,7 @@ It prints what it made:
 ```
 Prepared q4-roadmap-k7m2qa: 12 pages rendered (2 excluded) from q4-roadmap.pdf.
 Script: q4-roadmap.script.md (new): 12 sections to write (TODO).
-  page 4 has text under 20 px, which may be hard to read in a small share window.
+  pages 4, 7-9: the slide has text under 20 px, which may be hard to read in a small share window.
   page 5 has no text, so it can be answered about only from your script.
 Contact sheet: data/decks/q4-roadmap-k7m2qa/sheet.html
 Next: write the sections (or ask your Claude Code session to draft them), then
@@ -164,8 +164,8 @@ npm run slides -- check deck.script.md
 
 It needs no key and no network. It reads only a file named `<something>.script.md`, and never prints a line of it but the paragraphs' figures and abbreviations. It loads the script's deck, and prints:
 - **Errors**, which a script must not have: a missing or broken deck, a section for a page the deck doesn't have (or that was left out with `--exclude`), `TODO` or nothing to say (without `hold`), an unknown key, `check: changed`, a list, URL or HTML, the limits above, and no slide to present at all.
-- **Warnings**, which never stop it: sections marked `check: yes`; signs, figures and abbreviations the voice may read wrongly; figures that aren't on the slide; a section over two minutes, or one so short people can't read the slide (add `hold`); narration over 70% of your `minutes`; pages with no section ("page 9 has no section, so it won't be shown"); and what prepare noticed about the slides: small text, no text, bars, a document page, an image left out or not drawn.
-- **The estimate:** how long the narration takes, from its length at about 150 words a minute, with the pauses around each slide. The real timing is known only in a meeting.
+- **Warnings**, which never stop it: sections marked `check: yes`; signs, figures and abbreviations the voice may read wrongly; figures that aren't on the slide; a section over two minutes, or one so short people can't read the slide (add `hold`); narration over 70% of your `minutes`; pages with no section ("page 9 has no section, so it won't be shown"); and what prepare noticed about the slides: small text, no text, bars, a document page, an image left out or not drawn, one line for each with its pages.
+- **The estimate:** how long the narration takes, from its length at about 150 words a minute, with the pauses around each slide. A section still `TODO` is not counted: it says how many are left to write. The real timing is known only in a meeting.
 
 It exits with 1 while the script has errors, and 0 once it has none.
 

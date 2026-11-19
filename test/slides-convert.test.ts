@@ -156,7 +156,7 @@ test('an image over the size limit, and one that cannot be decoded, become manif
 
 test('page labels are hints, never keys: they repeat, the pages do not', () => {
   assert.deepEqual(prepared.manifest.slides.map(s => s.pageLabel), ['1', '2', '2', '2', '3', '4', '5', '6'])
-  const script = skeleton(prepared.manifest, { name: 'Alex', scriptName: 'x.script.md', notes: prepared.notes })
+  const script = skeleton(prepared.manifest, { name: 'Alex', scriptPath: 'x.script.md', notes: prepared.notes })
   assert.deepEqual([...script.matchAll(/^## (\d+)/gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8])
   assert.match(script, /## 3 · A document page\ncheck: yes\n\nTODO\n<!-- On the slide: "A document page" -->\n<!-- Page label: "2" \(a hint only/)
   assert.doesNotMatch(script, /Page label: "1"/, 'a label that is the page number is not repeated')
@@ -164,7 +164,7 @@ test('page labels are hints, never keys: they repeat, the pages do not', () => {
 
 test("a sticky note (Marp's speaker notes) goes into the skeleton only, never into the deck", () => {
   assert.deepEqual([...prepared.notes], [[8, 'Mention the pilot customers first.']])
-  const script = skeleton(prepared.manifest, { name: 'Alex', scriptName: 'x.script.md', notes: prepared.notes })
+  const script = skeleton(prepared.manifest, { name: 'Alex', scriptPath: 'x.script.md', notes: prepared.notes })
   assert.match(script, /<!-- Your notes: "Mention the pilot customers first\." -->/)
   for (const file of fs.readdirSync(prepared.dir)) {
     assert.ok(!fs.readFileSync(path.join(prepared.dir, file)).includes('pilot customers'), file)

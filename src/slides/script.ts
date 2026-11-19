@@ -423,10 +423,12 @@ export function sectionMs(section: Section): number {
 }
 
 export interface Checked extends Parsed {
-  /** The narrated sections (in order, not on request, not excluded), and their estimate. */
+  /** The narrated sections (in order, not on request, not excluded, written), and their estimate. */
   narrated: number
   onRequest: number
   excluded: number
+  /** Sections still TODO: not written yet, so neither narrated nor estimated. */
+  todo: number
   totalMs: number
   /** Each section's estimate, by page. */
   estimates: Map<number, number>
@@ -441,7 +443,7 @@ export interface Checked extends Parsed {
 export function checkScript(parsed: Parsed, manifest: Manifest | null, opts: { figures?: boolean } = {}): Checked {
   const errors = [...parsed.errors]
   const warnings = [...parsed.warnings]
-  const result: Checked = { script: parsed.script, errors, warnings, narrated: 0, onRequest: 0, excluded: 0, totalMs: 0, estimates: new Map() }
+  const result: Checked = { script: parsed.script, errors, warnings, narrated: 0, onRequest: 0, excluded: 0, todo: 0, totalMs: 0, estimates: new Map() }
   const script = parsed.script
   if (!script) return result
   const slides = new Map(manifest?.slides.map(s => [s.n, s]) ?? [])
@@ -460,6 +462,12 @@ export function checkScript(parsed: Parsed, manifest: Manifest | null, opts: { f
     }
     if (section.exclude) {
       result.excluded++
+      continue
+    }
+    // Not written yet: its TODO error says so, and the word TODO is no narration to time or check.
+    if (section.todo) {
+      result.todo++
+      if (slide) for (const code of slide.warnings) warnings.push({ page: section.page, message: `the slide ${WARNINGS[code]}`, fromDeck: true })
       continue
     }
     const ms = sectionMs(section)
@@ -486,7 +494,7 @@ export function checkScript(parsed: Parsed, manifest: Manifest | null, opts: { f
     }
   }
   if (script.minutes && result.totalMs > script.minutes * 60_000 * 0.7) {
-    warnings.push({ message: `the narration takes about ${Math.round(result.totalMs / 60_000)} min, over 70% of your ${script.minutes}: leave time for questions` })
+    warnings.push({ message: `the narration takes about ${Math.round(result.totalMs / 60_000)} min, over 70% of your ${script.minutes} min: leave time for questions` })
   }
   return result
 }
@@ -539,8 +547,8 @@ export function skeletonSection(slide: Manifest['slides'][number], notes = ''): 
 /** A path as a shell takes it: quoted only if it has to be. */
 export const shellArg = (p: string) => (/^[\w./~-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`)
 
-/** The note at the top of a new script. */
-export function scriptHelp(name: string, scriptName: string): string {
+/** The note at the top of a new script. scriptPath: the script as the check command names it (prepare's Next: line). */
+export function scriptHelp(name: string, scriptPath: string): string {
   return `<!-- One section per slide, by PDF page number. ${name} says only the paragraphs, word for word. Write
      figures as they are spoken ("twelve dollars", not "$12").
      Comments like this one are for you: they are stripped before the script is sent, so the voice service and the
@@ -551,11 +559,14 @@ export function scriptHelp(name: string, scriptName: string): string {
        on-request: yes   a backup slide: shown only when someone asks for it
        exclude: yes      never shown, and never sent to the meeting
        check: yes        drafted, not yet read by you: delete the line once you have
-     Then run: npm run slides -- check ${inComment(shellArg(scriptName))} -->`
+     Then run, from where you ran prepare: npm run slides -- check ${inComment(shellArg(scriptPath))} -->`
 }
 
-/** The script prepare writes beside a PDF that has none: one section per rendered page, each TODO. */
-export function skeleton(manifest: Manifest, opts: { name: string; scriptName: string; notes?: ReadonlyMap<number, string> }): string {
+/**
+ * The script prepare writes beside a PDF that has none: one section per rendered page, each TODO. scriptPath: the
+ * script as the check command must name it from where prepare ran, which may be outside the PDF's folder.
+ */
+export function skeleton(manifest: Manifest, opts: { name: string; scriptPath: string; notes?: ReadonlyMap<number, string> }): string {
   const first = manifest.slides.find(s => s.title)?.title
   // No "#" in the title: in the front matter it would start a comment.
   const title = headingTitle((first ?? manifest.label).replace(/#/g, ' '))
@@ -566,7 +577,7 @@ export function skeleton(manifest: Manifest, opts: { name: string; scriptName: s
     '# minutes: 15       # how long you have: check compares its estimate with it',
     '---',
     '',
-    scriptHelp(opts.name, opts.scriptName),
+    scriptHelp(opts.name, opts.scriptPath),
   ]
   for (const slide of manifest.slides) out.push('', ...skeletonSection(slide, opts.notes?.get(slide.n)))
   return `${out.join('\n')}\n`

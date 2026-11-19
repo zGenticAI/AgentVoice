@@ -9,7 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { ROOT } from '../src/config.ts'
 import { pageList, slidesArgs } from '../src/cli/slides-args.ts'
-import { runCheck, runDelete, runList, runPrepare, scriptFor, shown } from '../src/slides/actions.ts'
+import { ranges, runCheck, runDelete, runList, runPrepare, scriptFor, shown } from '../src/slides/actions.ts'
 import { DeckStore } from '../src/slides/deck.ts'
 import { makePdf } from './fixtures/slides/make-pdf.ts'
 import { makeZip } from './fixtures/slides/make-zip.ts'
@@ -78,7 +78,9 @@ test('from a PDF to a checked script: prepare, write, check; prepare again after
   ])
   assert.equal(fs.statSync(scriptFile).mode & 0o777, 0o600)
   const sheet = fs.readFileSync(path.join(decksDir, id, 'sheet.html'), 'utf8')
-  assert.match(sheet, /3 slides to present, about \d+ s; 3 errors/)
+  assert.match(sheet, /0 slides to present \(3 to write\); 3 errors/, 'TODO is not narration: nothing to time yet')
+  assert.match(sheet, /To write \(TODO\): not narrated yet\./)
+  assert.ok(!sheet.includes('Narrated'), sheet)
   assert.ok(!sheet.includes('Customer list'), 'the excluded page is nowhere')
 
   // check on the skeleton: TODO everywhere, so errors, and exit 1.
@@ -265,6 +267,58 @@ test("check reads only a <deck>.script.md file, and only the deck's own script i
   const unclear = runCheck({ file: ownScript, decksDir, retentionDays: 30, cwd: work })
   assert.ok(!unclear.lines.join('\n').includes('not on the slide'), unclear.lines.join('\n'))
   assert.deepEqual(fs.readFileSync(sheet), shown)
+})
+
+test("prepare and check give the deck's warnings one line per kind, with its pages; the estimate names its unit beside your minutes", async () => {
+  const work = fs.mkdtempSync(path.join(DIR, 'kinds-'))
+  const decksDir = path.join(work, 'data', 'decks')
+  const pdf = path.join(work, 'old.pdf')
+  // Six 4:3 pages, each with a 12 pt footer: before, twelve lines at prepare and again at check.
+  const page = (title: string) => ({ size: [720, 540] as [number, number], texts: [{ text: title, size: 40 }, { text: 'Example Corp - Internal', size: 12 }] })
+  fs.writeFileSync(pdf, makePdf(['One', 'Two', 'Three', 'Four', 'Five', 'Six'].map(page)))
+  const prepared = await runPrepare({ input: pdf, exclude: [], decksDir, name: 'Alex', cwd: work })
+  assert.equal(prepared.code, 0, prepared.lines.join('\n'))
+  assert.deepEqual(prepared.lines.filter(l => l.startsWith('  ') && !l.includes('npm run')), [
+    '  pages 1-6: the slide has text under 20 px, which may be hard to read in a small share window.',
+    '  pages 1-6: the slide is not 16:9, so it is shown with bars at its sides or above and below.',
+  ])
+  const scriptFile = path.join(work, 'old.script.md')
+  // Written, but for page 4, which is left with no section; minutes: 3, and well under a minute of narration.
+  const id = /^Prepared (old-[a-z2-7]{6}):/.exec(prepared.lines[0])?.[1] ?? ''
+  const sections = [1, 2, 3, 5, 6].map(n => `## ${n}\nhold: 3s\n\nThis is slide ${['one', 'two', 'three', '', 'five', 'six'][n - 1]}.\n`).join('\n')
+  fs.writeFileSync(scriptFile, `---\ndeck: ${id}\nminutes: 3\n---\n\n${sections}`)
+  const checked = runCheck({ file: scriptFile, decksDir, retentionDays: 30, cwd: work })
+  assert.equal(checked.code, 0, checked.lines.join('\n'))
+  assert.match(checked.lines[0], /^old\.script\.md \(deck old-[a-z2-7]{6}\): 5 slides to present, about \d+ s of your 3 min\.$/)
+  assert.deepEqual(checked.lines.slice(1, 5), [
+    '3 warnings:',
+    "  page 4: no section, so it won't be shown.",
+    '  pages 1-3, 5-6: the slide has text under 20 px, which may be hard to read in a small share window.',
+    '  pages 1-3, 5-6: the slide is not 16:9, so it is shown with bars at its sides or above and below.',
+  ])
+  assert.match(fs.readFileSync(path.join(decksDir, id, 'sheet.html'), 'utf8'), /5 slides to present, about \d+ s of your 3 min;/)
+  assert.equal(ranges([6, 1, 2, 3, 10]), 'pages 1-3, 6, 10')
+  assert.equal(ranges([4]), 'page 4')
+})
+
+test("the new script's own help names the check command as it works from where prepare ran, as its Next line does", async () => {
+  const work = fs.mkdtempSync(path.join(DIR, 'help-'))
+  const project = path.join(work, 'project')
+  const downloads = path.join(work, 'downloads')
+  fs.mkdirSync(project)
+  fs.mkdirSync(downloads)
+  const dataDir = path.join(work, 'data')
+  fs.writeFileSync(path.join(downloads, 'Big deck.pdf'), makePdf([{ texts: [{ text: 'Hello', size: 40 }] }]))
+  const prepared = await runPrepare({ input: path.join(downloads, 'Big deck.pdf'), exclude: [], decksDir: path.join(dataDir, 'decks'), name: 'Alex', cwd: project })
+  assert.equal(prepared.code, 0, prepared.lines.join('\n'))
+  const next = prepared.lines.at(-1) ?? ''
+  const help = /Then run, from where you ran prepare: (npm run slides -- check .*) -->/.exec(fs.readFileSync(path.join(downloads, 'Big deck.script.md'), 'utf8'))?.[1]
+  assert.equal(help, next.trim())
+  assert.equal(help, `npm run slides -- check '${path.join(downloads, 'Big deck.script.md')}'`)
+  // Run as it says, from the project folder: the script is found (its TODO is the only error).
+  const run = cli(['check', path.join(downloads, 'Big deck.script.md')], project, dataDir)
+  assert.ok(!run.stderr.includes('was not found'), run.stderr)
+  assert.match(run.stderr, /TODO: write the narration/)
 })
 
 test("list says which decks can't be used, and unfinished prepares; delete --all empties the folder, a killed prepare's copy of the PDF included", () => {

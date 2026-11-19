@@ -253,11 +253,15 @@ test('warnings: drafts, say-as hazards, figures not on the slide, timing, pages 
 
   const short = warningsOf(script('## 1 · Pricing\n\nHi.\n'), manifest)
   assert.ok(short.some(w => w.message === 'on screen for only a few seconds: add "hold: 3s" so people can read it'))
+  // A TODO section is not written yet: its error says so, and it is neither timed nor warned about as narration.
+  const todo = checkScript(parse(script('## 1 · Pricing\ncheck: yes\n\nTODO 99\n')), manifest)
+  assert.deepEqual(messages(todo.warnings), ['drafted, not yet checked by you: read it, then delete "check: yes"', 'say-as: "99": write figures, signs and abbreviations as they are spoken ("twelve dollars")', "no section, so it won't be shown", "no section, so it won't be shown"])
+  assert.deepEqual([todo.narrated, todo.todo, todo.totalMs, todo.estimates.size], [0, 1, 0, 0])
   const long = warningsOf(script(`## 1 · Pricing\n\n${'This sentence keeps the slide on screen for a while. '.repeat(40)}\n`), manifest)
   assert.ok(long.some(w => /about \d+ s on one slide: consider splitting it/.test(w.message)))
   assert.ok(!long.some(w => /over 70%/.test(w.message)), 'without minutes, no budget to go over')
   const timed = warningsOf(script(`## 1 · Pricing\n\n${'This sentence keeps the slide on screen for a while. '.repeat(40)}\n`, 'minutes: 2\n'), manifest)
-  assert.ok(timed.some(w => /the narration takes about \d+ min, over 70% of your 2: leave time for questions/.test(w.message)))
+  assert.ok(timed.some(w => /the narration takes about \d+ min, over 70% of your 2 min: leave time for questions/.test(w.message)))
 })
 
 test('the estimate: the speech at the playback rate, plus the lead, the hold, the pause and the quiet', () => {
@@ -271,12 +275,12 @@ test('the estimate: the speech at the playback rate, plus the lead, the hold, th
 
 test('the skeleton: one section per rendered page, check: yes and TODO, the slide text as a comment that cannot break out', () => {
   const manifest = deck(['Q4 roadmap\nWhat ships', '', 'Arrows --> and <!-- tricks', 'Left out'], { excluded: [4] })
-  const text = skeleton(manifest, { name: 'Nova', scriptName: 'q4.script.md', notes: new Map([[1, 'Say hello first.']]) })
+  const text = skeleton(manifest, { name: 'Nova', scriptPath: 'q4.script.md', notes: new Map([[1, 'Say hello first.']]) })
   assert.match(text, /^---\ndeck: q4-roadmap-k7m2qa {6}# written by prepare: don't change it\ntitle: Q4 roadmap\n# minutes: 15 /)
   assert.match(text, /Nova says only the paragraphs, word for word\./)
   assert.match(text, /npm run slides -- check q4\.script\.md -->/)
-  assert.match(skeleton(manifest, { name: 'Nova', scriptName: "Sam's deck.script.md" }), /check 'Sam'\\''s deck\.script\.md' -->/, 'quoted for the shell')
-  assert.match(skeleton(deck(['Plan #1']), { name: 'Nova', scriptName: 'x.script.md' }), /^title: Plan 1$/m, 'no "#" to start a comment')
+  assert.match(skeleton(manifest, { name: 'Nova', scriptPath: "Sam's deck.script.md" }), /check 'Sam'\\''s deck\.script\.md' -->/, 'quoted for the shell')
+  assert.match(skeleton(deck(['Plan #1']), { name: 'Nova', scriptPath: 'x.script.md' }), /^title: Plan 1$/m, 'no "#" to start a comment')
   assert.match(text, /## 1 · Q4 roadmap\ncheck: yes\n\nTODO\n<!-- On the slide: "Q4 roadmap \/ What ships" -->\n<!-- Your notes: "Say hello first\." -->/)
   assert.match(text, /## 2\ncheck: yes\n\nTODO\n<!-- On the slide: no text \(an image only\)\. -->/)
   assert.ok(!text.includes('Left out'), 'an excluded page leaves nothing')

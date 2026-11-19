@@ -67,12 +67,40 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 const pages = (list: readonly number[]) => `${list.length === 1 ? 'page' : 'pages'} ${list.join(', ')}`
 const minutes = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`)
 
+/** Pages as ranges: "page 4", "pages 1-3, 6". */
+export function ranges(list: readonly number[]): string {
+  const sorted = [...new Set(list)].sort((a, b) => a - b)
+  const parts: string[] = []
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++
+    parts.push(j > i ? `${sorted[i]}-${sorted[j]}` : `${sorted[i]}`)
+    i = j
+  }
+  return `${sorted.length === 1 ? 'page' : 'pages'} ${parts.join(', ')}`
+}
+
 /** One line about a checked script. */
 function summary(checked: Checked): string {
-  const parts = [`${plural(checked.narrated, 'slide')} to present`]
-  const aside = [checked.onRequest ? `${checked.onRequest} on request` : '', checked.excluded ? `${checked.excluded} excluded` : ''].filter(Boolean)
-  const of = checked.script?.minutes ? ` of your ${checked.script.minutes}` : ''
-  return `${parts[0]}${aside.length ? ` (${aside.join(', ')})` : ''}, about ${minutes(checked.totalMs)}${of}`
+  const aside = [
+    checked.todo ? `${checked.todo} to write` : '',
+    checked.onRequest ? `${checked.onRequest} on request` : '',
+    checked.excluded ? `${checked.excluded} excluded` : '',
+  ].filter(Boolean)
+  // The unit always, so seconds of narration never sit beside a bare number of minutes.
+  const of = checked.script?.minutes ? ` of your ${checked.script.minutes} min` : ''
+  const estimate = checked.totalMs || !checked.todo ? `, about ${minutes(checked.totalMs)}${of}` : ''
+  return `${plural(checked.narrated, 'slide')} to present${aside.length ? ` (${aside.join(', ')})` : ''}${estimate}`
+}
+
+/**
+ * The deck's own warnings (small text, bars and the like), one line per kind with its pages: a footer or a 4:3 deck
+ * would otherwise give a line per slide, and bury the warnings that matter.
+ */
+function deckWarningLines(byPage: readonly { page: number; message: string }[]): string[] {
+  const kinds = new Map<string, number[]>()
+  for (const w of byPage) kinds.set(w.message, [...(kinds.get(w.message) ?? []), w.page])
+  return [...kinds].map(([message, list]) => `${ranges(list)}: ${message}`)
 }
 
 /** What the sheet shows for each slide, from a checked script. */
@@ -87,9 +115,10 @@ export function sheetSlides(checked: Checked, manifest: Manifest): Map<number, S
     const seconds = checked.estimates.get(slide.n)
     let status = 'No section in the script: not shown.'
     if (section?.exclude) status = 'Excluded in the script: never shown.'
+    else if (section?.todo) status = 'To write (TODO): not narrated yet.'
     else if (section?.onRequest) status = `On request: shown only when someone asks for it${seconds ? `, about ${Math.round(seconds / 1000)} s` : ''}.`
     else if (section) status = `Narrated${seconds ? `, about ${Math.round(seconds / 1000)} s` : ''}${section.hold ? `, after ${section.hold} s to read it` : ''}${section.pause ? `, then ${section.pause} s of silence` : ''}.`
-    out.set(slide.n, { status, narration: section && !section.exclude ? section.paragraphs : [], problems })
+    out.set(slide.n, { status, narration: section && !section.exclude && !section.todo ? section.paragraphs : [], problems })
   }
   return out
 }
@@ -184,7 +213,7 @@ export async function runPrepare(given: PrepareInput): Promise<Outcome> {
   let oldId = ''
   try {
     if (existing === null) {
-      text = skeleton(manifest, { name: input.name, scriptName, notes: prepared.notes })
+      text = skeleton(manifest, { name: input.name, scriptPath: shown(scriptFile, input.cwd), notes: prepared.notes })
       writeScript(scriptFile, text, false)
       wrote = true
       lines.push(`Script: ${shown(scriptFile, input.cwd)} (new): ${plural(manifest.slides.length, 'section')} to write (TODO).`)
@@ -222,7 +251,12 @@ export async function runPrepare(given: PrepareInput): Promise<Outcome> {
     )
   }
 
-  for (const slide of manifest.slides) for (const code of slide.warnings) lines.push(`  page ${slide.n} ${WARNINGS[code]}.`)
+  // One line per kind, in WARNINGS' order: "page 3 is not 16:9...", or "pages 1-6: the slide is not 16:9...".
+  for (const code of Object.keys(WARNINGS) as (keyof typeof WARNINGS)[]) {
+    const with_ = manifest.slides.filter(s => s.warnings.includes(code)).map(s => s.n)
+    if (with_.length === 1) lines.push(`  page ${with_[0]} ${WARNINGS[code]}.`)
+    else if (with_.length) lines.push(`  ${ranges(with_)}: the slide ${WARNINGS[code]}.`)
+  }
   if (prepared.otherWarnings) lines.push(`  The PDF reader noted ${plural(prepared.otherWarnings, 'other problem')} while rendering (not shown: they can quote the file).`)
   // The sheet shows the script's view of the new deck: the one written, or for a new script that could not be, the
   // skeleton's. An old script that could not be updated is for another deck, so the sheet shows the slides only.
@@ -321,9 +355,14 @@ export function runCheck(input: CheckInput): Outcome {
     lines.push(`${plural(checked.errors.length, 'error')}: the script can't be used until ${checked.errors.length === 1 ? 'it is' : 'they are'} fixed.`)
     for (const e of checked.errors) lines.push(`  ${where(e)}${e.message}.`)
   }
-  if (checked.warnings.length) {
-    lines.push(`${plural(checked.warnings.length, 'warning')}:`)
-    for (const w of checked.warnings) lines.push(`  ${where(w)}${w.message}.`)
+  // The script's own warnings in the file's order, then the deck's, one line per kind.
+  const warned = [
+    ...checked.warnings.filter(w => !w.fromDeck).map(w => `${where(w)}${w.message}`),
+    ...deckWarningLines(checked.warnings.filter(w => w.fromDeck && w.page).map(w => ({ page: w.page as number, message: w.message }))),
+  ]
+  if (warned.length) {
+    lines.push(`${plural(warned.length, 'warning')}:`)
+    for (const w of warned) lines.push(`  ${w}.`)
   }
   if (!checked.errors.length) lines.push('No errors. The estimate comes from the script\'s length: the real timing is known only in a meeting.')
   if (manifest && !own) {
