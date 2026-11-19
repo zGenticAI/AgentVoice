@@ -27,7 +27,8 @@ switch (args.command) {
     outcome = { lines: [SLIDES_USAGE], code: 0 }
     break
   case 'prepare':
-    outcome = await runPrepare({ input: path.resolve(cwd, args.file), exclude: args.exclude, label: args.label, decksDir: decks, name: identity.name, cwd })
+    // As given: a link is refused as one, before it could be made into a path.
+    outcome = await runPrepare({ input: args.file, exclude: args.exclude, label: args.label, decksDir: decks, name: identity.name, cwd })
     break
   case 'check':
     outcome = runCheck({ file: path.resolve(cwd, args.file), decksDir: decks, retentionDays, cwd })

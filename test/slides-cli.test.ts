@@ -156,6 +156,65 @@ test('prepare never renders, nor rewrites, when the script beside the PDF has a 
   fs.rmSync(path.join(work, 'deck.script.md'))
   fs.mkdirSync(path.join(work, 'deck.script.md'))
   assert.match((await runPrepare({ input: pdf, exclude: [], decksDir, name: 'Alex', cwd: work })).lines[0], /deck\.script\.md is not a plain file\. .* move it aside/)
+  // An error with no script there is said by its code, never Node's message with the path, nor advice that doesn't fit.
+  const long = `${'d'.repeat(248)}.pdf`
+  fs.writeFileSync(path.join(work, long), makePdf([{}]))
+  const tooLong = await runPrepare({ input: path.join(work, long), exclude: [], decksDir, name: 'Alex', cwd: work })
+  assert.deepEqual(tooLong, { lines: [`${long}'s name is too long to put a script beside it: give the PDF a shorter name, then prepare again.`], code: 1 })
+  fs.writeFileSync(path.join(work, 'afile'), 'x')
+  assert.deepEqual(await runPrepare({ input: path.join(work, 'afile', 'deck.pdf'), exclude: [], decksDir, name: 'Alex', cwd: work }), { lines: ['deck.pdf was not found.'], code: 1 })
+  assert.ok(!fs.existsSync(decksDir), 'still nothing rendered')
+})
+
+test("prepare renders nothing when the PDF's folder can't be written to; a script that can't be written late still leaves the warnings and the sheet", async t => {
+  const work = fs.mkdtempSync(path.join(DIR, 'ro-'))
+  const decksDir = path.join(work, 'decks')
+  const pdf = path.join(work, 'talk.pdf')
+  fs.writeFileSync(pdf, makePdf([{ texts: [{ text: 'Hello', size: 40 }] }, { size: [720, 540], texts: [{ text: 'Old', size: 40 }] }]))
+  const erofs = () => Object.assign(new Error('EROFS: read-only file system'), { code: 'EROFS' })
+
+  // Found out first: a read-only folder (as root, a chmod would not do).
+  const access = t.mock.method(fs, 'accessSync', () => {
+    throw erofs()
+  })
+  const early = await runPrepare({ input: pdf, exclude: [], decksDir, name: 'Alex', cwd: work })
+  assert.deepEqual(early, { lines: ["Prepare writes the script beside the PDF, and that folder can't be written to (EROFS). Copy the PDF to a folder you can write to, then prepare it there."], code: 1 })
+  assert.ok(!fs.existsSync(decksDir), 'nothing rendered')
+  access.mock.restore()
+
+  // Late (a full disk, a race): the warnings, the sheet, and advice for a script that isn't there.
+  const write = fs.writeFileSync
+  const writes = t.mock.method(fs, 'writeFileSync', (file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+    if (String(file).includes('.script.md')) throw erofs()
+    return (write as (...a: unknown[]) => void)(file, ...rest)
+  })
+  const late = await runPrepare({ input: pdf, exclude: [], decksDir, name: 'Alex', cwd: work })
+  assert.equal(late.code, 1)
+  const id = /^Prepared (talk-[a-z2-7]{6}):/.exec(late.lines[0])?.[1] ?? ''
+  assert.deepEqual(late.lines.slice(1), [
+    'Could not write talk.script.md (EROFS), so there is no script yet: copy the PDF to a folder you can write to, and prepare it there.',
+    '  page 2 is not 16:9, so it is shown with bars at its sides or above and below.',
+    `Contact sheet: decks/${id}/sheet.html`,
+  ])
+  assert.match(fs.readFileSync(path.join(decksDir, id, 'sheet.html'), 'utf8'), /2 slides to present|to write/)
+  assert.ok(!fs.existsSync(path.join(work, 'talk.script.md')))
+  writes.mock.restore()
+
+  // An existing script that can't be updated is left as it was, still for its deck, and the advice says so.
+  const first = await runPrepare({ input: pdf, exclude: [], decksDir, name: 'Alex', cwd: work })
+  assert.equal(first.code, 0, first.lines.join('\n'))
+  const firstId = /^Prepared (talk-[a-z2-7]{6}):/.exec(first.lines[0])?.[1] ?? ''
+  const script = fs.readFileSync(path.join(work, 'talk.script.md'), 'utf8')
+  const rename = fs.renameSync
+  t.mock.method(fs, 'renameSync', (from: fs.PathLike, to: fs.PathLike) => {
+    if (String(to).includes('.script.md')) throw erofs()
+    rename(from, to)
+  })
+  const update = await runPrepare({ input: pdf, exclude: [], decksDir, name: 'Alex', cwd: work })
+  assert.equal(update.code, 1)
+  assert.equal(update.lines[1], `Could not write talk.script.md (EROFS): it is unchanged, and still uses deck ${firstId}. Prepare again from a folder you can write to, so the changed and new pages are marked.`)
+  assert.equal(fs.readFileSync(path.join(work, 'talk.script.md'), 'utf8'), script)
+  assert.ok(new DeckStore(decksDir).ids().includes(firstId), 'the deck it uses is kept')
 })
 
 test("check reads only a <deck>.script.md file, and only the deck's own script is compared with its slides or changes the deck", async () => {
@@ -255,6 +314,13 @@ test('the command: help, a refusal on stderr with exit 1, and check with no key 
   assert.equal(pptx.status, 1)
   assert.equal(pptx.stderr.trim(), 'deck.pdf is a PowerPoint file. Export it as PDF: File > Export > PDF (or Save As > PDF), with hidden slides included.')
   assert.equal(pptx.stdout, '')
+  // A link is refused as a link: never made into a path first, which would only be "not found".
+  const google = cli(['prepare', 'https://docs.google.com/presentation/d/abc/edit'], work, dataDir)
+  assert.equal(google.status, 1)
+  assert.equal(google.stderr.trim(), 'https://docs.google.com/presentation/d/abc/edit is a Google Slides link. Google Slides: File > Download > PDF document.')
+  const link = cli(['prepare', 'https://example.com/deck.pdf'], work, dataDir)
+  assert.equal(link.status, 1)
+  assert.equal(link.stderr.trim(), 'https://example.com/deck.pdf is a link, not a file. Download the deck as a PDF, and give that file.')
   const bad = cli(['check'], work, dataDir)
   assert.equal(bad.status, 1)
   assert.match(bad.stderr, /^Give one script \(<deck>\.script\.md\)\.\nUsage:/)

@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { PrepareError, prepareDeck } from './convert.ts'
 import { DeckError, DeckStore, TEMP_PREFIX, UNFINISHED_MAX_AGE_MS, scriptKey, scriptMark, sweepUnfinished } from './deck.ts'
+import { type Kind, linkKind, refusal } from './detect.ts'
 import { DECK_ID, type Manifest, WARNINGS } from './manifest.ts'
 import {
   type Checked, MAX_SCRIPT_FILE_BYTES, type Problem, checkScript, mergeScript, parseScript, shellArg, skeleton, structureProblems, unclear,
@@ -111,7 +112,7 @@ function refreshSheet(store: DeckStore, manifest: Manifest, checked: Checked | n
 }
 
 export interface PrepareInput {
-  /** The PDF, absolute. */
+  /** The PDF as given (found from cwd), or a link, which is refused. */
   input: string
   exclude: readonly number[]
   label?: string
@@ -125,17 +126,25 @@ export interface PrepareInput {
 }
 
 /** npm run slides -- prepare: the deck, then the script beside the PDF (new, or updated), then the contact sheet. */
-export async function runPrepare(input: PrepareInput): Promise<Outcome> {
+export async function runPrepare(given: PrepareInput): Promise<Outcome> {
+  // A link is refused before it is made into a path: resolved, it would only be "not found".
+  const link = linkKind(given.input)
+  if (link) return { lines: [refusal(link as Exclude<Kind, 'pdf'>, given.input.length > 80 ? `${given.input.slice(0, 77)}...` : given.input)], code: 1 }
+  const input = { ...given, input: path.resolve(given.cwd, given.input) }
   const lines: string[] = []
   const store = new DeckStore(input.decksDir)
   const scriptFile = scriptFor(input.input)
   const scriptName = path.basename(scriptFile)
+  const pdfName = path.basename(input.input)
   // An existing script is checked first: one whose structure can't be followed is never rewritten, and nothing is rendered.
   let existing: string | null = null
   try {
     if (fs.lstatSync(scriptFile, { throwIfNoEntry: false })) existing = readScript(scriptFile)
   } catch (err) {
-    return { lines: [`${(err as Error).message} It is beside the PDF, where prepare writes the script: move it aside, then prepare again.`], code: 1 }
+    // Only a file that is there, but can't be used, is worth moving aside. Anything else is said by its code: Node's own
+    // message names the whole path, and the advice wouldn't fit.
+    if (err instanceof PrepareError) return { lines: [`${err.message} It is beside the PDF, where prepare writes the script: move it aside, then prepare again.`], code: 1 }
+    return { lines: [scriptUnreadable(err, pdfName, scriptName)], code: 1 }
   }
   if (existing !== null) {
     const problems = structureProblems(existing)
@@ -144,6 +153,16 @@ export async function runPrepare(input: PrepareInput): Promise<Outcome> {
         lines: [`${scriptName} can't be updated until these are fixed (or move it aside, and prepare writes a new one):`, ...problems.map(p => `  ${where(p)}${p.message}`)],
         code: 1,
       }
+    }
+  }
+
+  // Prepare writes the script beside the PDF: a folder it can't write to (a read-only share, say) is found out before
+  // anything is rendered, not after.
+  const unwritable = folderUnwritable(path.dirname(scriptFile))
+  if (unwritable) {
+    return {
+      lines: [`Prepare writes the script beside the PDF, and that folder can't be written to (${unwritable}). Copy the PDF${existing === null ? '' : ` (and ${scriptName})`} to a folder you can write to, then prepare it there.`],
+      code: 1,
     }
   }
 
@@ -160,14 +179,17 @@ export async function runPrepare(input: PrepareInput): Promise<Outcome> {
   const excluded = manifest.excluded ? ` (${manifest.excluded} excluded)` : ''
   lines.push(`Prepared ${manifest.id}: ${plural(manifest.slides.length, 'page')} rendered${excluded} from ${path.basename(input.input)}.`)
 
-  let text: string
+  let text = existing ?? ''
+  let wrote = false
+  let oldId = ''
   try {
     if (existing === null) {
       text = skeleton(manifest, { name: input.name, scriptName, notes: prepared.notes })
       writeScript(scriptFile, text, false)
+      wrote = true
       lines.push(`Script: ${shown(scriptFile, input.cwd)} (new): ${plural(manifest.slides.length, 'section')} to write (TODO).`)
     } else {
-      const oldId = parseScript(existing).script?.deck ?? ''
+      oldId = parseScript(existing).script?.deck ?? ''
       let old: Manifest | null = null
       try {
         if (DECK_ID.test(oldId)) old = store.load(oldId).manifest
@@ -175,8 +197,9 @@ export async function runPrepare(input: PrepareInput): Promise<Outcome> {
         old = null
       }
       const merged = mergeScript(existing, old, manifest, prepared.notes)
+      writeScript(scriptFile, merged.text, true)
       text = merged.text
-      writeScript(scriptFile, text, true)
+      wrote = true
       const what = [
         merged.changed.length ? `${pages(merged.changed)} changed (check: changed)` : '',
         merged.added.length ? `${pages(merged.added)} new (TODO)` : '',
@@ -190,18 +213,60 @@ export async function runPrepare(input: PrepareInput): Promise<Outcome> {
       }
     }
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code ?? 'error'
-    return { lines: [...lines, `Could not write ${scriptName} (${code}). The deck is prepared: put "deck: ${manifest.id}" in your script by hand.`], code: 1 }
+    // Late, and rare (a full disk, a race): what was found is still said, and the sheet still written.
+    const code = codeOf(err)
+    lines.push(
+      existing === null
+        ? `Could not write ${scriptName} (${code}), so there is no script yet: copy the PDF to a folder you can write to, and prepare it there.`
+        : `Could not write ${scriptName} (${code}): it is unchanged, and still uses deck ${oldId || '(none)'}. Prepare again from a folder you can write to, so the changed and new pages are marked.`,
+    )
   }
 
   for (const slide of manifest.slides) for (const code of slide.warnings) lines.push(`  page ${slide.n} ${WARNINGS[code]}.`)
   if (prepared.otherWarnings) lines.push(`  The PDF reader noted ${plural(prepared.otherWarnings, 'other problem')} while rendering (not shown: they can quote the file).`)
-  const checked = checkScript(parseScript(text), manifest)
+  // The sheet shows the script's view of the new deck: the one written, or for a new script that could not be, the
+  // skeleton's. An old script that could not be updated is for another deck, so the sheet shows the slides only.
+  const checked = wrote || existing === null ? checkScript(parseScript(text), manifest) : null
   refreshSheet(store, manifest, checked, scriptName)
   lines.push(`Contact sheet: ${shown(path.join(store.folder(manifest.id), 'sheet.html'), input.cwd)}`)
+  if (!wrote) return { lines, code: 1 }
   lines.push('Next: write the sections (or ask your Claude Code session to draft them), then')
   lines.push(`  npm run slides -- check ${shellArg(shown(scriptFile, input.cwd))}`)
   return { lines, code: 0 }
+}
+
+/** An error's code, never its message (Node's names the whole path). */
+function codeOf(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException)?.code
+  return typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'error'
+}
+
+/** Why a folder can't be written to, as the error's code, or '' when it can (or isn't there: prepare says so later). */
+function folderUnwritable(dir: string): string {
+  try {
+    fs.accessSync(dir, fs.constants.W_OK)
+    return ''
+  } catch (err) {
+    const code = codeOf(err)
+    return code === 'ENOENT' || code === 'ENOTDIR' ? '' : code
+  }
+}
+
+/** Why the script beside the PDF couldn't be looked at, in words for the owner: by the error's code, never its path. */
+function scriptUnreadable(err: unknown, pdfName: string, scriptName: string): string {
+  const code = codeOf(err)
+  switch (code) {
+    case 'ENAMETOOLONG':
+      return `${pdfName}'s name is too long to put a script beside it: give the PDF a shorter name, then prepare again.`
+    case 'ENOENT':
+    case 'ENOTDIR':
+      return `${pdfName} was not found.`
+    case 'EACCES':
+    case 'EPERM':
+      return `${scriptName} can't be read: make it, and its folder, readable by you, then prepare again.`
+    default:
+      return `${scriptName} can't be read (${code === 'error' ? 'an unexpected error' : code}).`
+  }
 }
 
 export interface CheckInput {
