@@ -346,6 +346,8 @@ export class MeetingSession {
   // answers: a line the page stops short marks its verdict cut_off, even once its turn is over (see the Playback).
   private readonly turnVerdicts = new WeakMap<AbortSignal, Verdict>()
   private readonly lineVerdicts = new WeakMap<Line, Verdict>()
+  // How many of Alex's lines the page has stopped short: the test line waits for the page, and is cut off if one is.
+  private linesCut = 0
 
   constructor(
     ws: WebSocket,
@@ -360,6 +362,7 @@ export class MeetingSession {
     // that says more.
     this.playback = new Playback((line, text) => {
       this.transcript.amend(line, text)
+      this.linesCut++
       const heard = this.lineVerdicts.get(line)
       // While the line's own turn still runs, how that turn ends says what came of it: stopped, it is cut off; failed,
       // it failed; and a checking line ElevenLabs failed partway leaves the question waiting for the owner's session.
@@ -680,10 +683,12 @@ export class MeetingSession {
       }
     })
     if (outcome !== 'played') return outcome
-    // All of it went out: the page plays the rest from what it holds. A clear meanwhile (talked over) cuts it.
+    // All of it went out: the page plays the rest from what it holds. A line the page stops short meanwhile (talked
+    // over, "never mind", a page that dropped) cuts it, though its turn is over: the Playback says so for each.
+    const cut = this.linesCut
     const playing = this.playback.playsUntil - this.clock()
     if (playing > 0) await new Promise(resolve => setTimeout(resolve, playing).unref())
-    return this.ended || this.leaving ? 'cut_off' : 'played'
+    return this.ended || this.leaving || this.linesCut !== cut ? 'cut_off' : 'played'
   }
 
   /**

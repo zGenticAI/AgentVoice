@@ -139,6 +139,24 @@ test('"never mind" stops the test line as it stops an answer; a voice that fails
   away.session.transcript.delete()
 })
 
+test('the test line stopped after its turn is over, while the page still plays it ("never mind"), is cut off, not played to the end', async () => {
+  // All of it goes out at once: about a second of voice in one piece, so the turn ends before the page has played it.
+  const s = setup({
+    speak: async function* (text: string) {
+      yield Buffer.alloc(text === JOIN_LINE ? 3200 : 32_000)
+    },
+  })
+  await until(() => s.session.consentDone)
+  const saying = s.session.sayTestLine(testLine('Alex', true))
+  await settle(200)
+  const clearsBefore = s.ws.controls().filter(c => c.type === 'clear').length
+  s.flux.endTurn('Alex, never mind.')
+  assert.equal(await saying, 'cut_off')
+  assert.ok(s.ws.controls().filter(c => c.type === 'clear').length > clearsBefore, 'the page was cleared')
+  s.session.transcript.delete()
+  s.session.end()
+})
+
 test('leaving at the end of the test is "please leave": the goodbye, the transcript deleted, no minutes, the bot out', async () => {
   const s = setup()
   await until(() => s.session.consentDone)
