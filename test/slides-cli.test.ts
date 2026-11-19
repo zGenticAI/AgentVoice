@@ -213,11 +213,55 @@ test('prepare again: an insert with a delete, and a new page on the number of a 
   ])
 
   // A slide inserted at the front and the second deleted: the Intro section can't be renumbered past Customer story's,
-  // so it is told to move, and the new page 1 is said, and quoted in it.
+  // so it is told to move, and the new page 1 is said, and quoted in it. Customer story is gone: excluded, never
+  // compared with Intro.
   fs.writeFileSync(pdf, slides(['Welcome', 'Intro', 'Problem', 'Solution']))
   const stuck = await prepare()
-  assert.equal(stuck[1], 'Script: talk.script.md (updated for the new deck): page 1 is now page 2 (check: changed: move each section to its page); page 2 changed (check: changed); page 1 new, with no section yet (the section on it must move first). Your written paragraphs are unchanged.')
-  assert.match(fs.readFileSync(scriptFile, 'utf8'), /## 1 · Intro\ncheck: changed\n<!-- This slide is now page 2: .*\n\nWe talk about it here\.\n<!-- On the slide: "Intro \/ About intro" -->\n\n<!-- On the slide now: "Welcome \/ About welcome" -->\n\n## 2 · Customer story/)
+  assert.equal(stuck[1], 'Script: talk.script.md (updated for the new deck): page 1 is now page 2 (check: changed: move each section to its page); page 1 new, with no section yet (the section on it must move first); page 2 no longer in the deck (exclude: yes). Your written paragraphs are unchanged.')
+  assert.match(fs.readFileSync(scriptFile, 'utf8'), /## 1 · Intro\ncheck: changed\n<!-- This slide is now page 2: .*\n\nWe talk about it here\.\n<!-- On the slide: "Intro \/ About intro" -->\n\n<!-- On page 1 now, with no section yet: "Welcome \/ About welcome" -->\n\n## 2 · Customer story\nexclude: yes\n/)
+})
+
+test('repro, prepare again: an excluded slide that moved while the headings stay, and a new slide on a deleted one\'s retired number, are each said', async () => {
+  const work = fs.mkdtempSync(path.join(DIR, 'repro-'))
+  const decksDir = path.join(work, 'data', 'decks')
+  const pdf = path.join(work, 'talk.pdf')
+  const scriptFile = path.join(work, 'talk.script.md')
+  const slides = (titles: string[]) => makePdf(titles.map(t => ({ texts: [{ text: t, size: 40 }, { text: `About ${t.toLowerCase()}`, size: 24 }] })))
+  const prepare = async () => {
+    const out = await runPrepare({ input: pdf, exclude: [], decksDir, name: 'Alex', cwd: work })
+    assert.equal(out.code, 0, out.lines.join('\n'))
+    return out.lines
+  }
+  const write = () => fs.writeFileSync(scriptFile, fs.readFileSync(scriptFile, 'utf8').replace(/check: yes\n\nTODO/g, '\nWe talk about it here.'))
+
+  // Alpha, Bravo, Charlie, with exclude: yes on Bravo, re-exported as Alpha, New, Charlie, Bravo. Before: "no slide
+  // changed", New had no section, check passed, and the advice was --exclude 2, which would drop New.
+  fs.writeFileSync(pdf, slides(['Alpha', 'Bravo', 'Charlie']))
+  await prepare()
+  write()
+  fs.writeFileSync(scriptFile, fs.readFileSync(scriptFile, 'utf8').replace('## 2 · Bravo\n', '## 2 · Bravo\nexclude: yes\n'))
+  fs.writeFileSync(pdf, slides(['Alpha', 'New', 'Charlie', 'Bravo']))
+  const moved = await prepare()
+  assert.equal(moved[1], 'Script: talk.script.md (updated for the new deck): page 2 is now page 4 (check: changed: move each section to its page); page 2 new, with no section yet (the section on it must move first). Your written paragraphs are unchanged.')
+  assert.ok(moved.includes('  page 4 is rendered, though its section says exclude: yes. If its text must not be kept at all, prepare with --exclude 4.'), moved.join('\n'))
+  const refused = runCheck({ file: scriptFile, decksDir, retentionDays: 30, cwd: work })
+  assert.equal(refused.code, 1)
+  assert.ok(refused.lines.some(l => /page 2, line \d+: the slide on this page changed after the section was excluded/.test(l)), refused.lines.join('\n'))
+
+  // Alpha to Echo, then Alpha, New, Bravo, Charlie, Delta: Echo's section is retired to 6. Then Foxtrot comes as page 6.
+  // Before: "page 6 back in the deck", Echo's narration over Foxtrot, and no TODO for Foxtrot.
+  fs.rmSync(scriptFile)
+  fs.writeFileSync(pdf, slides(['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo']))
+  await prepare()
+  write()
+  fs.writeFileSync(pdf, slides(['Alpha', 'New', 'Bravo', 'Charlie', 'Delta']))
+  assert.equal((await prepare())[2], '  page 5: its section has no slide in the new deck, so its heading is now 6, to keep the sections in page order.')
+  write()
+  fs.writeFileSync(pdf, slides(['Alpha', 'New', 'Bravo', 'Charlie', 'Delta', 'Foxtrot']))
+  const grown = await prepare()
+  assert.equal(grown[1], 'Script: talk.script.md (updated for the new deck): page 6 new (TODO). Your written paragraphs are unchanged.')
+  assert.equal(grown[2], '  page 6: its section has no slide in the new deck, so its heading is now 7, to keep the sections in page order.')
+  assert.deepEqual(parseScript(fs.readFileSync(scriptFile, 'utf8')).script?.sections.slice(5).map(s => [s.page, s.heading, s.exclude, s.todo]), [[6, 'Foxtrot', false, true], [7, 'Echo', true, false]])
 })
 
 test('prepare again from a deck the earlier build made, with no script mark, compares its slides; one that cannot be used is deleted, never called gone', async () => {

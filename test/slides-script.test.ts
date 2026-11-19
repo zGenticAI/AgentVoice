@@ -445,10 +445,12 @@ test('the merge, for a slide deleted or two swapped: no false "gone", and headin
   const before = real(['Intro', 'Agenda', 'Problem', 'Solution', 'Pricing'])
   const text = script(sectionsOf([[1, 'Intro', 'Hello.'], [2, 'Agenda', 'The plan.'], [3, 'Problem', 'The problem.'], [4, 'Solution', 'The fix.'], [5, 'Pricing', 'The price.']]))
   const deleted = mergeScript(text, before, real(['Intro', 'Problem', 'Solution', 'Pricing'], { id: 'q4-roadmap-newid2' }))
-  assert.deepEqual(deleted.gone, [], 'Pricing is still in the deck, as page 4')
+  assert.deepEqual(deleted.gone, [2], 'only Agenda is gone: Pricing is still in the deck, as page 4')
   assert.equal(deleted.renumbered, false)
   assert.deepEqual(deleted.moved, [{ from: 3, to: 2 }, { from: 4, to: 3 }, { from: 5, to: 4 }])
-  assert.deepEqual(deleted.changed, [2], 'the Agenda section is over another slide now')
+  assert.deepEqual(deleted.changed, [], 'the Agenda section is compared with no other slide')
+  // Its section is excluded, as the docs say, and keeps its number, which is Problem's page now: it says so.
+  assert.match(deleted.text, /## 2 · Agenda\nexclude: yes\n<!-- The slide on page 2 is not in the deck any more, so this section is excluded\. -->\n<!-- Page 2 is another slide now: delete this section, or move it to the end and number it after the last slide\. -->\n\nThe plan\./)
   assert.match(deleted.text, /## 5 · Pricing\ncheck: changed\n<!-- This slide is now page 4: move this section there and renumber its heading, then delete "check: changed"\. -->/)
   assert.deepEqual(structureProblems(deleted.text), [], 'no heading was renumbered into another')
   const swapped = mergeScript(text, before, real(['Intro', 'Problem', 'Agenda', 'Solution', 'Pricing'], { id: 'q4-roadmap-newid2' }))
@@ -456,9 +458,13 @@ test('the merge, for a slide deleted or two swapped: no false "gone", and headin
   assert.equal(swapped.renumbered, false)
   assert.match(swapped.text, /## 2 · Agenda\ncheck: changed\n<!-- This slide is now page 3: move this section there/)
   assert.deepEqual(checkScript(parse(swapped.text), null).errors.filter(e => /changed after/.test(e.message)).map(e => e.page), [2, 3])
-  // Repeated text is never matched: the two "Thanks" slides are compared where they are.
+  // Repeated slides, the same text and picture, are matched in order: the two "Thanks" slides follow theirs past the
+  // new page, and only it gets a TODO.
   const repeated = mergeScript(script(sectionsOf([[1, 'Thanks', 'Thank you.'], [2, 'Thanks', 'Thanks again.']])), real(['Thanks', 'Thanks']), real(['New', 'Thanks', 'Thanks'], { id: 'q4-roadmap-newid2' }))
-  assert.deepEqual([repeated.moved, repeated.changed, repeated.added], [[], [1], [3]])
+  assert.deepEqual([repeated.moved, repeated.changed, repeated.added], [[{ from: 1, to: 2 }, { from: 2, to: 3 }], [], [1]])
+  // The same text with another picture is another slide: compared where it is.
+  const redrawn = mergeScript(script(sectionsOf([[1, 'Thanks', 'Thank you.'], [2, 'Thanks', 'Thanks again.']])), real(['Thanks', 'Thanks']), deck(['Thanks', 'Thanks'], { id: 'q4-roadmap-newid2', images: ['picture of Thanks', 'new picture'] }))
+  assert.deepEqual([redrawn.moved, redrawn.changed, redrawn.added], [[], [2], []])
 })
 
 test("the merge compares each slide's picture too, and finds a slide with no text by it: swapped, changed under the same title, or shifted by an insert", () => {
@@ -515,10 +521,11 @@ test('the merge, for an insert and a delete together: the headings follow their 
   const checked = checkScript(parse(merged.text), after)
   assert.deepEqual(messages(checked.errors), ['TODO: write the narration, or add "exclude: yes"'])
   assert.ok(!messages(checked.warnings).some(m => /no section/.test(m)), 'every page has its section')
-  // That exclude is the merge's own: when a page 5 comes, it is read again before it is shown.
+  // Its slide was deleted, so it never comes back: a new page 5 gets a section of its own, and the excluded one moves
+  // past it.
   const grown = mergeScript(merged.text, after, real(['Intro', 'Customer story', 'Problem', 'Fix', 'Appendix'], { id: 'q4-roadmap-newid3' }))
-  assert.deepEqual([grown.back, grown.added], [[5], []])
-  assert.match(grown.text, /<!-- On the slide now: "Appendix" -->/)
+  assert.deepEqual([grown.back, grown.added, grown.retired], [[], [5], [{ from: 5, to: 6 }]])
+  assert.match(grown.text, /\n## 5 · Appendix\ncheck: yes\n\nTODO\n<!-- On the slide: "Appendix" -->\n\n## 6 · Pricing\nexclude: yes\n<!-- Was page 4: that slide is not in the deck any more, so this section is excluded\. -->\n/)
 })
 
 test('the merge, when the headings must stay (an insert, and a delete between two slides): a new page on a section\'s number is said, and quoted in that section', () => {
@@ -528,16 +535,17 @@ test('the merge, when the headings must stay (an insert, and a delete between tw
   const merged = mergeScript(text, before, after)
   assert.equal(merged.renumbered, false, 'the Agenda section has no number left between Intro and Problem')
   assert.deepEqual(merged.moved, [{ from: 1, to: 2 }])
-  assert.deepEqual([merged.changed, merged.added, merged.unsectioned, merged.gone], [[2], [], [1], []])
+  assert.deepEqual([merged.changed, merged.added, merged.unsectioned, merged.gone], [[], [], [1], [2]])
   // The Intro section is told to move, and what its page shows now: the new slide, which has no section yet.
-  assert.match(merged.text, /## 1 · Intro\ncheck: changed\n<!-- This slide is now page 2: move this section there and renumber its heading, then delete "check: changed"\. -->\n\nHello\.\n\n<!-- On the slide now: "Customer story" -->\n\n## 2 · Agenda/)
-  assert.match(merged.text, /The plan\.\n\n<!-- On the slide now: "Intro" -->\n\n## 3 · Problem/)
+  assert.match(merged.text, /## 1 · Intro\ncheck: changed\n<!-- This slide is now page 2: move this section there and renumber its heading, then delete "check: changed"\. -->\n\nHello\.\n\n<!-- On page 1 now, with no section yet: "Customer story" -->\n\n## 2 · Agenda/)
+  // The Agenda slide is gone: its section is excluded, never compared with Intro, and says it is in Intro's way.
+  assert.match(merged.text, /## 2 · Agenda\nexclude: yes\n<!-- The slide on page 2 is not in the deck any more, so this section is excluded\. -->\n<!-- Page 2 is another slide now: .* -->\n\nThe plan\.\n\n## 3 · Problem/)
   assert.deepEqual(structureProblems(merged.text), [])
-  assert.deepEqual(checkScript(parse(merged.text), after).errors.map(e => e.page), [1, 2], 'both must be read before check passes')
+  assert.deepEqual(checkScript(parse(merged.text), after).errors.map(e => e.page), [1], 'the Intro section must move before check passes')
   // A reorder with an insert: the new page has a section's number too.
   const reordered = mergeScript(script(sectionsOf([[1, 'Intro', 'Hello.'], [2, 'Problem', 'The problem.'], [3, 'Fix', 'The fix.']])), real(['Intro', 'Problem', 'Fix']), real(['Problem', 'Customer story', 'Intro', 'Fix'], { id: 'q4-roadmap-newid2' }))
   assert.deepEqual([reordered.renumbered, reordered.unsectioned, reordered.added], [false, [2], []])
-  assert.match(reordered.text, /## 2 · Problem\ncheck: changed\n<!-- This slide is now page 1: move this section there.*\n\nThe problem\.\n\n<!-- On the slide now: "Customer story" -->/)
+  assert.match(reordered.text, /## 2 · Problem\ncheck: changed\n<!-- This slide is now page 1: move this section there.*\n\nThe problem\.\n\n<!-- On page 2 now, with no section yet: "Customer story" -->/)
 })
 
 test('the merge, for a page that went and came back: its own exclude is undone with check: changed; the owner\'s is kept', () => {
@@ -550,11 +558,12 @@ test('the merge, for a page that went and came back: its own exclude is undone w
   assert.ok(!/exclude: yes|was left out/.test(back.text), back.text)
   assert.deepEqual(messages(checkScript(parse(back.text), real(['Intro', 'Problem', 'Fix'])).errors), ['the slide changed after this was written: read it against the slide, then delete "check: changed"'])
   assert.deepEqual(parse(back.text).script?.sections.map(s => s.paragraphs), parse(text).script?.sections.map(s => s.paragraphs))
-  // The deck shrank, then a new, different slide 3 came: never shown under the old narration unread, and no skeleton.
+  // The deck shrank, then a new, different slide 3 came: the deleted slide's section never comes back over it. The new
+  // slide gets a section of its own, and the old one moves past it, still excluded.
   const shrunk = mergeScript(text, full, real(['Intro', 'Problem'], { id: 'q4-roadmap-newid2' }))
   const grown = mergeScript(shrunk.text, real(['Intro', 'Problem'], { id: 'q4-roadmap-newid2' }), real(['Intro', 'Problem', 'Appendix'], { id: 'q4-roadmap-newid3' }))
-  assert.deepEqual([grown.back, grown.added], [[3], []])
-  assert.match(grown.text, /<!-- On the slide now: "Appendix" -->/)
+  assert.deepEqual([grown.back, grown.added, grown.retired], [[], [3], [{ from: 3, to: 4 }]])
+  assert.match(grown.text, /\n## 3 · Appendix\ncheck: yes\n\nTODO\n<!-- On the slide: "Appendix" -->\n\n## 4 · Fix\nexclude: yes\n<!-- Was page 3: that slide is not in the deck any more, so this section is excluded\. -->\n/)
   // An exclude the owner wrote is never touched.
   const owner = script(sectionsOf([[1, 'Intro', 'Hello.']]) + '\n## 2 · Problem\nexclude: yes\n\nHere is the problem.\n')
   const kept = mergeScript(owner, full, real(['Intro', 'Problem', 'Fix'], { id: 'q4-roadmap-newid2' }))
@@ -575,8 +584,14 @@ test('the merge, for a page that went whose section had "on-request: yes" or "ex
   assert.deepEqual(checked.errors, [])
   assert.deepEqual(messages(checked.warnings).filter(m => !m.startsWith('on screen')), ['not in the deck: it has 3 pages; its section is excluded, so it is ignored', 'not in the deck: it has 3 pages; its section is excluded, so it is ignored'])
   assert.deepEqual(parse(merged.text).script?.sections.slice(0, 3).map(s => s.paragraphs), parse(text).script?.sections.slice(0, 3).map(s => s.paragraphs))
-  // When page 5 comes back, it is on request again.
-  const back = mergeScript(merged.text, three, real(['Intro', 'Main', 'More', 'Spare', 'Backup details'], { id: 'q4-roadmap-newid3' }))
+  // Slides deleted never come back: added again, they get new sections, and the excluded ones move past them.
+  const again = mergeScript(merged.text, three, real(['Intro', 'Main', 'More', 'Spare', 'Backup details'], { id: 'q4-roadmap-newid3' }))
+  assert.deepEqual([again.back, again.added, again.retired], [[], [4, 5], [{ from: 4, to: 6 }, { from: 5, to: 7 }]])
+  // A page left out with --exclude is the one that comes back: on request again.
+  const left = mergeScript(text, five, real(['Intro', 'Main', 'More', 'Spare', 'Backup details'], { id: 'q4-roadmap-newid2', excluded: [5] }))
+  assert.match(left.text, /## 5\n<!-- on-request: yes \(put it back if the page returns\) -->\nexclude: yes\n<!-- Page 5 was left out when the deck was prepared, so this section is excluded\. -->\n/)
+  const back = mergeScript(left.text, real(['Intro', 'Main', 'More', 'Spare', 'Backup details'], { excluded: [5] }), real(['Intro', 'Main', 'More', 'Spare', 'Backup details'], { id: 'q4-roadmap-newid3' }))
+  assert.deepEqual(back.back, [5])
   assert.equal(parse(back.text).script?.sections[4].onRequest, true)
 })
 
@@ -606,6 +621,106 @@ test("the merge, for a page left out with --exclude: prepare's own comments quot
   const again = mergeScript(owner, before, real(['Intro', 'Project Zebracorn', 'Fix'], { id: 'q4-roadmap-newid2', excluded: [2] }))
   assert.deepEqual(again.scrubbed, [2])
   assert.ok(!again.text.includes('Zebracorn'), again.text)
+})
+
+/** Alpha, Bravo, Charlie and so on, each narrated, with "exclude: yes" on the pages in `excluded`. */
+const narrated = (titles: string[], excluded: number[] = []) =>
+  script(titles.map((t, i) => `## ${i + 1} · ${t}\n${excluded.includes(i + 1) ? 'exclude: yes\n' : ''}\nAbout ${t.toLowerCase()}.\n`).join('\n'))
+
+test('repro: an excluded slide that moved, when the headings must stay, is told to move, and the new slide on its number is said', () => {
+  // Alpha, Bravo, Charlie, with exclude: yes on Bravo, re-exported as Alpha, New, Charlie, Bravo. Before, prepare said
+  // "no slide changed", New got no section, check passed, and the advice was --exclude 2, which would drop New.
+  const merged = mergeScript(narrated(['Alpha', 'Bravo', 'Charlie'], [2]), real(['Alpha', 'Bravo', 'Charlie']), real(['Alpha', 'New', 'Charlie', 'Bravo'], { id: 'q4-roadmap-newid2' }))
+  assert.equal(merged.renumbered, false)
+  assert.deepEqual([merged.moved, merged.unsectioned, merged.added, merged.changed, merged.excludedRendered], [[{ from: 2, to: 4 }], [2], [], [], [4]])
+  assert.match(merged.text, /## 2 · Bravo\nexclude: yes\ncheck: changed\n<!-- This slide is now page 4: move this section there and renumber its heading, then delete "check: changed"\. -->\n\nAbout bravo\.\n\n<!-- On page 2 now, with no section yet: "New" -->\n\n## 3 · Charlie/)
+  const checked = checkScript(parse(merged.text), real(['Alpha', 'New', 'Charlie', 'Bravo']))
+  assert.deepEqual(checked.errors.map(e => [e.page, e.message]), [[2, 'the slide on this page changed after the section was excluded: read its comments, then delete "check: changed"']])
+  // Two slides, Alpha excluded: Bravo re-exported as New, Bravo, Alpha.
+  const two = mergeScript(narrated(['Alpha', 'Bravo'], [1]), real(['Alpha', 'Bravo']), real(['New', 'Bravo', 'Alpha'], { id: 'q4-roadmap-newid2' }))
+  assert.deepEqual([two.moved, two.unsectioned, two.added, two.excludedRendered], [[{ from: 1, to: 3 }], [1], [], [3]])
+  assert.match(two.text, /## 1 · Alpha\nexclude: yes\ncheck: changed\n<!-- This slide is now page 3: .*\n\nAbout alpha\.\n\n<!-- On page 1 now, with no section yet: "New" -->/)
+  // Alpha, Bravo excluded, Charlie, Delta, re-exported as Alpha, New, Delta, Charlie, Bravo.
+  const four = mergeScript(narrated(['Alpha', 'Bravo', 'Charlie', 'Delta'], [2]), real(['Alpha', 'Bravo', 'Charlie', 'Delta']), real(['Alpha', 'New', 'Delta', 'Charlie', 'Bravo'], { id: 'q4-roadmap-newid2' }))
+  assert.deepEqual([four.moved, four.unsectioned, four.added, four.excludedRendered], [[{ from: 2, to: 5 }, { from: 3, to: 4 }, { from: 4, to: 3 }], [2], [], [5]])
+  assert.match(four.text, /## 2 · Bravo\nexclude: yes\ncheck: changed\n<!-- This slide is now page 5: .*\n\nAbout bravo\.\n\n<!-- On page 2 now, with no section yet: "New" -->/)
+  // When the headings can follow their slides, the excluded section is renumbered with its slide, as before.
+  const renumbered = mergeScript(narrated(['Alpha', 'Bravo', 'Charlie'], [2]), real(['Alpha', 'Bravo', 'Charlie']), real(['New', 'Alpha', 'Bravo', 'Charlie'], { id: 'q4-roadmap-newid2' }))
+  assert.deepEqual([renumbered.moved, renumbered.added, renumbered.excludedRendered], [[{ from: 1, to: 2 }, { from: 2, to: 3 }, { from: 3, to: 4 }], [1], [3]])
+})
+
+test('repro: a deleted slide\'s section, retired past the deck\'s end, never comes back over a new slide that takes that number', () => {
+  // Alpha to Echo, then Alpha, New, Bravo, Charlie, Delta: Echo's section is retired to 6. Then Foxtrot is added as page
+  // 6. Before, page 6 was "back in the deck", Echo's narration lost its exclude over Foxtrot, and Foxtrot got no TODO.
+  const a = real(['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo'])
+  const b = real(['Alpha', 'New', 'Bravo', 'Charlie', 'Delta'], { id: 'q4-roadmap-newid2' })
+  const c = real(['Alpha', 'New', 'Bravo', 'Charlie', 'Delta', 'Foxtrot'], { id: 'q4-roadmap-newid3' })
+  const first = mergeScript(narrated(['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo']), a, b)
+  assert.deepEqual([first.added, first.gone, first.retired], [[2], [5], [{ from: 5, to: 6 }]])
+  const written = first.text.replace(/check: yes\n\nTODO/, '\nAbout new.')
+  const second = mergeScript(written, b, c)
+  assert.deepEqual([second.back, second.added, second.retired, second.changed, second.moved], [[], [6], [{ from: 6, to: 7 }], [], []])
+  assert.match(second.text, /\n## 6 · Foxtrot\ncheck: yes\n\nTODO\n<!-- On the slide: "Foxtrot" -->\n\n## 7 · Echo\nexclude: yes\n<!-- Was page 5: that slide is not in the deck any more, so this section is excluded\. -->\n\nAbout echo\.\n$/)
+  assert.deepEqual(messages(checkScript(parse(second.text), c).errors), ['TODO: write the narration, or add "exclude: yes"'])
+})
+
+test('repro: a slide deleted first or between two others gets exclude: yes, as the docs say, never check: changed over the next slide', () => {
+  const text = narrated(['Alpha', 'Bravo', 'Charlie'])
+  const abc = real(['Alpha', 'Bravo', 'Charlie'])
+  for (const [left, page] of [[['Bravo', 'Charlie'], 1], [['Alpha', 'Charlie'], 2]] as [string[], number][]) {
+    const merged = mergeScript(text, abc, real(left, { id: 'q4-roadmap-newid2' }))
+    const title = ['Alpha', 'Bravo'][page - 1]
+    assert.deepEqual([merged.gone, merged.changed, merged.renumbered], [[page], [], false], left.join())
+    // Its number is the next slide's page now, whose section is told to move there: the comment says what to do.
+    assert.match(merged.text, new RegExp(`## ${page} · ${title}\\nexclude: yes\\n<!-- The slide on page ${page} is not in the deck any more, so this section is excluded\\. -->\\n<!-- Page ${page} is another slide now: delete this section, or move it to the end and number it after the last slide\\. -->\\n\\nAbout ${title.toLowerCase()}\\.\\n\\n## ${page + 1}`))
+    assert.ok(!merged.text.includes('On the slide now'), 'the next slide is quoted nowhere')
+  }
+})
+
+test('repro: a "This slide is now page N" comment goes once a later merge renumbers the section to N', () => {
+  // Agenda deleted between two slides: the headings stay, and Problem and Fix are told to move. The owner deletes the
+  // Agenda section, as its comment says, and prepares again before moving the others: they are renumbered now.
+  const before = real(['Intro', 'Agenda', 'Problem', 'Fix'])
+  const after = real(['Intro', 'Problem', 'Fix'], { id: 'q4-roadmap-newid2' })
+  const stuck = mergeScript(narrated(['Intro', 'Agenda', 'Problem', 'Fix']), before, after)
+  assert.deepEqual([stuck.renumbered, stuck.moved], [false, [{ from: 3, to: 2 }, { from: 4, to: 3 }]])
+  const cleared = stuck.text.replace(/## 2 · Agenda\n[\s\S]*?(?=## 3)/, '')
+  const again = mergeScript(cleared, after, real(['Intro', 'Problem', 'Fix'], { id: 'q4-roadmap-newid3' }))
+  assert.deepEqual([again.renumbered, again.moved], [true, [{ from: 3, to: 2 }, { from: 4, to: 3 }]])
+  assert.ok(!again.text.includes('This slide is now page'), again.text)
+  assert.match(again.text, /## 2 · Problem\ncheck: changed\n<!-- Was page 3: the slide moved to page 2\. -->\n\nAbout problem\./)
+  // Prepared again with the sections still where they were, a section's slide is the one its comment names.
+  const same = mergeScript(stuck.text, after, real(['Intro', 'Problem', 'Fix'], { id: 'q4-roadmap-newid3' }))
+  assert.equal(same.text.replace(/q4-roadmap-newid3/, 'q4-roadmap-newid2'), stuck.text, 'nothing changes but the deck line')
+  // Two slides swapped, the sections not moved yet, then a slide inserted at the front. Before, the sections were
+  // renumbered by their numbers, each over the other's slide, and "now page 3" pointed at its own new heading.
+  const swapped = mergeScript(narrated(['Intro', 'Problem', 'Fix']), real(['Intro', 'Problem', 'Fix']), real(['Intro', 'Fix', 'Problem'], { id: 'q4-roadmap-newid2' }))
+  assert.deepEqual(swapped.moved, [{ from: 2, to: 3 }, { from: 3, to: 2 }])
+  const grown = mergeScript(swapped.text, real(['Intro', 'Fix', 'Problem']), real(['Welcome', 'Intro', 'Fix', 'Problem'], { id: 'q4-roadmap-newid3' }))
+  assert.deepEqual([grown.renumbered, grown.moved, grown.unsectioned], [false, [{ from: 1, to: 2 }, { from: 2, to: 4 }, { from: 3, to: 3 }].filter(m => m.from !== m.to), [1]])
+  for (const [, page, to] of grown.text.matchAll(/## (\d+)[^\n]*\n(?:[^\n]+\n)*?<!-- This slide is now page (\d+):/g)) assert.notEqual(page, to, `## ${page} is told to move to itself`)
+  assert.match(grown.text, /## 2 · Problem\ncheck: changed\n<!-- This slide is now page 4: .*\n\nAbout problem\./)
+  assert.match(grown.text, /## 3 · Fix\ncheck: changed\n\nAbout fix\./)
+})
+
+test('repro: a section whose slide moved and changed quotes its own slide, not the one on its old number', () => {
+  const text = narrated(['Intro', 'Revenue', 'Fix'])
+  const before = real(['Intro', 'Revenue', 'Fix'], { images: ['intro', 'bars of 50', 'fix'] })
+  const after = real(['Intro', 'Fix', 'Revenue'], { id: 'q4-roadmap-newid2', images: ['intro', 'fix', 'bars of 300'] })
+  const merged = mergeScript(text, before, after)
+  assert.deepEqual([merged.renumbered, merged.moved, merged.changed], [false, [{ from: 2, to: 3 }, { from: 3, to: 2 }], [3]])
+  assert.match(merged.text, /## 2 · Revenue\ncheck: changed\n<!-- This slide's picture changed since this section was written, though its text did not: .* -->\n<!-- This slide is now page 3: .* -->\n\nAbout revenue\.\n\n<!-- On the slide now: "Revenue" -->\n\n## 3/)
+})
+
+test('repro: an excluded slide replaced where it was is marked, and check refuses it until it is read', () => {
+  const merged = mergeScript(narrated(['Intro', 'Customer list', 'Fix'], [2]), real(['Intro', 'Customer list', 'Fix']), real(['Intro', 'Roadmap', 'Fix'], { id: 'q4-roadmap-newid2' }))
+  assert.deepEqual([merged.changed, merged.excludedRendered, merged.moved], [[2], [2], []])
+  assert.match(merged.text, /## 2 · Customer list\nexclude: yes\ncheck: changed\n<!-- This slide changed since this section was excluded: make sure it should still be left out, then delete "check: changed"\. -->\n\nAbout customer list\.\n\n<!-- On the slide now: "Roadmap" -->/)
+  assert.deepEqual(checkScript(parse(merged.text), real(['Intro', 'Roadmap', 'Fix'])).errors.map(e => e.page), [2])
+  // The same slide again, or no old deck to compare with: left alone.
+  const same = mergeScript(narrated(['Intro', 'Customer list', 'Fix'], [2]), real(['Intro', 'Customer list', 'Fix']), real(['Intro', 'Customer list', 'Fix'], { id: 'q4-roadmap-newid2' }))
+  assert.deepEqual([same.changed, same.excludedRendered], [[], [2]])
+  assert.ok(!mergeScript(narrated(['Intro', 'Customer list', 'Fix'], [2]), null, real(['Intro', 'Roadmap', 'Fix'])).text.includes('exclude: yes\ncheck: changed'))
 })
 
 test('a script whose structure is unclear is never merged into: no front matter or deck line, an open comment, sections out of order', () => {
