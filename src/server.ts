@@ -27,7 +27,7 @@ import { Brain } from './brain/brain.ts'
 import { type BriefFor, SERVICE_FEATURES, SessionBridge } from './bridge.ts'
 import { type BriefInUse, MAX_BRIEF_CHARS, SHARED_BRIEF_FILE, briefProblem, briefTooLong, readSharedBrief } from './brief.ts'
 import { ROOT, config, publicUrlProblem, recallRegionProblem, retiredSettings } from './config.ts'
-import { FIXED_LINES } from './consent.ts'
+import { cachedLines } from './consent.ts'
 import { prepareControlSocket } from './control-socket.ts'
 import { identity } from './identity.ts'
 import { ensureLocalToken, prepareDataDir } from './local-token.ts'
@@ -1301,7 +1301,9 @@ async function main(): Promise<void> {
   const brain = new Brain()
   // The assistant's fixed lines play from audio made once per voice and kept in data/tts-cache. Only those lines:
   // never anything said in a meeting, nor Claude's answers.
-  const lines = new LineCache({ dir: path.join(config.dataDir, 'tts-cache'), lines: FIXED_LINES })
+  // With presenting on for a platform (SLIDES_PLATFORMS), the lines of a meeting with slides too.
+  const kept = cachedLines(config.slidesPlatforms)
+  const lines = new LineCache({ dir: path.join(config.dataDir, 'tts-cache'), lines: kept })
 
   const service = createServers(
     {
@@ -1353,7 +1355,7 @@ async function main(): Promise<void> {
   if (process.env.ELEVENLABS_API_KEY?.trim() && process.env.ELEVENLABS_VOICE_ID?.trim()) {
     void lines.warm().then(({ found, generated, failed, removed }) => {
       console.log(
-        `[tts] ${found + generated} of ${FIXED_LINES.length} fixed lines cached (${generated} made now` +
+        `[tts] ${found + generated} of ${kept.length} fixed lines cached (${generated} made now` +
           `${failed ? `, ${failed} failed and will stream live` : ''}${removed ? `, ${removed} old files removed` : ''})`,
       )
     })
