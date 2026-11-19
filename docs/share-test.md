@@ -62,7 +62,7 @@ Answer `y` or `n`, or `s` to skip a question. Enter alone asks it again, except 
 | S6 hold | The share stays up for 60 s, while the page reports how it runs. | None. |
 | S7 replace | Alex shares a new page without stopping the first. This is the one Recall doesn't document. | "Does the page now show session 2?" (or the number it says) |
 | S8 stop | Alex stops the share, then says a test sentence, then you ask it a question by name. | "Has the screen share gone?", "Did you hear Alex after the share stopped?", then press Enter once it has answered, or type `n` if it didn't. |
-| S9 restart | Alex shares again, then stops. | None: timings only. |
+| S9 restart | Alex shares again, then stops, then the test watches the camera page for 6 s more: the service counts a page that went quiet as dropped only after 4 s. | None: timings only. |
 
 Then Alex leaves, unless `--keep`.
 

@@ -24,6 +24,11 @@ export const HOLD_MS = 60_000
 export const CLOSE_WAIT_MS = 10_000
 /** The time between frame changes in S5. */
 export const FLIP_GAP_MS = 2_000
+/**
+ * How long S9 watches the camera page after its stop. The service counts a page that went quiet as dropped only after
+ * 4 s without a word, checked each second (PAGE_SILENCE_MS in src/server.ts), and no step comes after S9 to count it.
+ */
+export const SETTLE_MS = 6_000
 /** How long the owner has to answer a question before the test stops (the terminal's ask counts it). */
 export const QUESTION_WAIT_MS = 5 * 60_000
 
@@ -48,6 +53,7 @@ export interface RunTiming {
   holdMs: number
   closeWaitMs: number
   flipGapMs: number
+  settleMs: number
   pollMs: number
 }
 
@@ -58,6 +64,7 @@ const TIMING: RunTiming = {
   holdMs: HOLD_MS,
   closeWaitMs: CLOSE_WAIT_MS,
   flipGapMs: FLIP_GAP_MS,
+  settleMs: SETTLE_MS,
   pollMs: 500,
 }
 
@@ -349,14 +356,15 @@ export async function runShareTest(args: RunArgs, deps: RunDeps): Promise<number
     return { accepted: true, epoch: r.epoch, hello: false }
   }
 
-  /** How a share's link closed, if it did, counted from `from` (epoch ms). */
-  const closing = (view: ShareView | undefined, from: number | null, what: string) => {
+  /** How a share's link closed, if it did, counted from `from`; `at` is when the service last said (its now). Epoch ms. */
+  const closing = (view: ShareView | undefined, from: number | null, what: string, at: number | null) => {
     if (!view) return
     if (view.link_closed_at !== null && from !== null) {
       const by = view.link_closed_by === 'service' ? 'by the service' : 'by the page'
       return `share ${view.epoch}'s link closed ${s1(view.link_closed_at - from)} after ${what} (${view.link_close_code}, ${by})`
     }
-    if (view.link_open) return `share ${view.epoch}'s link was still open ${Math.round(t.closeWaitMs / 1000)} s after ${what}`
+    // Counted from `from` too, on the service's clock: in S7 the close wait starts only after the new page's hello wait.
+    if (view.link_open) return `share ${view.epoch}'s link was still open ${from !== null && at !== null ? s1(at - from) : `${Math.round(t.closeWaitMs / 1000)} s`} after ${what}`
     return `share ${view.epoch}'s link was not open`
   }
 
@@ -373,7 +381,7 @@ export async function runShareTest(args: RunArgs, deps: RunDeps): Promise<number
       const st = await waitFor(s => !viewOf(s, epoch)?.link_open, t.closeWaitMs)
       const view = viewOf(st ?? last, epoch)
       if (view?.link_closed_at != null && view.stopped_at != null) rec.timings['link closed after the stop'] = view.link_closed_at - view.stopped_at
-      const words = closing(view, view?.stopped_at ?? null, 'the stop')
+      const words = closing(view, view?.stopped_at ?? null, 'the stop', (st ?? last)?.now ?? null)
       if (words) rec.link.push(words)
     }
     return true
@@ -504,7 +512,7 @@ export async function runShareTest(args: RunArgs, deps: RunDeps): Promise<number
       if (!view.link_open) {
         rec.result = 'FAIL'
         rec.why.push("the test page's link closed during the hold")
-        const words = closing(view, first.now, 'the hold started')
+        const words = closing(view, first.now, 'the hold started', st.now)
         if (words) rec.link.push(words)
       } else if (!metrics.length) {
         rec.result = 'UNKNOWN'
@@ -524,7 +532,7 @@ export async function runShareTest(args: RunArgs, deps: RunDeps): Promise<number
       if (old !== null) {
         const st = await waitFor(s => !viewOf(s, old)?.link_open, t.closeWaitMs)
         const newer = viewOf(st ?? last, shared.epoch)
-        const words = closing(viewOf(st ?? last, old), newer?.posted_at ?? null, `share ${shared.epoch} was asked for`)
+        const words = closing(viewOf(st ?? last, old), newer?.posted_at ?? null, `share ${shared.epoch} was asked for`, (st ?? last)?.now ?? null)
         if (words) rec.link.push(words)
       }
       const session = await question(rec, 'session', `Does the page now show session ${shared.epoch}? (y/n, s to skip)`)
@@ -562,6 +570,10 @@ export async function runShareTest(args: RunArgs, deps: RunDeps): Promise<number
         return
       }
       const stoppedShare = await unshare(rec, shared.epoch)
+      // The last step: a camera page that went quiet on the stop is counted as dropped only seconds later, so S9 waits
+      // before its closing status, which counts it.
+      log(`Watching ${name}'s camera page for ${Math.round(t.settleMs / 1000)} s more...`)
+      await sleep(t.settleMs)
       if (!stoppedShare) {
         rec.result = 'FAIL'
         rec.why.push('Recall did not stop the share')

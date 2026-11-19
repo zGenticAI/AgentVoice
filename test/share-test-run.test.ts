@@ -128,10 +128,11 @@ class FakeService implements ShareTestClient {
       state: current ? (current.hello_at === null ? 'starting' : 'live') : 'off',
       epoch: this.epoch,
       current: this.current,
+      // Only what has happened by now: a drop the service notices late shows up late.
       camera: {
-        attaches: attached ? [this.joinedAt + attachAfter!, ...this.camera.attaches] : [],
-        drops: [...this.camera.drops],
-        refused: [...this.camera.refused],
+        attaches: attached ? [this.joinedAt + attachAfter!, ...this.camera.attaches.filter(at => at <= this.now)] : [],
+        drops: this.camera.drops.filter(at => at <= this.now),
+        refused: this.camera.refused.filter(at => at <= this.now),
       },
       shares: [...this.views.values()].map(v => this.view(v)),
       now: this.now,
@@ -460,6 +461,25 @@ test('stopped partway through S9, or a stop Recall refused, or the assistant not
   assert.match(report, /^S8 stop: FAIL/m)
   assert.match(report, /Why: Alex did not answer\./)
   assert.match(report, /^Verdict: Not safe yet on Zoom: Alex did not answer you in S8\.$/m)
+})
+
+test("S9 watches the camera page after its stop: a page that went quiet is counted as dropped seconds later, and in S9", async () => {
+  // The service notices a page that went quiet only after 4 s without a word, checked each second.
+  const h = harness({ onAction: (svc, action, step) => void (action === 'unshare' && step === 'S9' && svc.camera.drops.push(svc.now + 4500)) })
+  assert.equal(await h.run(), 0)
+  const report = reportOf(h)
+  assert.match(report, /^ {2}S9 restart: dropped 1 time$/m)
+  assert.match(report, /^Verdict: Not safe yet on Zoom: the camera page dropped 1 time in S9 \(restart\)\.$/m)
+  assert.match(h.log.join('\n'), /Watching Alex's camera page for 6 s more\.\.\./)
+})
+
+test("S7 says how long the old link was really open, counted from when the new share was asked for, the hello wait included", async () => {
+  const h = harness({ helloAfter: epoch => (epoch === 2 ? null : 3000), closeAfter: null })
+  await h.run()
+  assert.match(reportOf(h), /share 1's link was still open 30\.\d s after share 2 was asked for/)
+  const quick = harness({ closeAfter: null })
+  await quick.run()
+  assert.match(reportOf(quick), /share 1's link was still open 13\.\d s after share 2 was asked for/)
 })
 
 test('a meeting that ends under the test stops it, with nothing to clean up', async () => {
