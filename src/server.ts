@@ -7,6 +7,8 @@
 //   agent page and its scripts, /audio for a meeting this process started, and a /health that says only ok. With
 //   SPEAKER_PROBE on, also /recall/: Recall's participant events, for a meeting joined with --speaker-probe. While a
 //   meeting joined with --share-test is sharing, also its test page and that page's link, with the share's token.
+//   While a meeting with slides is sharing them, also the slides page, its script and its link (src/slides/share.ts),
+//   with the share's id and token; while none is, they are not found, as any other path.
 // - control (a Unix socket in the data folder, CONTROL_SOCKET to put it elsewhere): /api/join for npm run join,
 //   /bridge for the Claude Code channel, the screen-share test's /api/share-test/ for npm run join --share-test, and
 //   the detailed /health. No pages. Only you can open it, and no other user can take its place while the service is
@@ -40,6 +42,8 @@ import { PROFILE } from './profile.ts'
 import * as recall from './recall.ts'
 import { type LiveSession, sessionHandlers } from './sessions.ts'
 import { decksDir, prepareDecksDir, sweepOldDecks } from './slides/deck.ts'
+import { loadSlidesPage } from './slides/page.ts'
+import { type ShareTiming, SlideShares, type SlidesPage } from './slides/share.ts'
 import { type ShareTestPage, loadShareTestPage, shareTestHeaders } from './sharetest/page.ts'
 import {
   LINK_MAX_BYTES, SHARE_TEST_ACTIONS, SHARE_TEST_LINK_PATH, SHARE_TEST_PAGE_PATH, type ShareTestAction, type TestLineOutcome,
@@ -266,6 +270,10 @@ export interface ServiceConfig {
   shareTestPage?: ShareTestPage
   /** The screen-share test's timings, which tests make short (src/sharetest/share-test.ts). */
   shareTestTiming?: ConstructorParameters<typeof ShareTest>[0]['timing']
+  /** The slides page (public/slides.html and slides.js, filled in and checked when the service is made, unless a test passes one). */
+  slidesPage?: SlidesPage
+  /** The slide shares' timings, which tests make short (src/slides/share.ts). */
+  slidesTiming?: Partial<ShareTiming>
 }
 
 /** What the server uses of a MeetingSession. */
@@ -304,7 +312,7 @@ export interface ServiceDeps<S extends ServiceSession> {
   ): S
   /**
    * Starts and stops a bot's screen share, resolving with Recall's HTTP status (recall.startScreenshare and
-   * stopScreenshare, unless a test passes fakes). Only the screen-share test uses them.
+   * stopScreenshare, unless a test passes fakes): the screen-share test, and a meeting's slides.
    */
   screenshare?: { start(botId: string, url: string): Promise<number>; stop(botId: string): Promise<number> }
 }
@@ -314,6 +322,8 @@ export interface Service<S extends ServiceSession> {
   readonly controlServer: http.Server
   readonly bridge: SessionBridge
   readonly sessions: ReadonlySet<S>
+  /** The slide shares of the meetings with slides, and the public routes they answer (src/slides/share.ts). */
+  readonly slides: SlideShares
   /** Listens on both listeners, then asks the bots a run that crashed left in their calls to leave (PENDING_BOTS_FILE). */
   listen(): Promise<void>
   /**
@@ -388,6 +398,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
   // joined with the share test: the join says why.
   const shareTestPage = cfg.shareTestPage ?? loadShareTestPage()
   const screenshare = deps.screenshare ?? { start: recall.startScreenshare, stop: recall.stopScreenshare }
+  // The slides page, read once, like the bot page. One that can't be used is never served, so no presentation loads.
+  const slidesPage = cfg.slidesPage ?? loadSlidesPage(identity)
   const briefFile = path.join(cfg.dataDir, SHARED_BRIEF_FILE)
   // The shared brief, read again at every answer and for the minutes, for the meetings without one of their own. One
   // edited by hand to more than a brief may hold is refused, never cut (its end often says what must not be shared):
@@ -414,6 +426,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
   let stopping = false
   let stopped: Promise<void> | null = null
   let closed = false
+  // Every meeting's slide share, and the public routes they open while one is live.
+  const slides = new SlideShares({ publicUrl: cfg.publicUrl, page: slidesPage, stopping: () => stopping, timing: cfg.slidesTiming })
 
   /**
    * Meetings that hold a place under MAX_MEETINGS: every one until its bot is out of the call. Waiting for its
@@ -828,6 +842,9 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
         return send(res, 200, shareTestPage.html, 'text/html; charset=utf-8', shareTestHeaders(shareTestPage, host))
       }
     }
+    // The slides page and its script: only while a meeting's slide share is live (the page with its id and token).
+    const slide = slides.request(req.method, url)
+    if (slide) return send(res, slide.status, slide.body, slide.type, slide.headers)
     send(res, 404, 'not found')
   }
 
@@ -838,6 +855,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     // Recall's participant events, only with SPEAKER_PROBE on: otherwise not found, as any other path.
     if (cfg.speakerProbe && url.pathname === recall.RECALL_EVENTS_PATH) return onRecallUpgrade(req, socket, head, url, handOver)
     if (url.pathname === SHARE_TEST_LINK_PATH) return onShareTestUpgrade(req, socket, head, url, handOver)
+    // A slides page's link, only while a meeting's slide share is live: otherwise not found, as any other path.
+    if (slides.upgrade(req, socket, head, url, { handOver, refuse })) return
     // Only the bot page's audio.
     if (url.pathname !== '/audio') return refuse(socket, 404, 'not found')
     if (!cfg.agentPageToken || !sameSecret(url.searchParams.get('token') ?? '', cfg.agentPageToken)) return refuse(socket, 403, 'forbidden')
@@ -1168,6 +1187,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     controlServer,
     bridge,
     sessions,
+    slides,
     async listen() {
       // Refuses to start beside another service on the same socket, before anything listens: so a second service
       // never takes the first one's port, nor asks the first one's bots to leave (recover).
@@ -1197,6 +1217,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
           meeting.shareTest?.end()
           return askToLeave(meeting)
         })
+        // The slides go with the bots: blanked, their links closed, and no call to Recall.
+        slides.closeAll()
         await within(Promise.allSettled(asked), until - Date.now())
         if (meetings.size) {
           console.warn(`[stop] ${meetings.size} bot(s) could not be asked to leave their calls: the service asks again when it starts`)
@@ -1210,6 +1232,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
         clearTimers(meeting)
         meeting.shareTest?.end()
       }
+      slides.closeAll()
       for (const ws of [...audioWss.clients, ...bridgeWss.clients, ...recallWss.clients, ...shareTestWss.clients]) ws.terminate()
       await closeServers()
     },
