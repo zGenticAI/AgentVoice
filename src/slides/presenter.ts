@@ -170,6 +170,8 @@ export interface PresenterHost {
   quietMs(): number
   /** The camera page is there to play the voice. */
   attached(): boolean
+  /** A turn is running: an answer, or a line. */
+  busy(): boolean
   /** How long the page still plays the line it is playing now (ms): 0 when it plays none. */
   lineLeftMs(): number
   /** Clears what the page still has to play, without stopping the turn: the lines it did not play are cut (see cut). */
@@ -1087,7 +1089,8 @@ export class Presenter {
       }
       if (this.state === 'checking') return this.checkTick(now)
       if (this.state === 'qa') {
-        if (now - this.lastActivity >= this.timing.qaIdleMs && host.free()) {
+        // Quiet, so it needs neither hearing nor the page: only no turn running (an answer resets lastActivity).
+        if (now - this.lastActivity >= this.timing.qaIdleMs && !host.busy()) {
           this.lastActivity = now
           void this.stopFlow({ quiet: true }).catch(err => this.fault('stopping after questions', err))
         }

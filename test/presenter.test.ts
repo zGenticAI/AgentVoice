@@ -720,6 +720,36 @@ test('a sentence that could not go out to the page is not counted as heard: once
   done(s)
 })
 
+test('hearing lost in the middle of someone\'s turn: once it hears again the room counts as quiet, so silence after "Shall I carry on?" carries on', async () => {
+  // Held for talk, then a turn starts, and hearing goes before it ends.
+  const s = start({ voice: LONG })
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  await wait(300)
+  s.said("That's interesting.")
+  await until(() => s.presenter.status().held === 'talk')
+  s.flux.turn('StartOfTurn', '')
+  s.flux.emit('lost', 'test')
+  await wait(30)
+  s.flux.emit('open')
+  await until(() => s.spoken.includes(SLIDES_LINES.shallCarryOn))
+  await until(() => s.spoken.includes(SLIDES_LINES.carryOn), 'silence is a yes', 1000)
+  done(s)
+
+  // A turn that talks over the narration (the page paused while it is watched), and hearing goes before it ends.
+  const w = start({ voice: { 'Team is twelve dollars.': 600 } })
+  await narrating(w)
+  await until(() => w.spoken.includes('Team is twelve dollars.'))
+  await wait(100)
+  w.flux.turn('StartOfTurn', '')
+  w.flux.emit('lost', 'test')
+  await until(() => w.spoken.includes(SLIDES_LINES.deaf), 'the fixed line')
+  w.flux.emit('open')
+  await until(() => w.spoken.includes(SLIDES_LINES.shallCarryOn))
+  await until(() => w.spoken.includes(SLIDES_LINES.carryOn), 'silence is a yes', 1000)
+  done(w)
+})
+
 test('a voice that fails twice: the kept line, voice_failed, and a hold until someone says carry on', async () => {
   const s = start({ failing: new Set(['Team is twelve dollars.']) })
   await narrating(s)
@@ -806,6 +836,16 @@ test('after the last slide, questions; two quiet minutes (short here) stop the s
   assert.equal(s.presenter.current, 'stopped')
   assert.ok(s.markers().includes('stopped sharing the slides'))
   assert.deepEqual(s.presenter.summary(), { reached: 5, of: 4, finished: true })
+  done(s)
+})
+
+test('after the last slide, the quiet stop needs no hearing: with speech recognition lost, the share still stops', async () => {
+  const s = start()
+  await narrating(s)
+  await until(() => s.presenter.current === 'qa', 'questions', 5000)
+  s.flux.emit('lost', 'test')
+  await until(() => s.surface.calls.includes('stop'), 'the quiet stop', 1500)
+  assert.equal(s.presenter.current, 'stopped')
   done(s)
 })
 

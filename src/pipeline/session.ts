@@ -447,6 +447,11 @@ export class MeetingSession {
     this.flux.on('lost', why => {
       console.error(`[stt] can't hear the meeting: ${why}`)
       this.deaf = true
+      // A turn under way gets no EndOfTurn now: the room counts as quiet, so the slides' waits for quiet can end.
+      this.roomTurnOpen = false
+      this.roomQuietSince = Date.now()
+      // Nor does a turn that talked over the slides: the watch ends, or the presenter would wait for it for good.
+      if (this.presenter && this.watching) this.endWatch()
       this.control({ type: 'error', message: PAGE_ERRORS.hearing })
       // Alex never talks on when it can't hear "please leave": the slides stop at the end of the sentence.
       this.presenter?.hearing(false)
@@ -454,6 +459,8 @@ export class MeetingSession {
     this.flux.on('open', () => {
       if (!this.deaf) return
       this.deaf = false
+      // Quiet counts from when it can hear the room again.
+      this.roomQuietSince = Date.now()
       console.log('[stt] hearing the meeting again')
       this.control({ type: 'hearing' })
       this.presenter?.hearing(true)
@@ -1120,6 +1127,7 @@ export class MeetingSession {
       playing: () => this.playback.paused || this.playback.playsUntil > this.clock(),
       quietMs: () => (this.roomTurnOpen ? 0 : Math.max(0, Date.now() - this.roomQuietSince)),
       attached: () => this.attached(),
+      busy: () => this.turn !== null,
       lineLeftMs: () => this.playback.lineLeft(),
       // As interrupt, but the turn goes on: it says why the slides stopped. The consent line is still heard in full.
       clear: () => {
