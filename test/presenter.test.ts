@@ -1361,6 +1361,43 @@ test('a share that throws or rejects at every step never reaches uncaughtExcepti
   }
 })
 
+test('a transcript file the disk cannot take: the slides go on, a "no" still stops the share and tells the owner, nothing crashes', async () => {
+  const caught: unknown[] = []
+  const onError = (err: unknown) => void caught.push(err)
+  process.on('uncaughtException', onError)
+  process.on('unhandledRejection', onError)
+  const errors: string[] = []
+  const error = console.error
+  console.error = (...args: unknown[]) => void errors.push(args.map(String).join(' '))
+  try {
+    const s = start({ timing: { canSeeQuietMs: 3000, canSeeWindowMs: 5000 } })
+    // The disk is full for the slides' lines in the transcript.
+    const transcript = s.session.transcript as any
+    const add = transcript.add.bind(transcript)
+    transcript.add = (speaker: string, text: string, ...rest: unknown[]) => {
+      if (speaker === SLIDES_LABEL) throw Object.assign(new Error(`ENOSPC: no space left on device, write (${text})`), { code: 'ENOSPC' })
+      return add(speaker, text, ...rest)
+    }
+    await until(() => s.session.consentDone)
+    s.said('Alex, start the presentation.')
+    await until(() => s.spoken.includes(SLIDES_LINES.canSee), 'the check question')
+    await wait(30)
+    s.said("No, we can't see anything.")
+    await until(() => s.events.some(e => e.event === 'not_seen'), 'not_seen')
+    await wait(50)
+    assert.deepEqual(s.surface.calls, ['start 0', 'stop'])
+    assert.equal(s.presenter.current, 'ready')
+    assert.deepEqual(caught, [])
+    assert.ok(errors.some(l => l.includes('ENOSPC')), errors.join('\n'))
+    assert.ok(!errors.some(l => /showing slide|stopped sharing|no space left/.test(l)), 'the error code only, never the line')
+    done(s)
+  } finally {
+    console.error = error
+    process.off('uncaughtException', onError)
+    process.off('unhandledRejection', onError)
+  }
+})
+
 test('the meeting\'s slides come from the script and the deck: excluded and unknown pages left out, in page order', () => {
   assert.deepEqual(
     SLIDES.map(s => [s.page, s.title, s.sentences.length, s.onRequest]),

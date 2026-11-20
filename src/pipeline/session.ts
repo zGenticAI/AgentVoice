@@ -1167,8 +1167,15 @@ export class MeetingSession {
       // Only while no line has closed it: the presenter's own window is then the one open.
       closeWindow: () => void (this.awaitingUntil = 0),
       windowOpen: () => Date.now() < this.awaitingUntil,
-      // As the assistant's line, so a talk to a silent room still gets no minutes.
-      marker: (text, page) => void this.transcript.add(SLIDES_LABEL, text, 'agent', { kind: 'marker', ...(page === undefined ? {} : { slide: page }) }),
+      // As the assistant's line, so a talk to a silent room still gets no minutes. Never throws: a full or failing disk
+      // must not stop the slides half way (or the service), so the error's code alone is logged, as amend does.
+      marker: (text, page) => {
+        try {
+          this.transcript.add(SLIDES_LABEL, text, 'agent', { kind: 'marker', ...(page === undefined ? {} : { slide: page }) })
+        } catch (err) {
+          console.error(`[transcript] could not add a slides line to the transcript file: ${(err as NodeJS.ErrnoException).code ?? 'error'}`)
+        }
+      },
     }
   }
 

@@ -870,10 +870,13 @@ export class Presenter {
       this.opts.host.interrupt()
       this.sayNow(hint)
     }
-    void this.shared(() => this.opts.surface.stop(), undefined).then(() => {
-      this.opts.host.marker('stopped sharing the slides')
-      this.emit('not_seen', 'Someone said they could not see the slides: the host may need to allow screen sharing.')
-    })
+    void this.shared(() => this.opts.surface.stop(), undefined)
+      .then(() => {
+        // The owner hears first: a transcript line the disk can't take must not cost the event.
+        this.emit('not_seen', 'Someone said they could not see the slides: the host may need to allow screen sharing.')
+        this.opts.host.marker('stopped sharing the slides')
+      })
+      .catch(err => this.fault('not seen', err))
   }
 
   /**
