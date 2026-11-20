@@ -9,13 +9,16 @@
 // URL and its password, sent as HTTP Basic auth with the user name "opencode".
 //
 // Each event is posted as one fixed plain-text message (plainEvent in sink.ts) to the owner's session alone: the one
-// that last called an owner-only tool. Nothing else is ever posted, and nowhere else.
+// that last called an owner-only tool, if it is not a subagent's. Nothing else is ever posted, and nowhere else.
 //
 // The registration file holds a password that opens every OpenCode session of this user, so it is read with care: only
 // a regular file (never a link), owned by this user, that no one else can read or write (mode 0600 or stricter), and
-// only a URL on this machine (loopback). The password, the URL's credentials and the event's text are never logged.
-// A service started with `opencode serve` or --standalone keeps its password elsewhere: there is no registration for
-// it, so the channel can't push, and the meeting's questions reach the session only through the meeting-assistant.
+// only a URL on this machine (loopback). Nor is the password sent anywhere until the service it names is known to be the
+// one this channel runs in (openCodeSink): the file outlives a service that crashed, and the port is the same for every
+// user of the computer. The password, the URL's credentials and the event's text are never logged.
+// A server started with `opencode serve` or --standalone is not the background service: the channel it starts can't
+// push, and the meeting's questions reach the session only through the meeting-assistant.
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
@@ -39,6 +42,7 @@ export interface OpenCodeService {
   // Which instance it is: a restarted service has another id and pid, and usually another password.
   id?: string
   pid?: number
+  version?: string
 }
 
 /**
@@ -108,7 +112,7 @@ export function readService(file: string, uid: number | undefined = process.getu
     return { problem: `${named} is not JSON: it is not used` }
   }
   if (typeof info !== 'object' || info === null || Array.isArray(info)) return { problem: `${named} is not a registration: it is not used` }
-  const { url, password, id, pid } = info as Record<string, unknown>
+  const { url, password, id, pid, version } = info as Record<string, unknown>
   const where = loopbackOrigin(url)
   if ('problem' in where) return { problem: `${named} is not used: ${where.problem}` }
   if (password !== undefined && typeof password !== 'string') return { problem: `${named} is not used: its password is not text` }
@@ -119,29 +123,86 @@ export function readService(file: string, uid: number | undefined = process.getu
       ...(password !== undefined ? { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}` } : {}),
       ...(typeof id === 'string' ? { id } : {}),
       ...(typeof pid === 'number' ? { pid } : {}),
+      ...(typeof version === 'string' ? { version } : {}),
     },
   }
 }
 
 const sameService = (a: OpenCodeService, b: OpenCodeService) =>
-  a.origin === b.origin && a.authorization === b.authorization && a.id === b.id && a.pid === b.pid
+  a.origin === b.origin && a.authorization === b.authorization && a.id === b.id && a.pid === b.pid && a.version === b.version
 
-type Outcome = { ok: true } | { ok: false; why: string }
+// --- Is it this channel's own service? ------------------------------------------------------------------------------
+/** A process's parent, or null if it can't be read (the process is gone, or this system has no /proc). */
+function procParent(pid: number): number | null {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
+    // "pid (name) state ppid ...": the name may hold spaces and brackets, so it is skipped to its last ")".
+    const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
+    return Number.isInteger(ppid) && ppid >= 0 ? ppid : null
+  } catch {
+    return null
+  }
+}
+
+/** Every process's parent, from ps (macOS has no /proc), or null if ps can't be run. */
+function psParents(): Map<number, number> | null {
+  try {
+    const out = execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] })
+    const parents = new Map<number, number>()
+    for (const line of out.split('\n')) {
+      const [pid, ppid] = line.trim().split(/\s+/).map(Number)
+      if (Number.isInteger(pid) && Number.isInteger(ppid)) parents.set(pid, ppid)
+    }
+    return parents
+  } catch {
+    return null
+  }
+}
 
 /**
- * Posts one message into a session, as synthetic input that steers it (taken in at its next step, and waking it if
- * idle). Says why it failed only by status or error code: never the URL, the password or the text.
+ * Whether pid is a live ancestor of this process: its parent, that one's parent, and so on. null when this system can't
+ * say. OpenCode starts the channel as a child of its service (through tsx), so the service that started it is always
+ * one; a service that has stopped, or another server, never is.
  */
-function post(service: OpenCodeService, session: string, text: string, timeoutMs: number): Promise<Outcome> {
-  const url = new URL(`/api/session/${encodeURIComponent(session)}/synthetic`, service.origin)
-  const body = JSON.stringify({ text, delivery: 'steer' })
+export function isAncestor(pid: number, self: number = process.pid): boolean | null {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === self) return false
+  let parentOf: (p: number) => number | null
+  if (procParent(self) !== null) parentOf = procParent
+  else {
+    const parents = psParents()
+    if (!parents?.has(self)) return null
+    parentOf = p => parents.get(p) ?? null
+  }
+  let at = self
+  for (let i = 0; i < 256; i++) {
+    const parent = parentOf(at)
+    if (parent === null || parent <= 0 || parent === at) return false
+    if (parent === pid) return true
+    at = parent
+  }
+  return false
+}
+
+// --- The service's API ----------------------------------------------------------------------------------------------
+type Answer = { ok: true; body: unknown } | { ok: false; why: string }
+// An answer the channel reads (the service's info, a session, the saved approvals) is small. Anything far larger is
+// not read.
+const MAX_ANSWER_BYTES = 1024 * 1024
+
+/**
+ * One request to the service, with its own auth. Says why it failed only by status or error code: never the URL, the
+ * password or the text. body: what is posted, as JSON (none for a GET).
+ */
+function call(service: OpenCodeService, method: 'GET' | 'POST', pathname: string, timeoutMs: number, body?: unknown): Promise<Answer> {
+  const url = new URL(pathname, service.origin)
+  const payload = body === undefined ? undefined : JSON.stringify(body)
   return new Promise(resolve => {
     let settled = false
-    const done = (outcome: Outcome) => {
+    const done = (answer: Answer) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      resolve(outcome)
+      resolve(answer)
     }
     // agent: false: a fresh connection, never a proxy an environment setting would give the global agent. The password
     // goes to this machine only.
@@ -149,19 +210,38 @@ function post(service: OpenCodeService, session: string, text: string, timeoutMs
       {
         host: url.hostname.replace(/^\[(.*)\]$/, '$1'),
         port: url.port || 80,
-        path: url.pathname,
-        method: 'POST',
+        path: url.pathname + url.search,
+        method,
         agent: false,
         headers: {
-          'content-type': 'application/json',
-          'content-length': Buffer.byteLength(body),
+          ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }),
           ...(service.authorization ? { authorization: service.authorization } : {}),
         },
       },
       res => {
-        res.resume() // nothing in the answer is needed: only whether it was taken
         const status = res.statusCode ?? 0
-        done(status >= 200 && status < 300 ? { ok: true } : { ok: false, why: `HTTP ${status}` })
+        if (status < 200 || status >= 300) {
+          res.resume()
+          return done({ ok: false, why: `HTTP ${status}` })
+        }
+        let size = 0
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => {
+          size += chunk.length
+          if (size > MAX_ANSWER_BYTES) {
+            done({ ok: false, why: 'an answer too large to read' })
+            req.destroy()
+          } else chunks.push(chunk)
+        })
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8')
+          try {
+            done({ ok: true, body: text ? JSON.parse(text) : undefined })
+          } catch {
+            done({ ok: true, body: undefined })
+          }
+        })
+        res.on('error', () => done({ ok: false, why: 'the answer was cut off' }))
       },
     )
     const timer = setTimeout(() => {
@@ -169,37 +249,112 @@ function post(service: OpenCodeService, session: string, text: string, timeoutMs
       req.destroy()
     }, timeoutMs)
     req.on('error', err => done({ ok: false, why: (err as NodeJS.ErrnoException).code ?? 'the connection failed' }))
-    req.end(body)
+    req.end(payload)
   })
 }
 
-export interface OpenCodeSinkOptions {
-  /** The owner's session ID, as the channel last learnt it from an owner-only tool call (null until then). */
-  owner: () => string | null
-  /** The registration file: OpenCode's own (serviceFile()) unless a test gives another; null when there is none. */
-  file?: string | null
-  /** How long one post may take (ms). */
-  timeoutMs?: number
-  /** Where log lines go (stderr: stdout carries MCP). */
-  log?: (line: string) => void
+const record = (value: unknown): Record<string, unknown> | null =>
+  typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+
+/** OpenCode's wildcard match for a permission rule (packages/core/src/util/wildcard.ts at 2.3.2), off Windows. */
+function wildcard(input: string, pattern: string): boolean {
+  let escaped = pattern
+    .replaceAll('\\', '/')
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.')
+  if (escaped.endsWith(' .*')) escaped = escaped.slice(0, -3) + '( .*)?'
+  return new RegExp('^' + escaped + '$', 's').test(input.replaceAll('\\', '/'))
 }
 
 /**
- * OpenCode's sink. It can push once it knows the owner's session and has found the service. A failed post reads the
- * registration again, once, and tries the service it names if that is another (the service may have restarted).
+ * What the committed opencode.json makes ask every time (decision: they always ask), as OpenCode checks a call against
+ * a rule: its action, and its resource ("*" for an MCP tool; the command for the shell).
  */
-export function openCodeSink(options: OpenCodeSinkOptions): PushSink {
+export const ALWAYS_ASK: readonly { action: string; resource: string; named: string }[] = [
+  { action: 'zoom-meeting_join_meeting', resource: '*', named: 'join_meeting' },
+  { action: 'zoom-meeting_set_brief', resource: '*', named: 'set_brief' },
+  { action: 'zoom-meeting_slides_control', resource: '*', named: 'slides_control' },
+  { action: 'shell', resource: 'npm run slides', named: 'npm run slides' },
+  { action: 'shell', resource: 'npm run slides -- start deck.pdf', named: 'npm run slides' },
+]
+
+/**
+ * Which of ALWAYS_ASK a project's saved approvals ("Allow always") let run without asking, by name, and those
+ * approvals' IDs (only plain ones, for the line that says how to remove them); null if the list can't be read.
+ */
+export function savedLifts(rows: unknown): { named: string[]; ids: string[] } | null {
+  if (!Array.isArray(rows)) return null
+  const named = new Set<string>()
+  const ids = new Set<string>()
+  for (const ask of ALWAYS_ASK) {
+    for (const row of rows) {
+      const r = record(row)
+      if (typeof r?.action !== 'string' || typeof r.resource !== 'string' || !wildcard(ask.action, r.action) || !wildcard(ask.resource, r.resource)) continue
+      named.add(ask.named)
+      if (typeof r.id === 'string' && /^[\w-]{1,100}$/.test(r.id)) ids.add(r.id)
+    }
+  }
+  return { named: [...named], ids: [...ids] }
+}
+
+// --- The sink -------------------------------------------------------------------------------------------------------
+export interface OpenCodeSinkOptions {
+  /** The registration file: OpenCode's own (serviceFile()) unless a test gives another; null when there is none. */
+  file?: string | null
+  /** How long one request may take (ms). */
+  timeoutMs?: number
+  /** Where log lines go (stderr: stdout carries MCP). */
+  log?: (line: string) => void
+  /** Whether a process started this one (isAncestor unless a test gives another). */
+  ancestor?: (pid: number) => boolean | null
+}
+
+export interface OpenCodePushSink extends PushSink {
+  /**
+   * A session called an owner-only tool. It becomes the owner's session, the one events are posted to, once the service
+   * says it is a session of its own, not a subagent's. Resolves once that is settled; never throws.
+   */
+  ownerCalled(session: string): Promise<void>
+}
+
+/**
+ * OpenCode's sink. It can push once it knows the owner's session and has found the service, and while nothing in the
+ * project has lifted what always asks.
+ *
+ * - The service: the registration names it, but only one that is alive and started this channel is used (its process
+ *   is an ancestor of this one, checked on this machine before anything is sent to it), and only once the service at
+ *   the registered URL says it is that process (GET /api/info, as OpenCode's own client checks). A registration left
+ *   by a service that has stopped, or one of a server this channel doesn't run in, is never sent the password.
+ * - The owner's session: the one that last called an owner-only tool, if it has no parent. A subagent's session (the
+ *   built-in General agent has every tool the session has) is never taken: events go on to the owner's own session.
+ * - What always asks: the committed opencode.json makes join_meeting, set_brief, slides_control and npm run slides ask
+ *   every time. OpenCode lets "Allow always" lift that for the whole project; while it is lifted, nothing is posted,
+ *   so meeting text put into the session can't run one of them with nobody asked.
+ *
+ * A failed post reads the registration again, once, and checks and tries the service it names if that is another.
+ */
+export function openCodeSink(options: OpenCodeSinkOptions = {}): OpenCodePushSink {
   const file = options.file === undefined ? serviceFile() : options.file
   const timeoutMs = options.timeoutMs ?? POST_TIMEOUT_MS
   const log = options.log ?? ((line: string) => console.error(line))
+  const ancestor = options.ancestor ?? isAncestor
   let known: OpenCodeService | null = null
-  // Why the service can't be used, logged once rather than at every check.
+  let owner: string | null = null
+  // What always asks that the project's saved approvals let run without asking (empty while none do).
+  let lifted: string[] = []
+  // Owner-only calls in the order they came, and the latest whose check has been applied.
+  let calls = 0
+  let applied = 0
+  // Why the sink can't push, logged once rather than at every check.
   let lastProblem = ''
   const say = (problem: string) => {
     if (problem !== lastProblem) log(`[zoom-meeting] ${problem}. Until it can be, meeting questions reach this session only through the meeting-assistant.`)
     lastProblem = problem
   }
-  const find = (): OpenCodeService | null => {
+
+  /** Reads the registration and checks that it names the service this channel runs in: the service, or null. */
+  const find = async (): Promise<OpenCodeService | null> => {
     known = null
     if (!file) {
       say("OpenCode's service registration can't be found: there is no home folder or XDG_STATE_HOME")
@@ -210,22 +365,121 @@ export function openCodeSink(options: OpenCodeSinkOptions): PushSink {
       say(found.problem)
       return null
     }
+    const service = found.service
+    const named = `OpenCode's service registration ${file}`
+    if (service.pid === undefined) {
+      say(`${named} names no process: it is not used`)
+      return null
+    }
+    const started = ancestor(service.pid)
+    if (started === null) {
+      say(`${named} can't be checked: this system doesn't say which process started this channel`)
+      return null
+    }
+    if (!started) {
+      say(`${named} names a service this channel doesn't run in (it has stopped, or this OpenCode runs a server of its own): it is not used`)
+      return null
+    }
+    const info = await call(service, 'GET', '/api/info', timeoutMs)
+    if (!info.ok) {
+      say(`OpenCode's service did not say who it is (${info.why}): it is not used`)
+      return null
+    }
+    const { pid, version } = record(info.body) ?? {}
+    if (pid !== service.pid || (service.version !== undefined && version !== service.version)) {
+      say(`The service at the address ${named} gives is not the one it registers: it is not used`)
+      return null
+    }
     lastProblem = ''
-    known = found.service
-    return known
+    known = service
+    return service
   }
+
+  /**
+   * The service found before, while it still started this channel. One that has stopped leaves its registration behind,
+   * and its address to whatever listens there next, while this channel, its orphan, may still be linked to the voice
+   * service: it is never posted to again.
+   */
+  const stillOurs = (): OpenCodeService | null => {
+    if (!known) return null
+    if (known.pid !== undefined && ancestor(known.pid) === true) return known
+    known = null
+    say("The OpenCode service this channel ran in has stopped: nothing is posted until the service it runs in is found again")
+    return null
+  }
+
+  /**
+   * Whether the session has no parent (root) or is a subagent's, and its project (OpenCode keeps saved approvals by
+   * project, and lists none without one); null when the service can't say.
+   */
+  const lookUp = async (service: OpenCodeService, session: string): Promise<{ root: boolean; project: string } | null> => {
+    const got = await call(service, 'GET', `/api/session/${encodeURIComponent(session)}`, timeoutMs)
+    if (!got.ok) {
+      say(`OpenCode's service could not say whose session called an owner-only tool (${got.why}): it is not taken as yours`)
+      return null
+    }
+    const info = record(record(got.body)?.data)
+    if (!info || info.id !== session || typeof info.projectID !== 'string' || !/^[\w-]{1,100}$/.test(info.projectID)) {
+      say("OpenCode's service did not say whose session called an owner-only tool: it is not taken as yours")
+      return null
+    }
+    return { root: info.parentID === undefined || info.parentID === null, project: info.projectID }
+  }
+
   return {
-    canPush: () => options.owner() !== null && (known ?? find()) !== null,
+    canPush: () => owner !== null && lifted.length === 0 && stillOurs() !== null,
+
+    async ownerCalled(session: string) {
+      const turn = ++calls
+      const service = stillOurs() ?? (await find())
+      if (!service) return
+      const found = await lookUp(service, session)
+      if (!found) return
+      if (!found.root) {
+        if (turn > applied) {
+          log(`[zoom-meeting] A subagent's session used an owner-only tool: it is not taken as yours.${owner ? ' Events still go to your own session.' : ''}`)
+        }
+        return
+      }
+      // What the project's saved approvals lift, checked at every owner-only call: "Allow always" is chosen at one.
+      const saved = await call(service, 'GET', `/api/permission/saved?projectID=${encodeURIComponent(found.project)}`, timeoutMs)
+      const now = saved.ok ? savedLifts(record(saved.body)?.data) : null
+      // A later call has been settled already: it stands.
+      if (turn < applied) return
+      applied = turn
+      owner = session
+      if (now === null) {
+        lifted = ['(unknown)']
+        say(`Could not check OpenCode's saved approvals (${saved.ok ? 'an answer it could not read' : saved.why}): nothing is posted into your session`)
+        return
+      }
+      lifted = now.named
+      if (lifted.length) {
+        // OpenCode lists saved approvals only by project: the line gives the commands that remove these.
+        const remove = now.ids.length
+          ? now.ids.map(id => `opencode api permission.saved.remove --param id=${id}`).join('; ')
+          : `opencode api permission.saved.list --param projectID=${found.project} lists them`
+        say(
+          `OpenCode has saved "Allow always" for ${lifted.join(', ')} in this project, which the committed opencode.json makes ask ` +
+            "every time: so that meeting text can't make your session do that with nobody asked, nothing is posted into it until " +
+            `you remove that approval (${remove}), then use join_meeting, set_brief, slides_status, slides_control or why_not_answered again`,
+        )
+      } else lastProblem = ''
+    },
+
     async push(event: ChannelEvent) {
-      const session = options.owner()
-      if (!session) return false
-      const service = known ?? find()
+      const session = owner
+      if (!session || lifted.length) return false
+      // Checked again before each post: the password goes only to the service this channel still runs in.
+      const service = stillOurs() ?? (await find())
       if (!service) return false
       const text = plainEvent(event)
-      let outcome = await post(service, session, text, timeoutMs)
+      const steer = { text, delivery: 'steer' }
+      const path = `/api/session/${encodeURIComponent(session)}/synthetic`
+      let outcome = await call(service, 'POST', path, timeoutMs, steer)
       if (!outcome.ok) {
-        const again = find()
-        if (again && !sameService(again, service)) outcome = await post(again, session, text, timeoutMs)
+        const again = await find()
+        if (again && !sameService(again, service)) outcome = await call(again, 'POST', path, timeoutMs, steer)
       }
       // What failed, never what the event said, the password or the URL.
       if (!outcome.ok) log(`[zoom-meeting] Could not post a ${event.kind} event to the OpenCode session: ${outcome.why}.`)

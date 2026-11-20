@@ -107,9 +107,6 @@ const pending = new Map<string, (msg: ToSession) => void>()
 // the questions does not depend on which one reconnects last. get_transcript, why_not_answered, set_brief,
 // add_to_brief and post_chat don't count: reading the transcript in another tab must not take the questions.
 let lastUsedAt = 0
-// The owner's own session, as the client names it in the _meta of a call to an owner-only tool: the latest such call's
-// (src/channel/sink.ts). Only a sink that posts to a session by its ID needs it (OpenCode's). null until then.
-let ownerSession: string | null = null
 
 // Why the last attempt to link failed, said in full: logged once rather than every 3 seconds (on stderr: stdout
 // carries the MCP protocol), and returned by the tools while there is no link, so the session can tell the owner the
@@ -260,15 +257,14 @@ function request(msg: FromSession & { request_id: string }, timeoutMs = 10_000):
 
 /**
  * The sink for this client (src/channel/sink.ts): Claude Code's channel notification, OpenCode's synthetic input posted
- * to the owner's session (src/channel/push-opencode.ts), or none for Codex, which drops server notifications. owner:
- * the owner's session, for a sink that posts to it by its ID.
+ * to the owner's session (src/channel/push-opencode.ts), or none for Codex, which drops server notifications.
  */
-function sinkFor(client: Client, owner: () => string | null): PushSink {
+function sinkFor(client: Client): PushSink {
   if (client === 'claude-code') return claudeCodeSink(notification => mcp.notification(notification))
-  if (client === 'opencode') return openCodeSink({ owner })
+  if (client === 'opencode') return openCodeSink()
   return NO_PUSH
 }
-const SINK = sinkFor(CLIENT, () => ownerSession)
+const SINK = sinkFor(CLIENT)
 
 /**
  * Pushes an event into the owner's session. One it can't push is dropped, with one log line saying only its kind and
@@ -301,6 +297,7 @@ async function pushQuestion(q: Question): Promise<void> {
  */
 function noTaker(q: Question): void {
   sendToService({ type: 'no_taker', id: q.question_id })
+  canPushChanged()
 }
 
 // Questions go to the meeting-assistant agent while one is taking them (next_question), otherwise into the session
@@ -611,13 +608,15 @@ function deliveryText(d: Delivery): string {
 }
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
-  // A call to an owner-only tool names the owner's own session, for a sink that posts to it.
+  // A call to an owner-only tool names the calling session, for a sink that posts to the owner's: the sink checks it is
+  // the owner's own (not a subagent's) while the tool runs, and the voice service hears if that changed what it can do.
   const caller = ownerSessionId(CLIENT, req.params.name, extra._meta)
-  if (caller) ownerSession = caller
+  const checked = caller ? SINK.ownerCalled?.(caller) : undefined
   try {
     return await callTool(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>, extra.signal)
   } finally {
     canPushChanged()
+    void checked?.then(canPushChanged)
   }
 })
 

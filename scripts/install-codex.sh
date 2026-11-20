@@ -40,6 +40,27 @@ fi
 if [ "$version" != "$TESTED" ]; then
   echo "Note: Codex $version is newer than AgentVoice was tested with ($TESTED). If something fails, tell us."
 fi
+# On Linux, Codex's sandbox makes an empty, read-only placeholder for a path the floor denies that doesn't exist, when
+# that path is in a folder its commands may write (this folder and the temporary folders), and it can leave it behind.
+# The floor's home-folder entries are only there when the home folder itself is in a temporary folder.
+physical() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"; }
+if [ "$(uname -s)" = Linux ] && [ -n "${HOME:-}" ]; then
+  home_dir="$(physical "$HOME")"
+  for tmp in /tmp "${TMPDIR:-}"; do
+    [ -n "$tmp" ] || continue
+    tmp_dir="$(physical "${tmp%/}")"
+    [ "$tmp_dir" != / ] || continue
+    case "$home_dir/" in
+      "$tmp_dir"/*)
+        echo "Your home folder ($HOME) is inside $tmp, a folder where Codex's sandbox lets commands write. There, Codex makes" >&2
+        echo "empty, read-only placeholders for the floor's home-folder entries that don't exist (~/.ssh, ~/.aws and the rest) and" >&2
+        echo "can leave them behind, which breaks ssh, gpg and other tools and can stop Codex starting here. Use a home folder" >&2
+        echo "outside /tmp and \$TMPDIR. If Codex already ran here, remove the empty files it left in your home folder." >&2
+        exit 1
+        ;;
+    esac
+  done
+fi
 if [ ! -x "$DIR/node_modules/.bin/tsx" ]; then
   echo "Run npm install in $DIR first: the channel runs with its tsx." >&2
   exit 1

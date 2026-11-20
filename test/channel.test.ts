@@ -677,16 +677,50 @@ test("Codex: meeting events are dropped with one line each, naming only the kind
 
 // --- OpenCode: questions and events posted into the owner's session --------------------------------------------
 /** A fake OpenCode background service: a loopback HTTP server, registered in a state folder of its own. */
-async function fakeOpenCode(t: Ctx) {
+interface FakeOpenCodeOptions {
+  /** The process the registration names: by default this test's, which the channel it starts runs under. */
+  pid?: number
+  /** The pid the service says it is at /api/info: by default the registered one. */
+  infoPid?: number
+  /** Sessions that are subagents', by ID: their parent. Any other session has none. */
+  parents?: Record<string, string>
+  /** The project's saved approvals ("Allow always"), as /api/permission/saved lists them. */
+  saved?: { action: string; resource: string }[]
+}
+
+/**
+ * A fake OpenCode background service: its registration in a state folder of its own, and the routes the channel uses
+ * (/api/info, /api/session/:id, /api/permission/saved and the synthetic post). requests: every request it was sent.
+ */
+async function fakeOpenCode(t: Ctx, o: FakeOpenCodeOptions = {}) {
   const posts: { url?: string; authorization?: string; body: any }[] = []
+  const requests: { method?: string; url?: string; authorization?: string }[] = []
   let status = 200
+  const pid = o.pid ?? process.pid
+  const fake = { saved: o.saved ?? [] }
   const server = http.createServer((req, res) => {
     let body = ''
     req.on('data', chunk => (body += chunk))
     req.on('end', () => {
-      posts.push({ url: req.url, authorization: req.headers.authorization, body: JSON.parse(body) })
-      res.writeHead(status, { 'content-type': 'application/json' })
-      res.end('{}')
+      requests.push({ method: req.method, url: req.url, authorization: req.headers.authorization })
+      const json = (code: number, value: unknown) => {
+        res.writeHead(code, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(value))
+      }
+      const session = /^\/api\/session\/([^/?]+)$/.exec(req.url ?? '')?.[1]
+      if (req.method === 'GET' && req.url === '/api/info') return json(200, { version: '2.3.2', pid: o.infoPid ?? pid, urls: [], paths: { tmp: '/tmp' } })
+      if (req.method === 'GET' && session) {
+        const parentID = o.parents?.[session]
+        return json(200, { data: { id: session, projectID: 'prj_av', ...(parentID ? { parentID } : {}) } })
+      }
+      if (req.method === 'GET' && req.url === '/api/permission/saved?projectID=prj_av') {
+        return json(200, { data: fake.saved.map((rule, i) => ({ id: `psv_${i}`, projectID: 'prj_av', ...rule })) })
+      }
+      if (req.method === 'POST' && /^\/api\/session\/[^/]+\/synthetic$/.test(req.url ?? '')) {
+        posts.push({ url: req.url, authorization: req.headers.authorization, body: JSON.parse(body) })
+        return json(status, {})
+      }
+      json(404, {})
     })
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -694,13 +728,21 @@ async function fakeOpenCode(t: Ctx) {
   const password = 'fake-opencode-password-abcdefghijklmnopqrstuv'
   fs.mkdirSync(path.join(state, 'opencode'))
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-  fs.writeFileSync(path.join(state, 'opencode', 'service.json'), JSON.stringify({ id: 'svc', version: '2.3.2', url, pid: process.pid, password }), { mode: 0o600 })
+  fs.writeFileSync(path.join(state, 'opencode', 'service.json'), JSON.stringify({ id: 'svc', version: '2.3.2', url, pid, password }), { mode: 0o600 })
   t.after(() => {
     server.closeAllConnections()
     server.close()
     fs.rmSync(state, { recursive: true, force: true })
   })
-  return { posts, state, password, answer: (s: number) => void (status = s) }
+  return { posts, requests, state, password, fake, answer: (s: number) => void (status = s) }
+}
+
+/** A pid no process has: one that has just ended. */
+async function deadPid(): Promise<number> {
+  const { spawn } = await import('node:child_process')
+  const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' })
+  await new Promise(resolve => child.on('exit', resolve))
+  return child.pid!
 }
 
 test("OpenCode: once the owner's session calls an owner-only tool, questions no assistant takes and events are posted into it", { timeout: 20000 }, async t => {
@@ -763,5 +805,113 @@ test('OpenCode: what the client says it is is only a cross-check, logged when it
     assert.match(stderr(), warning)
     // What it does is still what AGENTVOICE_CLIENT says: OpenCode with no owner yet can't push; Claude Code can.
     assert.deepEqual(service.links[0].got[0], { type: 'hello', can_push: env === '' })
+  }
+})
+
+test("OpenCode: a subagent's call to an owner-only tool never moves the push away from the owner's session", { timeout: 20000 }, async t => {
+  // OpenCode's built-in General subagent has every tool the session has, and slides_status and why_not_answered run
+  // without asking: its calls carry its own session, which has a parent.
+  const opencode = await fakeOpenCode(t, { parents: { ses_general_child: 'ses_owner' } })
+  const service = await fakeService(t)
+  const { callAs, stderr } = await startChannel(t, service.socketPath, { AGENTVOICE_CLIENT: 'opencode', XDG_STATE_HOME: opencode.state }, { name: 'opencode', version: '2.3.2' })
+  await service.hello()
+  const link = service.links[0]
+  const hellos = () => link.got.filter(m => m.type === 'hello').map(m => m.can_push)
+
+  // A subagent's call before the owner's: it is not taken, so there is still nobody to push to.
+  await callAs('ses_general_child', 'why_not_answered')
+  await wait(300)
+  assert.deepEqual(hellos(), [false])
+
+  assert.match(await callAs('ses_owner', 'join_meeting', { meeting_url: 'https://zoom.us/j/1' }), /Alex is joining/)
+  await until(() => hellos().length > 1)
+  await callAs('ses_general_child', 'slides_status')
+  await callAs('ses_general_child', 'why_not_answered')
+  await wait(300)
+  link.ws.send(askQ('q1', 'k1'))
+  link.ws.send(JSON.stringify({ type: 'meeting_ended', meeting: 'k1', transcript_file: '/t.md', questions: ['Question q1?'], minutes_file: '', no_minutes: 'x' }))
+  await until(() => opencode.posts.length >= 2)
+  assert.deepEqual(opencode.posts.map(p => p.url), ['/api/session/ses_owner/synthetic', '/api/session/ses_owner/synthetic'], "the owner's session, never the subagent's")
+  assert.match(stderr(), /A subagent's session used an owner-only tool: it is not taken as yours\. Events still go to your own session\./)
+  assert.ok(!stderr().includes('ses_general_child') && !stderr().includes(opencode.password))
+})
+
+test("OpenCode: a registration left by a service that has stopped, or naming one the channel doesn't run in, is never sent anything", { timeout: 20000 }, async t => {
+  // The file outlives a service that was killed, and the port is the same for every user of the computer: whatever
+  // listens there now must not get the password, the meeting's text, or the question counted as delivered.
+  const other = (await import('node:child_process')).spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' })
+  t.after(() => other.kill())
+  for (const [what, o] of [
+    ['a service that has stopped', { pid: await deadPid() }],
+    ['a process that is alive but did not start the channel (a server of its own)', { pid: other.pid! }],
+  ] as const) {
+    const opencode = await fakeOpenCode(t, o)
+    const service = await fakeService(t)
+    const { callAs, stderr } = await startChannel(t, service.socketPath, { AGENTVOICE_CLIENT: 'opencode', XDG_STATE_HOME: opencode.state }, { name: 'opencode', version: '2.3.2' })
+    await service.hello()
+    const link = service.links[0]
+    await callAs('ses_owner', 'join_meeting', { meeting_url: 'https://zoom.us/j/1' })
+    await wait(300)
+    link.ws.send(askQ('q1'))
+    await until(() => link.got.some(m => m.type === 'no_taker') || opencode.posts.length > 0)
+    assert.deepEqual(opencode.requests, [], `${what}: nothing sent to it, the password least of all`)
+    assert.deepEqual(link.got.filter(m => m.type === 'hello').map(m => m.can_push), [false], what)
+    assert.match(stderr(), /OpenCode's service registration .*service\.json names a service this channel doesn't run in \(it has stopped, or this OpenCode runs a server of its own\): it is not used\./, what)
+    assert.ok(!stderr().includes(opencode.password), what)
+  }
+})
+
+test("OpenCode: a service at the registered address that says it is another process is not used either", { timeout: 20000 }, async t => {
+  const opencode = await fakeOpenCode(t, { infoPid: process.pid + 100000 })
+  const service = await fakeService(t)
+  const { callAs, stderr } = await startChannel(t, service.socketPath, { AGENTVOICE_CLIENT: 'opencode', XDG_STATE_HOME: opencode.state }, { name: 'opencode', version: '2.3.2' })
+  await service.hello()
+  const link = service.links[0]
+  await callAs('ses_owner', 'join_meeting', { meeting_url: 'https://zoom.us/j/1' })
+  await wait(300)
+  link.ws.send(askQ('q1'))
+  await until(() => link.got.some(m => m.type === 'no_taker') || opencode.posts.length > 0)
+  assert.equal(opencode.posts.length, 0, 'nothing posted')
+  assert.deepEqual(opencode.requests.map(r => `${r.method} ${r.url}`), ['GET /api/info'], 'only asked who it is')
+  assert.match(stderr(), /The service at the address OpenCode's service registration .* gives is not the one it registers: it is not used\./)
+})
+
+test('OpenCode: while the project has a saved "Allow always" for what always asks, nothing is posted into the session', { timeout: 20000 }, async t => {
+  // An "Allow always" on join_meeting makes it run without asking in every session of the project: a question posted
+  // into the session could then send Alex into a meeting with nobody asked.
+  const opencode = await fakeOpenCode(t, { saved: [{ action: 'zoom-meeting_join_meeting', resource: '*' }, { action: 'read', resource: '*' }] })
+  const service = await fakeService(t)
+  const { callAs, stderr } = await startChannel(t, service.socketPath, { AGENTVOICE_CLIENT: 'opencode', XDG_STATE_HOME: opencode.state }, { name: 'opencode', version: '2.3.2' })
+  await service.hello()
+  const link = service.links[0]
+  const hellos = () => link.got.filter(m => m.type === 'hello').map(m => m.can_push)
+  await callAs('ses_owner', 'join_meeting', { meeting_url: 'https://zoom.us/j/1' })
+  await wait(300)
+  link.ws.send(askQ('q1'))
+  await until(() => link.got.some(m => m.type === 'no_taker' && m.id === 'q1') || opencode.posts.length > 0)
+  assert.equal(opencode.posts.length, 0, 'nothing posted')
+  assert.match(stderr(), /OpenCode has saved "Allow always" for join_meeting in this project, which the committed opencode\.json makes ask every time: .*nothing is posted into it until you remove that approval \(opencode api permission\.saved\.remove --param id=psv_0\)/)
+  link.ws.send(JSON.stringify({ type: 'meeting_started', meeting: 'm1' }))
+  await wait(300)
+  assert.equal(opencode.posts.length, 0, 'nothing posted')
+  assert.deepEqual(hellos(), [false])
+
+  // Removed: the next owner-only call sees it, and the push is back.
+  opencode.fake.saved = [{ action: 'read', resource: '*' }]
+  await callAs('ses_owner', 'why_not_answered')
+  await until(() => hellos().length > 1)
+  assert.deepEqual(hellos(), [false, true])
+  link.ws.send(askQ('q2'))
+  await until(() => opencode.posts.length > 0)
+  assert.equal(opencode.posts[0].url, '/api/session/ses_owner/synthetic')
+
+  // So does one for npm run slides, or a rule broad enough to cover them.
+  for (const rule of [{ action: 'shell', resource: 'npm run slides *' }, { action: 'zoom-meeting_*', resource: '*' }, { action: '*', resource: '*' }]) {
+    opencode.fake.saved = [rule]
+    await callAs('ses_owner', 'why_not_answered')
+    await until(() => hellos().at(-1) === false)
+    opencode.fake.saved = []
+    await callAs('ses_owner', 'why_not_answered')
+    await until(() => hellos().at(-1) === true)
   }
 })

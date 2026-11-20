@@ -8,6 +8,7 @@ The deep tier with Codex CLI instead of Claude Code: the same `zoom-meeting` cha
 
 - Codex CLI 0.171.0 or later: `npm install -g @openai/codex`. `scripts/install-codex.sh` refuses an older one, and says so for a newer one.
 - This folder as a Git clone, as the README's Quick start makes it: Codex loads a project's `.codex/` folder only from a Git checkout you trust.
+- On Linux, a home folder outside `/tmp` and `$TMPDIR`. Codex's sandbox lets commands write in those, and there it makes an empty, read-only placeholder for each home-folder entry of [the floor](#the-floor) that doesn't exist, and can leave them behind: in the check, `~/.ssh`, `~/.aws` and the others became empty files, and Codex could no longer start in this folder. With a home folder elsewhere, nothing was made. `scripts/install-codex.sh` refuses a home folder in a temporary folder.
 - `npm install` run in this folder, and the voice service set up and started once (see [Setting it up](setup.md)): the channel links to it with the local token the service makes.
 
 ## Setting it up
@@ -70,9 +71,10 @@ It then loses the shell, and keeps everything else (checked: `exec_command` and 
 
 `default_permissions = "agentvoice"` in `.codex/config.toml` makes a permission profile Codex's sandbox for every session in this folder. It is Codex's `:workspace` (write in this folder and the temporary folders, read elsewhere, no network), minus the files no command may read or write:
 - in this folder and every folder in it: the 12 `.env` names Claude Code's rules deny (`.env`, `.env.local`, `.env.*.local`, `.env.production` and the rest), `*.pem`, `*.key`, `*.p12`, `*.pfx`, `local-token` and everything under `data/decks`;
-- in your home folder: `~/.ssh`, `~/.cloudflared`, `~/.aws`, `~/.claude.json`, `~/.git-credentials`, `~/.netrc`, `~/.config/gh`, `~/.docker/config.json`, `~/.kube`, `~/.gnupg` and `~/.claude/.credentials.json`.
+- in your home folder: `~/.ssh`, `~/.cloudflared`, `~/.aws`, `~/.claude.json`, `~/.git-credentials`, `~/.netrc`, `~/.config/gh`, `~/.docker/config.json`, `~/.kube`, `~/.gnupg` and `~/.claude/.credentials.json`;
+- the coding clients' own credentials, which Claude Code's rules don't list: Codex's login (`~/.codex/auth.json`), and OpenCode's service password, which opens every OpenCode session, and its stored keys (`~/.local/state/opencode` and `~/.local/share/opencode`). Only at those default places: with `CODEX_HOME`, `XDG_STATE_HOME` or `XDG_DATA_HOME` set elsewhere, they are outside the floor.
 
-A test checks it denies the same example files as `.claude/settings.json`, in this folder and in the home folder. Unlike Claude Code's deny rules, the sandbox holds for every command, whatever it is: in the check, `cat` got "Permission denied" for each kind, even running as root, and `.env.example` stayed readable. In this folder, it replaces a `sandbox_mode` in your own config.
+A test checks it denies the same example files as `.claude/settings.json`, in this folder and in the home folder, and the clients' credentials as well. Unlike Claude Code's deny rules, the sandbox holds for every command, whatever it is: in the check, `cat` got "Permission denied" for each kind, even running as root, and `.env.example` stayed readable. In this folder, it replaces a `sandbox_mode` in your own config.
 
 Its limits:
 - **It stops at this folder.** Codex finds the files a pattern matches by walking the folder before each command, which it can't do for the whole disk, so outside this folder only the home-folder entries hold. A `.env` or a key in a knowledge-source folder elsewhere is readable to Codex's commands, the meeting-assistant's included. Claude Code and OpenCode deny those names anywhere. Keep secrets out of the folders your sources are in.

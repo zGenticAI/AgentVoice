@@ -148,3 +148,24 @@ test("outside this folder, Claude Code and OpenCode still deny those names, but 
     assert.ok(!codexDenies(p), `Codex: ${p}`)
   }
 })
+
+test("Codex's and OpenCode's floors also keep the coding clients' own credentials from their commands and reads", () => {
+  // Codex's meeting-assistant has the shell, and OpenCode's session reads by path: each must also be kept from Codex's
+  // own login and OpenCode's service password (which opens every OpenCode session) and stored keys, at their default
+  // places. Claude Code's own rules stay as they are.
+  const credentials = [
+    '~/.codex/auth.json',
+    '~/.local/state/opencode/service.json',
+    '~/.local/state/opencode/service.json.svc_1.tmp',
+    '~/.local/share/opencode/opencode.db',
+    '~/.local/share/opencode/auth.json',
+  ]
+  for (const p of credentials) {
+    assert.ok(codexDenies(p), `Codex: ${p}`)
+    assert.ok(openCodeDenies(p), `OpenCode: ${p}`)
+  }
+  for (const p of ['~/.codex/config.toml', '~/.codex/AGENTS.md', '~/.local/state/other/state.json', '~/.local/share/other/data.db', '~/.local/share/opencode-notes.md']) {
+    assert.ok(!codexDenies(p), `Codex: ${p}`)
+    assert.ok(!openCodeDenies(p), `OpenCode: ${p}`)
+  }
+})

@@ -56,8 +56,8 @@ approval_mode = "prompt"
 approval_mode = "prompt"
 
 # Codex's :workspace (write in this folder and the temp folders, read elsewhere, no network), minus the files
-# .claude/settings.json denies Claude Code. Codex's permission profiles are a beta feature. The channel is not
-# sandboxed: it reads .env and its data folder itself.
+# .claude/settings.json denies Claude Code, and the coding clients' own credentials. Codex's permission profiles are a
+# beta feature. The channel is not sandboxed: it reads .env and its data folder itself.
 [permissions.agentvoice]
 description = "AgentVoice: Codex's workspace access, without keys, home-folder secrets or slide decks"
 extends = ":workspace"
@@ -76,6 +76,11 @@ glob_scan_max_depth = 16
 "~/.kube" = "deny"
 "~/.gnupg" = "deny"
 "~/.claude/.credentials.json" = "deny"
+# The coding clients' own credentials, where they keep them unless CODEX_HOME, XDG_STATE_HOME or XDG_DATA_HOME says
+# otherwise: Codex's login, and OpenCode's service password (it opens every OpenCode session) and stored keys.
+"~/.codex/auth.json" = "deny"
+"~/.local/state/opencode" = "deny"
+"~/.local/share/opencode" = "deny"
 
 # In this folder and every folder in it ("**/" also matches this folder itself). Codex can't look for these across the
 # whole disk, so outside this folder only the home-folder entries above hold: a .env in a knowledge-source folder

@@ -143,14 +143,16 @@ exit 3
   )
   const home = path.join(dir, 'home')
   fs.mkdirSync(home)
-  type Options = { version?: string; here?: string; elsewhere?: string; fail?: string; withCodex?: boolean; codexHome?: string }
+  // The home folder the script is run with: by default one outside the temporary folders, as an owner's is (it need not
+  // exist: the script reads nothing in it).
+  type Options = { version?: string; here?: string; elsewhere?: string; fail?: string; withCodex?: boolean; codexHome?: string; home?: string; tmpdir?: string }
   const run = (args: string[] = [], o: Options = {}) =>
     spawnSync('bash', [path.join(repo, 'scripts/install-codex.sh'), ...args], {
       encoding: 'utf8',
       env: {
         PATH: [...(o.withCodex === false ? [] : [bin]), path.dirname(process.execPath), '/usr/bin', '/bin'].join(':'),
-        HOME: home,
-        TMPDIR: dir,
+        HOME: o.home ?? '/home/av-test-owner',
+        TMPDIR: o.tmpdir ?? dir,
         FAKE_REPO: repo,
         FAKE_CODEX_VERSION: o.version ?? '0.171.0',
         FAKE_HERE: o.here ?? OURS,
@@ -233,4 +235,24 @@ test("install-codex.sh refuses no Codex, an older one, a config Codex can't load
   }
   fs.rmSync(path.join(box.repo, 'node_modules'), { recursive: true })
   refused(box.run(), /Run npm install in .* first: the channel runs with its tsx\./)
+})
+
+test('install-codex.sh refuses a home folder inside a temporary folder, where Codex would leave placeholders in it', t => {
+  // On Linux, Codex's sandbox makes an empty read-only placeholder for a denied path that doesn't exist, when the path
+  // is in a folder its commands may write (this folder and the temporary folders), and can leave it behind: with a home
+  // folder in /tmp, ~/.ssh, ~/.aws and the rest became empty files, and Codex could no longer start here.
+  const box = installSandbox(t)
+  const before = box.snapshot()
+  for (const [home, tmpdir] of [[box.home, undefined], ['/tmp/av-owner', '/var/tmp/av-elsewhere'], ['/tmp', undefined]] as const) {
+    const r = box.run([], { home, tmpdir })
+    assert.equal(r.status, 1, `${home}: ${r.stdout}`)
+    assert.match(r.stderr, /^Your home folder \(.+\) is inside .+, a folder where Codex's sandbox lets commands write\. /, home)
+    assert.match(r.stderr, /empty, read-only placeholders .*~\/\.ssh.*can stop Codex starting here/s)
+    assert.match(r.stderr, /Use a home folder\noutside \/tmp and \$TMPDIR\./)
+    assert.equal(r.stdout, '')
+  }
+  assert.deepEqual(box.snapshot(), before, 'nothing written')
+  // A home folder beside them, with a name that only starts the same, is fine.
+  assert.equal(box.run([], { home: '/tmpfiles/owner' }).status, 0)
+  assert.equal(box.run([], { home: '/home/owner' }).status, 0)
 })

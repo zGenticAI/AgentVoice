@@ -103,6 +103,23 @@ test("the owner's session is asked before joining, setting the brief, steering s
 
 const SIX = ['next_question', 'get_profile', 'reply', 'post_chat', 'get_transcript', 'add_to_brief']
 
+test("OpenCode's built-in General subagent may use none of the channel's tools, whatever is saved as always allowed", () => {
+  // General has every tool the session has (packages/core/src/plugin/agent.ts at 2.3.2 denies it only question and
+  // subagent): with them it could take the questions, or be taken for the owner's session. A configured deny beats a
+  // saved "Allow always" (permission.ts, evaluateInput), so this holds after one too. The channel also takes no
+  // subagent's session as the owner's (src/channel/push-opencode.ts).
+  const GENERAL: Rule[] = CONFIG.agents.general.permissions
+  const builtIn: Rule[] = [{ action: 'question', resource: '*', effect: 'deny' }, { action: 'subagent', resource: '*', effect: 'deny' }]
+  const rules = [...BASE, ...GLOBAL, ...builtIn, ...GENERAL]
+  for (const tool of [...SIX, 'join_meeting', 'set_brief', 'slides_status', 'slides_control', 'why_not_answered']) {
+    assert.equal(evaluate(`zoom-meeting_${tool}`, '*', rules), 'deny', tool)
+  }
+  // Its other tools are as OpenCode makes them.
+  assert.equal(evaluate('read', 'docs/setup.md', rules), 'allow')
+  assert.equal(evaluate('shell', 'npm test', rules), 'allow')
+  assert.deepEqual(Object.keys(CONFIG.agents.general), ['permissions'], 'nothing else of it is changed')
+})
+
 test('the meeting-assistant may use its six tools and read, and nothing else', () => {
   const rules = [...BASE, ...GLOBAL, ...AGENT_RULES]
   assert.deepEqual(AGENT_RULES[0], { action: '*', resource: '*', effect: 'deny' }, 'everything is denied first')

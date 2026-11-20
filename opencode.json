@@ -17,6 +17,11 @@
     {"action": "shell", "resource": "npm run slides *", "effect": "ask"}
   ],
   "agents": {
+    "general": {
+      "permissions": [
+        {"action": "zoom-meeting_*", "resource": "*", "effect": "deny"}
+      ]
+    },
     "meeting-assistant": {
       "mode": "subagent",
       "permissions": [
@@ -85,6 +90,11 @@
     {"action": "tool.use", "resource": "read:*/.git-credentials", "effect": "deny"},
     {"action": "tool.use", "resource": "read:*/.netrc", "effect": "deny"},
     {"action": "tool.use", "resource": "read:*/.docker/config.json", "effect": "deny"},
-    {"action": "tool.use", "resource": "read:*/.claude/.credentials.json", "effect": "deny"}
+    {"action": "tool.use", "resource": "read:*/.claude/.credentials.json", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.codex/auth.json", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.local/state/opencode", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.local/state/opencode/*", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.local/share/opencode", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.local/share/opencode/*", "effect": "deny"}
   ]
 }
