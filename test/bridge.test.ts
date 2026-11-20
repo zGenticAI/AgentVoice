@@ -730,3 +730,146 @@ test("get_brief gives the service's answer for a key that can be a meeting's, an
   for (let i = 0; i < 40 && !b.got.some(m => m.request_id === 'x1'); i++) await settle(10)
   assert.deepEqual(b.got.find(m => m.request_id === 'x1'), { type: 'brief', request_id: 'x1', brief_for: 'unknown_meeting' })
 })
+
+// --- A session that can't take a question ---------------------------------------------------------------------
+/** A linked session that says whether it can be sent questions, as a channel does when it links. */
+async function linkSaying(port: number, canPush: boolean) {
+  const s = await link(port)
+  s.send({ type: 'hello', can_push: canPush })
+  await settle(20)
+  return s
+}
+
+/** Asks, noting why Alex stopped waiting (if it did) and how long it took. */
+function asking(bridge: SessionBridge, timeoutMs = 2000) {
+  const started = Date.now()
+  const out: { why?: string; ms?: number } = {}
+  const answer = bridge.ask(question, timeoutMs, undefined, why => {
+    out.why = why
+    out.ms = Date.now() - started
+  })
+  return { answer, out }
+}
+
+test('a question the active session cannot take goes on to the most recently used session that can be sent one', async t => {
+  const bridge = new SessionBridge(quiet())
+  const { wss, port } = serve(bridge)
+  t.after(() => wss.close())
+  const older = await linkSaying(port, true) // used long ago
+  const recent = await linkSaying(port, true) // used a minute ago
+  const codex = await linkSaying(port, false) // can't be sent one: another Codex session
+  const owner = await linkSaying(port, false) // the active one, with no meeting-assistant running
+  t.after(() => [older, recent, codex, owner].forEach(s => s.ws.terminate()))
+  older.send({ type: 'claim', at: Date.now() - 600_000 })
+  recent.send({ type: 'claim', at: Date.now() - 60_000 })
+  codex.send({ type: 'claim', at: Date.now() - 30_000 })
+  owner.send({ type: 'claim' })
+  await settle()
+
+  const { answer, out } = asking(bridge)
+  await settle()
+  assert.deepEqual([older, recent, codex, owner].map(s => s.questions().length), [0, 0, 0, 1], 'the active session first')
+  const asked = owner.questions()[0]
+  owner.send({ type: 'no_taker', id: asked.id })
+  await settle()
+  assert.deepEqual([older, recent, codex].map(s => s.questions().length), [0, 1, 0], 'then the most recently used that can be sent one')
+  assert.deepEqual(recent.questions()[0], asked, 'the same question, all of it')
+  recent.send({ type: 'reply', id: asked.id, spoken: 'From recent.' })
+  assert.deepEqual(await answer, { spoken: 'From recent.', detail: undefined })
+  assert.equal(out.why, undefined)
+})
+
+test('when no session can take a question, Alex stops waiting at once, and a late reply hears why', async t => {
+  const { bridge, wss, port } = keeping()
+  t.after(() => wss.close())
+  const owner = await linkSaying(port, false)
+  const other = await linkSaying(port, false)
+  t.after(() => [owner, other].forEach(s => s.ws.terminate()))
+  owner.send({ type: 'claim' })
+  await settle()
+
+  const { answer, out } = asking(bridge, 60_000)
+  await settle()
+  owner.send({ type: 'no_taker', id: owner.questions()[0].id })
+  assert.equal(await answer, null)
+  assert.equal(out.why, 'no_taker')
+  assert.ok((out.ms ?? Infinity) < 1000, 'at once, not after the minute')
+  assert.equal(other.questions().length, 0, 'never sent to a session that says it cannot be sent one')
+
+  // Alex told the meeting it couldn't reach the notes: a reply after that is late, and kept.
+  owner.send({ type: 'reply', id: owner.questions()[0].id, spoken: 'In March.', request_id: 'r1' })
+  assert.deepEqual(await acked(owner, 'r1'), { type: 'ack', request_id: 'r1', ok: false, late: true, why: 'no_taker', kept: true })
+})
+
+test('an older channel, which never says, counts as one that can be sent questions, and a session can say it again later', async t => {
+  const bridge = new SessionBridge(quiet())
+  const { wss, port } = serve(bridge)
+  t.after(() => wss.close())
+  const older = await link(port) // says hello with no can_push
+  const later = await linkSaying(port, false)
+  const owner = await linkSaying(port, false)
+  t.after(() => [older, later, owner].forEach(s => s.ws.terminate()))
+  owner.send({ type: 'claim' })
+  await settle()
+
+  const first = asking(bridge)
+  await settle()
+  owner.send({ type: 'no_taker', id: owner.questions()[0].id })
+  await settle()
+  assert.deepEqual([older.questions().length, later.questions().length], [1, 0])
+  older.send({ type: 'no_taker', id: older.questions()[0].id })
+  assert.equal(await first.answer, null)
+  assert.equal(first.out.why, 'no_taker')
+
+  // The other session can be sent questions now (OpenCode once it knows the owner's session): it is tried too.
+  later.send({ type: 'hello', can_push: true })
+  await settle()
+  const second = asking(bridge)
+  await settle()
+  owner.send({ type: 'no_taker', id: owner.questions()[1].id })
+  await settle()
+  assert.equal(later.questions().length, 1)
+  later.send({ type: 'reply', id: later.questions()[0].id, spoken: 'From later.' })
+  assert.deepEqual(await second.answer, { spoken: 'From later.', detail: undefined })
+})
+
+test('a question sent to every session ends at once only when all of them say they cannot take it', async t => {
+  const bridge = new SessionBridge(quiet())
+  const { wss, port } = serve(bridge)
+  t.after(() => wss.close())
+  const a = await linkSaying(port, false)
+  const b = await linkSaying(port, false)
+  t.after(() => [a, b].forEach(s => s.ws.terminate()))
+  let settled = false
+  const { answer, out } = asking(bridge)
+  void answer.then(() => (settled = true))
+  await settle()
+  const id = a.questions()[0].id
+  a.send({ type: 'no_taker', id })
+  a.send({ type: 'no_taker', id }) // said twice by the same session
+  b.send({ type: 'no_taker', id: 'some-other-question' })
+  await settle()
+  assert.equal(settled, false, 'b may still take it')
+  b.send({ type: 'no_taker', id })
+  assert.equal(await answer, null)
+  assert.equal(out.why, 'no_taker')
+})
+
+test('the reason Alex stopped waiting is told: a timeout, or the meeting moving on', async t => {
+  const bridge = new SessionBridge(quiet())
+  const { wss, port } = serve(bridge)
+  t.after(() => wss.close())
+  const a = await linkSaying(port, true)
+  t.after(() => a.ws.terminate())
+  a.send({ type: 'claim' })
+  await settle()
+  const timedOut = asking(bridge, 30)
+  assert.equal(await timedOut.answer, null)
+  assert.equal(timedOut.out.why, 'timeout')
+  const turn = new AbortController()
+  let why: string | undefined
+  const stopped = bridge.ask(question, 2000, turn.signal, w => (why = w))
+  turn.abort()
+  assert.equal(await stopped, null)
+  assert.equal(why, 'stopped')
+})

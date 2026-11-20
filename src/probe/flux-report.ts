@@ -1,9 +1,9 @@
-// The plain-text report npm run flux-probe prints, made to be pasted back to a Claude Code session: the settings that
+// The plain-text report npm run flux-probe prints, made to be pasted back to a coding session: the settings that
 // matter first, then each clip, the mismatches, the protocol checks and the suggestions. It holds no key and no
 // address: only the probe's own test phrases and what Flux made of the audio.
 import type { Cadence, ClipAnalysis, Constants, ForceResult, HoldResult, IdleResult, Suggested, Suggestions, Verdict } from './flux-analysis.ts'
 
-export const REPORT_END = 'Paste this whole report back to your Claude Code session.'
+export const REPORT_END = 'Paste this whole report back to your coding session (Claude Code, Codex or OpenCode).'
 
 export interface ReportInput {
   /** The assistant's name, for "<name> would ...". */

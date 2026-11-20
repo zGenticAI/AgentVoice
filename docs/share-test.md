@@ -6,7 +6,7 @@ A test you run in a test meeting you host, with your real Recall account. These 
 
 The slides feature ([Presenting slides](presenting.md)) has Alex present a deck by sharing a page as its screen, while its camera page keeps carrying its voice and its hearing. One thing no Recall document settles: when the bot starts, replaces or stops a screen share mid-call, does Alex's camera page keep running untouched? If it reloads, or its connection drops, Alex goes deaf and silent for a moment, or drops out of the meeting.
 
-`npm run join -- "<link>" --share-test` checks it. Alex joins as usual, then shares a test page as its screen, step by step, while the service watches its camera page. You answer a few questions in the terminal about what you see and hear. At the end it prints a report to paste back to your Claude Code session. It takes about 10 minutes for each platform: Zoom, Google Meet and Microsoft Teams.
+`npm run join -- "<link>" --share-test` checks it. Alex joins as usual, then shares a test page as its screen, step by step, while the service watches its camera page. You answer a few questions in the terminal about what you see and hear. At the end it prints a report to paste back to your coding session. It takes about 10 minutes for each platform: Zoom, Google Meet and Microsoft Teams.
 
 The decisive result is the camera page: whether it dropped, connected again, or a copy of it loaded again, in any step from S2 to S9. The test page shows nothing of the meeting and makes no sound.
 
@@ -82,7 +82,7 @@ Then:
 
 ## What to send back
 
-Paste the whole report, from `Screen-share test report` to `Paste this whole report back to your Claude Code session.`, into your Claude Code session. Run it once on each platform you use.
+Paste the whole report, from `Screen-share test report` to `Paste this whole report back to your coding session (Claude Code, Codex or OpenCode).`, into your coding session. Run it once on each platform you use.
 
 The report and the `--json` file hold no key or token, no meeting link, no address and no bot id: the public address shows as `[public-host]`, and anything else that looks like one is taken out. The Origin the bot's browser sent is kept as its scheme and host, even another site's: it has no path, so it can't hold a token. Keep the `--json` file to yourself unless your session asks for it.
 

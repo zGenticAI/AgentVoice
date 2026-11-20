@@ -20,6 +20,10 @@ data/*
 profile.md
 .claude/settings.local.json
 /briefs/
+# Your own OpenCode config for this folder, written by scripts/install-opencode.sh (the channel's absolute path, the
+# folders outside this one its meeting-assistant may read). The committed opencode.json and .opencode/agents/ are shared.
+/.opencode/opencode.json
+/.opencode/opencode.jsonc
 # Your slide decks and their scripts (npm run slides), which hold your clients' slides and your own narration: keep
 # them in decks/, or outside this folder. The root patterns catch a PDF prepared right here.
 /decks/

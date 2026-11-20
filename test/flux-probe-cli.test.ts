@@ -174,7 +174,7 @@ test('the report: the settings that matter first, each clip with what the assist
   assert.match(lines[3], /^Session: PAUSE_MAX_MS 1500, TAIL_MS 400, STT_HOLD_MS 3000, STOP_WORDS_PARTIAL 2, STOP_WORDS_FINAL 1, FLUX_CLOSE_WAIT_MS 1000$/)
   assert.match(text, /^Used: about 2\.0 min of Deepgram audio over 1 stream, 5 ElevenLabs characters; the audio went at most 3 ms behind real time, never ahead$/m)
   assert.equal(lines.at(-1), REPORT_END)
-  assert.equal(REPORT_END, 'Paste this whole report back to your Claude Code session.')
+  assert.equal(REPORT_END, 'Paste this whole report back to your coding session (Claude Code, Codex or OpenCode).')
   assert.match(text, /^bc-yeah \[backchannel, tts\] "Yeah\.": 0\.4 s, sound from 30 ms$/m)
   assert.match(text, /^ {2}StartOfTurn t=400, 370 ms after the sound starts; Flux put its first word at t=60: "Yeah\."$/m)
   assert.match(text, /^ {2}EndOfTurn t=1500, 1080 ms after the clip ended, trigger model, confidence 0\.82: "Yeah\."; StartOfTurn to EndOfTurn 1100 ms$/m)

@@ -326,7 +326,7 @@ test('the note names the deck, the estimate, how it starts, and the share settin
   assert.equal(
     slidesNote(deck, 'zoom', 'Alex'),
     'It has "Q4 plan": 9 slides to present, about 9 min of your 15 min. It starts when someone says "Alex, start the presentation", ' +
-      'or when you start it (npm run slides -- control start, or slides_control in Claude Code). Before then, make sure Alex may share its screen. ' +
+      'or when you start it (npm run slides -- control start, or slides_control in your coding session). Before then, make sure Alex may share its screen. ' +
       'Zoom: "Who can share?" set to "All participants" (in the meeting, the arrow beside Share, then Advanced sharing options).',
   )
   assert.match(slidesNote({ ...deck, script: { minutes: null } }, 'google_meet', 'Alex'), /about 9 min\. .*Google Meet: Host controls, "Share their screen" on .*make it a co-host\.$/)

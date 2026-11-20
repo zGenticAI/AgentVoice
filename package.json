@@ -18,7 +18,7 @@
     "speaker-report": "tsx src/cli/speaker-report.ts",
     "flux-probe": "tsx src/cli/flux-probe.ts",
     "slides": "tsx src/cli/slides.ts",
-    "test": "AGENT_NAME=Alex AGENT_NAME_VARIANTS= AGENT_NAME_MISHEARD= AGENT_BOT_NAME= ALEX_BOT_NAME= OWNER_NAME=Sam OWNER_FULL_NAME= COMPANY_NAME= PROFILE_FILE=test/fixtures/no-profile.md AGENT_PAGE_FILE= SERVICE_LABEL= RECALL_REGION=us-east-1 DEEPGRAM_KEYTERMS= ZOOM_JOIN_TELEGRAM_CHATS= SPEAKER_PROBE= SLIDES_PLATFORMS= ALEX_DATA_DIR=$(mktemp -d) node --import tsx --test test/*.test.ts",
+    "test": "AGENT_NAME=Alex AGENT_NAME_VARIANTS= AGENT_NAME_MISHEARD= AGENT_BOT_NAME= ALEX_BOT_NAME= OWNER_NAME=Sam OWNER_FULL_NAME= COMPANY_NAME= PROFILE_FILE=test/fixtures/no-profile.md AGENT_PAGE_FILE= SERVICE_LABEL= RECALL_REGION=us-east-1 DEEPGRAM_KEYTERMS= ZOOM_JOIN_TELEGRAM_CHATS= AGENTVOICE_CLIENT= SPEAKER_PROBE= SLIDES_PLATFORMS= ALEX_DATA_DIR=$(mktemp -d) node --import tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -1,0 +1,107 @@
+# Codex's settings for this folder. Codex reads them only once you trust the folder, and only in a session started at
+# its root: scripts/install-codex.sh checks your Codex and says how. They are the same for everyone, so keep your own
+# settings in ~/.codex/config.toml. Don't use `codex mcp add` for the channel: it writes your user config, for every
+# project. Pull only: Codex gets no events from the channel, so only the meeting-assistant takes a meeting's questions.
+
+# The floor (the [permissions.agentvoice] tables below): the files no command Codex runs here may read or write,
+# enforced by Codex's sandbox. In this folder it takes the place of your own sandbox_mode. Starting Codex with
+# --sandbox (-s) or --dangerously-bypass-approvals-and-sandbox replaces it again.
+default_permissions = "agentvoice"
+
+[mcp_servers.zoom-meeting]
+# The server scripts/install-channel.sh registers for Claude Code, by paths from the folder the session starts in. No
+# cwd: Codex would take a relative one from wherever its own process started.
+command = "node_modules/.bin/tsx"
+args = ["src/channel/server.ts"]
+env = { AGENTVOICE_CLIENT = "codex" }
+# next_question waits up to 600 seconds, and Codex's own limit is 300.
+tool_timeout_sec = 900
+# Each tool has its own approval_mode below, so Codex never offers to remember a choice (it would write it into this
+# file). A tool missing from the list asks every time.
+default_tools_approval_mode = "prompt"
+
+# The meeting-assistant's six tools and two that only read run without asking.
+[mcp_servers.zoom-meeting.tools.next_question]
+approval_mode = "approve"
+
+[mcp_servers.zoom-meeting.tools.get_profile]
+approval_mode = "approve"
+
+[mcp_servers.zoom-meeting.tools.reply]
+approval_mode = "approve"
+
+[mcp_servers.zoom-meeting.tools.post_chat]
+approval_mode = "approve"
+
+[mcp_servers.zoom-meeting.tools.get_transcript]
+approval_mode = "approve"
+
+[mcp_servers.zoom-meeting.tools.add_to_brief]
+approval_mode = "approve"
+
+[mcp_servers.zoom-meeting.tools.slides_status]
+approval_mode = "approve"
+
+[mcp_servers.zoom-meeting.tools.why_not_answered]
+approval_mode = "approve"
+
+# Joining a meeting, changing its brief and steering slides always ask, whichever thread calls them.
+[mcp_servers.zoom-meeting.tools.join_meeting]
+approval_mode = "prompt"
+
+[mcp_servers.zoom-meeting.tools.set_brief]
+approval_mode = "prompt"
+
+[mcp_servers.zoom-meeting.tools.slides_control]
+approval_mode = "prompt"
+
+# Codex's :workspace (write in this folder and the temp folders, read elsewhere, no network), minus the files
+# .claude/settings.json denies Claude Code, and the coding clients' own credentials. Codex's permission profiles are a
+# beta feature. The channel is not sandboxed: it reads .env and its data folder itself.
+[permissions.agentvoice]
+description = "AgentVoice: Codex's workspace access, without keys, home-folder secrets or slide decks"
+extends = ":workspace"
+
+[permissions.agentvoice.filesystem]
+# On Linux, Codex looks for the files the ** patterns match each time it starts a command, this many folders deep.
+glob_scan_max_depth = 16
+"~/.ssh" = "deny"
+"~/.cloudflared" = "deny"
+"~/.aws" = "deny"
+"~/.claude.json" = "deny"
+"~/.git-credentials" = "deny"
+"~/.netrc" = "deny"
+"~/.config/gh" = "deny"
+"~/.docker/config.json" = "deny"
+"~/.kube" = "deny"
+"~/.gnupg" = "deny"
+"~/.claude/.credentials.json" = "deny"
+# The coding clients' own credentials, where they keep them unless CODEX_HOME, XDG_STATE_HOME or XDG_DATA_HOME says
+# otherwise: Codex's login, and OpenCode's service password (it opens every OpenCode session) and stored keys.
+"~/.codex/auth.json" = "deny"
+"~/.local/state/opencode" = "deny"
+"~/.local/share/opencode" = "deny"
+
+# In this folder and every folder in it ("**/" also matches this folder itself). Codex can't look for these across the
+# whole disk, so outside this folder only the home-folder entries above hold: a .env in a knowledge-source folder
+# elsewhere stays readable. Only patterns here, no folder by name: Codex 0.171.0 can't start any command on Linux when
+# a pattern matches a file inside a folder denied by name.
+[permissions.agentvoice.filesystem.":workspace_roots"]
+"**/.env" = "deny"
+"**/.env.local" = "deny"
+"**/.env.*.local" = "deny"
+"**/.env.production" = "deny"
+"**/.env.prod" = "deny"
+"**/.env.development" = "deny"
+"**/.env.dev" = "deny"
+"**/.env.staging" = "deny"
+"**/.env.test" = "deny"
+"**/.env.bak" = "deny"
+"**/.env.backup" = "deny"
+"**/.env.old" = "deny"
+"**/*.pem" = "deny"
+"**/*.key" = "deny"
+"**/*.p12" = "deny"
+"**/*.pfx" = "deny"
+"**/local-token" = "deny"
+"**/data/decks/**" = "deny"

@@ -50,7 +50,7 @@ export function slidesNote(
   const slides = `${deck.narrated} slide${deck.narrated === 1 ? '' : 's'} to present, about ${duration(deck.totalMs)}${of}`
   return (
     `It has "${deck.name}": ${slides}. It starts when someone says "${name}, start the presentation", or when you start it ` +
-    `(npm run slides -- control start, or slides_control in Claude Code). Before then, make sure ${name} may share its screen. ` +
+    `(npm run slides -- control start, or slides_control in your coding session). Before then, make sure ${name} may share its screen. ` +
     shareSetting(platform, name)
   )
 }

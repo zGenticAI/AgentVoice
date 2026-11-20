@@ -1,4 +1,4 @@
-// The control listener's Unix socket: /api/join (npm run join), /bridge (the Claude Code channel) and the
+// The control listener's Unix socket: /api/join (npm run join), /bridge (the zoom-meeting channel) and the
 // detailed /health. A TCP port on 127.0.0.1 can be bound by any user of this computer while the service is
 // down, and the join CLI and the channel would then send the local token to whoever holds it. A socket in a
 // folder only you can open can't be reached, or taken over, by anyone else: on macOS it is the folder that keeps

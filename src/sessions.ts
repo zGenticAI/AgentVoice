@@ -1,4 +1,4 @@
-// What the owner's Claude Code session reaches in the voice service's live sessions through the bridge:
+// What the owner's coding session reaches in the voice service's live sessions through the bridge:
 // a meeting's transcript, its brief additions, its chat, an answer that came too late to be said, what
 // Alex did with its latest lines (why_not_answered), and the slides it presents (slides_status, slides_control, and
 // npm run slides -- status and control through the control socket).

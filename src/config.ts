@@ -131,7 +131,7 @@ export function retiredSettings(env: NodeJS.ProcessEnv): string[] {
   const warnings: string[] = []
   if (env.CONTROL_PORT?.trim()) {
     warnings.push(
-      '[config] CONTROL_PORT does nothing now: npm run join and the Claude Code channel reach the service through its ' +
+      '[config] CONTROL_PORT does nothing now: npm run join and the zoom-meeting channel reach the service through its ' +
         'control socket (CONTROL_SOCKET, control.sock in the data folder unless set). Remove CONTROL_PORT from .env.',
     )
   }
@@ -201,7 +201,7 @@ export const config = {
   // HOST, this machine only unless set, since the tunnel connects from here.
   port: Number(optional('PORT', '8787')),
   host: optional('HOST', '127.0.0.1'),
-  // The control listener: /api/join (npm run join), /bridge (the Claude Code channel) and the detailed /health. A
+  // The control listener: /api/join (npm run join), /bridge (the zoom-meeting channel) and the detailed /health. A
   // Unix socket in the data folder, which only you can open, unless CONTROL_SOCKET names another path (a relative
   // one is taken from this folder, so the service, the join CLI and the channel all find the same one).
   controlSocket: pathSetting(optional('CONTROL_SOCKET') || path.join(dataDir, 'control.sock')),

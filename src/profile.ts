@@ -4,7 +4,7 @@
 // language models and the writer need not be a programmer. Five sections, each optional:
 //
 // - "## About": one to three sentences of standing context. The spoken answers' rules start with it (src/brain/brain.ts).
-// - "## Hand to the session": which questions the assistant hands to the owner's Claude Code session.
+// - "## Hand to the session": which questions the assistant hands to the owner's coding session.
 // - "## Knowledge sources": where the meeting-assistant agent looks, what each source is for, and any rule per source.
 // - "## Never share": standing disclosure rules for the session and the agent, on top of their own.
 // - "## Never open": more paths the agent must not read, on top of its own.

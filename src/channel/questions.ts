@@ -1,14 +1,16 @@
 // Where the channel server puts meeting questions. No MCP in here, so it is easy to test.
 //
-// Channel notifications only reach the main Claude Code session, and only between its own
-// tool calls. So the meeting-assistant agent pulls questions with the next_question tool
-// instead. A question from Alex goes:
+// A question pushed into the owner's session reaches it only between its own tool calls (Claude Code's channel
+// notifications), and some clients can't be pushed to at all (Codex). So the meeting-assistant agent pulls questions
+// with the next_question tool instead. A question from Alex goes:
 // - to a next_question call that is waiting for one;
 // - else into a queue, while an assistant is attached (a next_question call returned less than
 //   ATTACH_GRACE_MS ago, so it is answering the previous question and will ask again);
-// - else to the main session as a channel notification, as before.
+// - else to the main session, pushed (src/channel/sink.ts), when the client can take that;
+// - else back to the voice service at once, as one nobody here can take ("no taker"), so it asks another
+//   session or tells the meeting it couldn't reach the owner's notes, rather than wait out its minute.
 // A queued question nobody takes within ATTACH_GRACE_MS goes to the main session after all
-// (the assistant has died). Each question is handed out once.
+// (the assistant has died), or back as one nobody can take. Each question is handed out once.
 //
 // An assistant may name its meeting (the key from join_meeting, or the `meeting` of its
 // questions). It then takes only that meeting's questions, and hears that meeting's end however
@@ -52,6 +54,17 @@ interface Waiter {
   deliver: (d: Delivery) => void
 }
 
+/** Where a question goes that no assistant takes, besides the session. */
+export interface PushReach {
+  /** Whether a question pushed into the session now could reach it. */
+  canPush(): boolean
+  /** A question no assistant took, which can't be pushed: nobody here can take it. */
+  noTaker(question: Question): void
+}
+
+/** A session that can always be pushed to (Claude Code). */
+const ALWAYS: PushReach = { canPush: () => true, noTaker: () => {} }
+
 /** True when an assistant for `wanted` (any meeting if undefined) takes a question from `meeting`. */
 const takes = (wanted: string | undefined, meeting: string) => wanted === undefined || wanted === meeting
 
@@ -69,6 +82,7 @@ export class QuestionDesk {
   constructor(
     private toSession: (q: Question) => void,
     private graceMs = ATTACH_GRACE_MS,
+    private reach: PushReach = ALWAYS,
   ) {}
 
   /** True while a meeting-assistant that takes this meeting's questions is waiting, or answering the last one. */
@@ -106,15 +120,21 @@ export class QuestionDesk {
       this.waiters = this.waiters.filter(w => w !== waiter)
       return waiter.deliver({ question })
     }
-    if (!this.attachedFor(question.meeting)) return this.toSession(question)
+    if (!this.attachedFor(question.meeting)) return this.handOff(question)
     const item = {
       question,
       timer: setTimeout(() => {
         if (!this.drop(item)) return
-        this.toSession(question)
+        this.handOff(question)
       }, this.graceMs).unref(),
     }
     this.queue.push(item)
+  }
+
+  /** A question no assistant takes: pushed into the session if it can be, else back as one nobody here can take. */
+  private handOff(question: Question): void {
+    if (this.reach.canPush()) this.toSession(question)
+    else this.reach.noTaker(question)
   }
 
   /** join_meeting is sending Alex into a meeting (its key, if known): the last meeting's end no longer applies. */

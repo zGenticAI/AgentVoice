@@ -19,14 +19,17 @@ Security fixes go into the latest version on `main` only.
 Test only in meetings you run, with people who have agreed to it: the assistant records everyone in a meeting.
 
 In scope, for example:
-- reaching the control side (joining meetings, the link to the Claude Code session) as anyone but the owner's user on the owner's computer;
+- reaching the control side (joining meetings, the link to the coding session) as anyone but the owner's user on the owner's computer;
 - using the bot's audio stream without the page token and the key of a live meeting;
-- a meeting participant getting the assistant, the owner's Claude Code session or its meeting-assistant agent to do anything but answer: read files it shouldn't, post, join meetings, or say what the profile says never to share;
+- a meeting participant getting the assistant, the owner's coding session (Claude Code, Codex or OpenCode) or its meeting-assistant agent to do anything but answer: read files it shouldn't, post, join meetings, or say what the profile says never to share;
+- a file the committed floor denies (`.claude/settings.json`, the permission profile in `.codex/config.toml`, the policies in `opencode.json`) read where that floor is meant to hold: [Codex](docs/codex.md#the-floor) and [OpenCode](docs/opencode.md#the-floor) say where that is;
+- the channel posting into any OpenCode session but the owner's, posting anything but a meeting's events, or revealing OpenCode's service password;
 - the assistant not leaving, or not deleting the meeting's transcript, after "please leave", or after being removed from the meeting once Recall has confirmed the removal;
 - meeting content kept anywhere but the places [Where meeting data goes](README.md#where-meeting-data-goes) lists, or what was said in a meeting written to the log.
 
 Out of scope:
-- the services the assistant uses (Recall.ai, Deepgram, ElevenLabs, Anthropic, Claude Code, your tunnel provider, Telegram) and the meeting platforms (Zoom, Google Meet, Microsoft Teams): report those to them;
+- the services the assistant uses (Recall.ai, Deepgram, ElevenLabs, Anthropic, your tunnel provider, Telegram), the coding clients (Claude Code, Codex, OpenCode) and the models they use, and the meeting platforms (Zoom, Google Meet, Microsoft Teams): report those to them;
+- the gaps in each client's floor that its page lists as known, such as Codex's floor stopping at this folder, or OpenCode's `grep`, `glob` and shell not being covered;
 - attacks that need the owner's user account on the owner's computer already;
 - an answer that is just wrong, unless it crosses one of the lines above.
 
