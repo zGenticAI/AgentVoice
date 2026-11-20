@@ -446,7 +446,7 @@ test("someone else who takes the link once is cut off: the bot's page links agai
   const holder = await link(s.port, query)
   assert.equal(holder.outcome, 'open')
   actAsPage(holder)
-  assert.equal(await holder.closed, LINK_CLOSE.replaced, 'the bot page took its link back')
+  assert.equal(await Promise.race([holder.closed, wait(5000).then(() => 'still linked')]), LINK_CLOSE.replaced, 'the bot page took its link back')
   for (const i of [1, 2, 3, 4]) assert.equal(await control.show(i), 'shown', `slide ${i}`)
   assert.equal(bot.shown.length, 5, 'the bot page showed each slide, the first included')
   assert.ok(!bot.frames.includes('ended'), JSON.stringify(bot.frames))

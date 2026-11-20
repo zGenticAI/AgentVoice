@@ -1393,8 +1393,8 @@ test('a transcript file the disk cannot take: the slides go on, a "no" still sto
   const errors: string[] = []
   const error = console.error
   console.error = (...args: unknown[]) => void errors.push(args.map(String).join(' '))
+  const s = start({ timing: { canSeeQuietMs: 3000, canSeeWindowMs: 5000 } })
   try {
-    const s = start({ timing: { canSeeQuietMs: 3000, canSeeWindowMs: 5000 } })
     // The disk is full for the slides' lines in the transcript.
     const transcript = s.session.transcript as any
     const add = transcript.add.bind(transcript)
@@ -1414,8 +1414,8 @@ test('a transcript file the disk cannot take: the slides go on, a "no" still sto
     assert.deepEqual(caught, [])
     assert.ok(errors.some(l => l.includes('ENOSPC')), errors.join('\n'))
     assert.ok(!errors.some(l => /showing slide|stopped sharing|no space left/.test(l)), 'the error code only, never the line')
-    done(s)
   } finally {
+    done(s)
     console.error = error
     process.off('uncaughtException', onError)
     process.off('unhandledRejection', onError)
