@@ -182,6 +182,9 @@ function start(opts: Options = {}) {
   const surface = new FakeSurface(SLIDES.length)
   const answers = [...(opts.answers ?? [])]
   const answered: string[] = []
+  // What the brain was given for each answer, and what went to the owner's session.
+  const inputs: any[] = []
+  const asked: any[] = []
   const spoken: string[] = []
   const notified: ToSession[] = []
   const events: PresentationEvent[] = []
@@ -191,10 +194,17 @@ function start(opts: Options = {}) {
     brain: {
       async *respond(i: { latest: string }) {
         answered.push(i.latest)
+        inputs.push(i)
         for (const e of answers.shift() ?? []) yield e
       },
     } as any,
-    bridge: { ask: async () => null, notify: (m: ToSession) => void notified.push(m) } as any,
+    bridge: {
+      ask: async (q: unknown) => {
+        asked.push(q)
+        return null
+      },
+      notify: (m: ToSession) => void notified.push(m),
+    } as any,
     brief: () => '',
     flux: () => flux as any,
     speak: async function* (text: string) {
@@ -225,7 +235,7 @@ function start(opts: Options = {}) {
   const alex = () => session.transcript.lines.filter(l => l.role === 'agent' && l.speaker !== SLIDES_LABEL).map(l => l.text)
   const markers = () => session.transcript.lines.filter(l => l.speaker === SLIDES_LABEL).map(l => l.text)
   const after = (line: string) => spoken.slice(spoken.lastIndexOf(line) + 1)
-  return { ws, flux, surface, session, answered, spoken, notified, events, said, alex, markers, after, presenter: session.presenter! }
+  return { ws, flux, surface, session, answered, inputs, asked, spoken, notified, events, said, alex, markers, after, presenter: session.presenter! }
 }
 
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -665,4 +675,45 @@ test('the meeting\'s slides come from the script and the deck: excluded and unkn
     SLIDES.map(s => [s.page, s.title, s.sentences.length, s.onRequest]),
     [[1, 'Welcome', 2, false], [2, 'Pricing', 3, false], [4, 'Security', 1, true], [5, 'Next steps', 2, false]],
   )
+})
+
+test("the presentation's events go to the owner's session, and meeting_ended says how far it got, never after \"please leave\"", async () => {
+  const s = start()
+  await narrating(s)
+  await until(() => s.notified.some(n => n.type === 'presentation'))
+  const started = s.notified.find(n => n.type === 'presentation') as Extract<ToSession, { type: 'presentation' }>
+  assert.deepEqual(started, { type: 'presentation', meeting: s.session.opts.meetingKey, event: 'started', of: 4, note: 'The presentation started.', slide: 1, title: 'Welcome' })
+  await until(() => s.markers().includes('showing slide 2: Pricing'))
+  s.session.end()
+  await until(() => s.notified.some(n => n.type === 'meeting_ended'))
+  const ended = s.notified.find(n => n.type === 'meeting_ended') as Extract<ToSession, { type: 'meeting_ended' }>
+  assert.deepEqual(ended.presentation, { reached: 2, of: 4, finished: false })
+  s.session.transcript.delete()
+
+  // Never started: reached 0.
+  const idle = start()
+  await until(() => idle.session.consentDone)
+  idle.session.end()
+  await until(() => idle.notified.some(n => n.type === 'meeting_ended'))
+  assert.deepEqual((idle.notified.find(n => n.type === 'meeting_ended') as any).presentation, { reached: 0, of: 4, finished: false })
+  idle.session.transcript.delete()
+
+  // "Please leave": nothing of the meeting is kept, so no presentation in meeting_ended, and no event after it.
+  const left = start()
+  await narrating(left)
+  left.said('Alex, please leave.')
+  await until(() => left.notified.some(n => n.type === 'meeting_ended'))
+  const after = left.notified.findIndex(n => n.type === 'meeting_ended')
+  assert.equal((left.notified[after] as any).presentation, undefined)
+  left.surface.fire('stuck')
+  await wait(30)
+  assert.ok(!left.notified.slice(after).some(n => n.type === 'presentation'))
+
+  // A meeting without slides: meeting_ended is what it always was.
+  const plain = start({ slides: false })
+  await until(() => plain.session.consentDone)
+  plain.session.end()
+  await until(() => plain.notified.some(n => n.type === 'meeting_ended'))
+  assert.ok(!('presentation' in (plain.notified.find(n => n.type === 'meeting_ended') as object)))
+  plain.session.transcript.delete()
 })

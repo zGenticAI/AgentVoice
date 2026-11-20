@@ -1,21 +1,22 @@
 // Sends the assistant into a meeting: npm run join -- "<Zoom, Google Meet or Microsoft Teams link>" [--brief <file>]
-// [--speaker-probe]
+// [--speaker-probe] [--slides <deck.script.md> [--from <slide>]]
 // With --brief, the meeting answers from that file's brief instead of the shared one (data/brief.md), and no other
-// meeting sees it. With --speaker-probe, for a test meeting whose participants have agreed, the service measures who is
+// meeting sees it. With --slides, the assistant presents that script's prepared deck in the meeting, on cue
+// (docs/presenting.md): the script is checked here, against its deck, and sent without its comments. With --speaker-probe, for a test meeting whose participants have agreed, the service measures who is
 // speaking (it needs SPEAKER_PROBE on: docs/speaker-probe.md). With --share-test [--json <file>] [--keep], it runs the
 // screen-share test in a test meeting you host, asking you what you see and hear, and prints a report
 // (docs/share-test.md, src/cli/share-test-run.ts).
 import fs from 'node:fs'
-import http from 'node:http'
 import path from 'node:path'
 import readline from 'node:readline'
 import { briefProblem } from '../brief.ts'
 import { ROOT, config } from '../config.ts'
-import { controlSocketProblem, nothingListening } from '../control-socket.ts'
 import { identity } from '../identity.ts'
-import { readLocalToken } from '../local-token.ts'
 import { writePrivate } from '../probe/flux-probe.ts'
+import { decksDir } from '../slides/deck.ts'
+import { joinScript } from '../slides/join.ts'
 import { PROBE_OFF } from '../speakers/probe.ts'
+import { controlCall, controlToken, unreachableText } from './control-call.ts'
 import { JOIN_USAGE, type JoinArgs, joinArgs } from './join-args.ts'
 import { QUESTION_WAIT_MS, type ServiceReply, runShareTest } from './share-test-run.ts'
 
@@ -41,58 +42,39 @@ if (args.briefFile) {
   }
 }
 
+// The presentation for this meeting only: the script read here, from the file you named, checked against its prepared
+// deck as the service will, and sent as its canonical text, without its comments, so your notes never leave this
+// computer's files.
+let slides: { script: string; from?: number } | undefined
+if (args.slidesFile) {
+  const checked = joinScript(path.resolve(process.env.INIT_CWD || process.cwd(), args.slidesFile), args.from, {
+    decksDir: decksDir(config.dataDir),
+    retentionDays: config.deckRetentionDays,
+  })
+  if (!checked.ok) {
+    console.error(checked.problem)
+    process.exit(1)
+  }
+  slides = { script: checked.text, ...(args.from !== undefined ? { from: args.from } : {}) }
+  if (checked.warnings) {
+    console.log(`The script has ${checked.warnings} warning${checked.warnings === 1 ? '' : 's'}: npm run slides -- check ${args.slidesFile} lists them.`)
+  }
+}
+
 // /api/join is on the control socket (in the data folder, which only you can open), and needs the local token the
 // voice service made.
-let token: string
-try {
-  token = readLocalToken(config.dataDir)
-} catch (err) {
-  console.error((err as Error).message)
+const access = controlToken()
+if ('problem' in access) {
+  console.error(access.problem)
   process.exit(1)
 }
-// The token goes only to a socket in a folder only you can open, so no other user can be listening there.
-const problem = controlSocketProblem(config.controlSocket)
-if (problem) {
-  console.error(problem)
-  process.exit(1)
-}
+const token = access.token
 
 /**
  * A request to the voice service on the control socket: its answer, or the error that kept it from coming. With
  * timeoutMs, one with no answer by then is given up on.
  */
-function call(method: 'GET' | 'POST', urlPath: string, body = '', timeoutMs?: number): Promise<{ status: number; body: string } | Error> {
-  return new Promise(resolve => {
-    const req = http.request(
-      {
-        socketPath: config.controlSocket,
-        path: urlPath,
-        method,
-        headers: {
-          host: 'localhost',
-          ...(body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : {}),
-          authorization: `Bearer ${token}`,
-        },
-      },
-      response => {
-        let text = ''
-        response.setEncoding('utf8')
-        response.on('data', chunk => (text += chunk))
-        response.on('end', () => resolve({ status: response.statusCode ?? 0, body: text }))
-        response.on('error', resolve)
-      },
-    )
-    req.on('error', resolve)
-    if (timeoutMs !== undefined) req.setTimeout(timeoutMs, () => req.destroy(new Error(`no answer within ${Math.round(timeoutMs / 1000)} s`)))
-    req.end(body)
-  })
-}
-
-function unreachableText(err: Error): string {
-  return nothingListening(err)
-    ? `The voice service is not running (nothing is listening on ${config.controlSocket}). Start it with npm start, or scripts/install-service.sh.`
-    : `Could not reach the voice service on ${config.controlSocket}: ${err.message}`
-}
+const call = (method: 'GET' | 'POST', urlPath: string, body = '', timeoutMs?: number) => controlCall(token, method, urlPath, body, timeoutMs)
 
 function unreachable(err: Error): never {
   console.error(unreachableText(err))
@@ -207,8 +189,9 @@ function askLine(prompt: string, signal: AbortSignal, interrupt: () => void): Pr
 }
 
 // What this join needs the running service to be able to do. One older than this command would ignore a meeting's
-// brief and send the assistant in with the shared one, so it is asked first, and refused rather than joined.
-const needs = brief === undefined ? [] : ['meeting_brief']
+// brief and send the assistant in with the shared one, or its slides and send it in without them, so it is asked
+// first, and refused rather than joined.
+const needs = [...(brief === undefined ? [] : ['meeting_brief']), ...(slides ? ['slides'] : [])]
 if (needs.length || args.speakerProbe) {
   const health = await call('GET', '/health')
   if (health instanceof Error) unreachable(health)
@@ -219,6 +202,10 @@ if (needs.length || args.speakerProbe) {
     // An answer that isn't JSON lists nothing.
   }
   const can = Array.isArray(said.features) ? said.features.map(String) : []
+  if (slides && !can.includes('slides')) {
+    console.error('The voice service is older than this command and cannot present slides: restart it, then try again (or leave out --slides).')
+    process.exit(1)
+  }
   if (!needs.every(feature => can.includes(feature))) {
     console.error(
       'The voice service is older than this command and cannot keep a brief for one meeting: restart it, then try again ' +
@@ -238,17 +225,24 @@ if (needs.length || args.speakerProbe) {
   }
 }
 
-// speaker_probe only when asked for: without it, the request is what it always was.
-const body = { meetingUrl: args.meetingUrl, brief, ...(args.speakerProbe ? { speaker_probe: true } : {}) }
+// speaker_probe and slides only when asked for: without them, the request is what it always was.
+const body = { meetingUrl: args.meetingUrl, brief, ...(args.speakerProbe ? { speaker_probe: true } : {}), ...(slides ? { slides } : {}) }
 const res = await call('POST', '/api/join', JSON.stringify(body))
 if (res instanceof Error) unreachable(res)
 if (res.status !== 200) {
   console.error(`Could not start the bot: ${res.body}`)
   process.exit(1)
 }
-const { bot_id, tip, brief_note, speaker_probe } = JSON.parse(res.body)
+const { bot_id, tip, brief_note, speaker_probe, slides_note } = JSON.parse(res.body)
 console.log(`${identity.name} is joining (bot ${bot_id}).`)
 if (brief_note) console.log(brief_note)
+if (slides) {
+  console.log(
+    typeof slides_note === 'string'
+      ? `${slides_note} (npm run slides -- status and control take --meeting ${bot_id} while it is in more than one meeting with slides.)`
+      : 'The voice service did not take the slides for this meeting, so it will not present them.',
+  )
+}
 if (args.speakerProbe) {
   console.log(
     speaker_probe === true

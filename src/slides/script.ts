@@ -415,6 +415,20 @@ export function parseScript(source: string): Parsed {
   return { script, errors, warnings }
 }
 
+/**
+ * A script's errors in one line, for a join that refuses it: the first few, each with where it is ("page 4, line 23:"),
+ * and how many more. npm run slides -- check lists them all.
+ */
+export function problemsText(problems: readonly Problem[], max = 3): string {
+  const at = (p: Problem) => {
+    const parts = [p.page ? `page ${p.page}` : '', p.line ? `line ${p.line}` : ''].filter(Boolean)
+    return parts.length ? `${parts.join(', ')}: ` : ''
+  }
+  const shown = problems.slice(0, max).map(p => `${at(p)}${p.message}`)
+  const more = problems.length - shown.length
+  return `${shown.join('; ')}${more > 0 ? ` (and ${more} more)` : ''}`
+}
+
 /** What the voice may read wrongly: currency and percent signs, figures, and all-capital abbreviations. */
 export function sayAs(text: string): string[] {
   const found = new Set<string>()

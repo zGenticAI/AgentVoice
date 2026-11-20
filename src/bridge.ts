@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto'
 import WebSocket from 'ws'
 import { identity } from './identity.ts'
+import type { PresentationEvent, PresentationSummary, PresenterStatus } from './slides/presenter.ts'
 
 /**
  * What this voice service can do, beyond what every version could: told to the channel on every link ('service'), and
@@ -27,8 +28,10 @@ import { identity } from './identity.ts'
  * meeting_brief: a meeting's own brief (join_meeting's and /api/join's brief, and get_brief).
  * why_not_answered: what Alex did with the latest lines of a meeting, and why.
  * share_test: the screen-share test (npm run join --share-test only: neither join_meeting nor the bridge can ask for it).
+ * slides: a meeting joined with slides to present (join_meeting's and /api/join's slides), and the owner's controls of
+ * them (slides_status, slides_control, /api/slides). Presenting is still off on a platform until SLIDES_PLATFORMS lists it.
  */
-export const SERVICE_FEATURES = ['meeting_brief', 'why_not_answered', 'share_test'] as const
+export const SERVICE_FEATURES = ['meeting_brief', 'why_not_answered', 'share_test', 'slides'] as const
 
 /** What get_brief says of a meeting's brief: its own (with its text), the shared one, or none (no such meeting now). */
 export type BriefFor = { brief_for: 'this_meeting'; text: string } | { brief_for: 'shared' } | { brief_for: 'unknown_meeting' }
@@ -41,6 +44,8 @@ export type ToSession =
   // transcript_file: '' once deleted at a participant's request. minutes_file: '' when there are no
   // minutes, with why in no_minutes (asked to leave or removed, how it ended not confirmed, nobody
   // spoke) or minutes_error (writing them failed).
+  // presentation: in a meeting with slides, how far the deck got (reached 0: it never started). Left out after "please
+  // leave" or a removal, and in any other meeting.
   | {
       type: 'meeting_ended'
       meeting: string
@@ -49,7 +54,10 @@ export type ToSession =
       minutes_file: string
       no_minutes?: string
       minutes_error?: string
+      presentation?: PresentationSummary
     }
+  // A presentation's change or problem, for the owner: never one per slide. Its title is the deck's own text.
+  | ({ type: 'presentation'; meeting: string } & PresentationEvent)
   | { type: 'transcript'; request_id: string; text: string }
   // The answer to get_brief. unknown_meeting: the key is no meeting's this service is in now (or one that is over), so
   // the channel gives no brief at all, never the shared one in its place.
@@ -62,7 +70,19 @@ export type ToSession =
   // waiting, and why says why: 'timeout' (it told the meeting it couldn't reach the owner's notes) or
   // 'stopped' (the meeting moved on first, so it said nothing about it). kept: the answer went into that
   // meeting's additions all the same (note says why not, when it did not).
-  | { type: 'ack'; request_id: string; ok: boolean; note?: string; meeting?: string; late?: boolean; why?: GaveUp; kept?: boolean }
+  // slides: for slides_status and slides_control, the presentation as it is now (bot: the meeting's bot).
+  | {
+      type: 'ack'
+      request_id: string
+      ok: boolean
+      note?: string
+      meeting?: string
+      late?: boolean
+      why?: GaveUp
+      kept?: boolean
+      bot?: string
+      slides?: PresenterStatus
+    }
 
 export type FromSession =
   | { type: 'hello' }
@@ -82,7 +102,12 @@ export type FromSession =
   // Adds to what Alex answers from by itself, for one meeting (its key; the latest meeting if left out).
   | { type: 'add_to_brief'; request_id: string; text: string; meeting?: string }
   // brief: the meeting's own brief, which it uses instead of the shared one (only to a service with 'meeting_brief').
-  | { type: 'join_meeting'; request_id: string; meeting_url: string; brief?: string }
+  // slides: the presentation script's canonical text, with no comment (only to a service with 'slides'); slides_from:
+  // the slide to start from.
+  | { type: 'join_meeting'; request_id: string; meeting_url: string; brief?: string; slides?: string; slides_from?: number }
+  // The presentation in a meeting (its key; the only meeting with slides if left out). Neither takes the questions.
+  | { type: 'slides_status'; request_id: string; meeting?: string }
+  | { type: 'slides_control'; request_id: string; action: string; slide?: number; meeting?: string }
   // get_profile for one meeting: which brief it uses (answered with 'brief').
   | { type: 'get_brief'; request_id: string; meeting: string }
 
@@ -98,6 +123,15 @@ export interface LineVerdict {
   did: string
   read: string
   why: string
+}
+
+/** What slides_status and slides_control answer. */
+export interface SlidesReply {
+  ok: boolean
+  note?: string
+  meeting?: string
+  bot?: string
+  status?: PresenterStatus
 }
 
 export interface SessionAnswer {
@@ -140,9 +174,14 @@ export interface BridgeHandlers {
   whyNotAnswered?(lines: number, meeting?: string): { ok: boolean; meeting?: string; lines?: LineVerdict[]; note?: string }
   /**
    * Sends Alex into a meeting, with its own brief if given (as the session sent it: the handler refuses one that isn't
-   * text). Resolves with a note for the session and the meeting's key, or throws with the reason.
+   * text), and slides to present if given ({script, from}, as the session sent them). Resolves with a note for the
+   * session and the meeting's key, or throws with the reason.
    */
-  joinMeeting(meetingUrl: string, brief?: unknown): Promise<{ note: string; meeting?: string }>
+  joinMeeting(meetingUrl: string, brief?: unknown, slides?: unknown): Promise<{ note: string; meeting?: string }>
+  /** The presentation in the meeting with this key (the only one with slides if none). Without it, there is none. */
+  slidesStatus?(meeting?: string): SlidesReply
+  /** One of the owner's actions on the slides of that meeting. Without it, there is none. */
+  slidesControl?(action: unknown, slide: unknown, meeting?: string): SlidesReply
   /** Which brief the meeting with this key uses. Without it, every meeting is unknown_meeting. */
   meetingBrief?(meeting: string): BriefFor
 }
@@ -486,11 +525,33 @@ export class SessionBridge {
         try {
           // Passed on as it came, so a brief that isn't text is refused rather than left out (the shared brief instead).
           const brief = msg.brief ?? undefined
-          const { note, meeting } = await this.handlers.joinMeeting(String(msg.meeting_url ?? ''), brief)
+          // So are slides: a script that isn't text, or slides_from alone, is refused rather than joined without them.
+          const script = msg.slides ?? undefined
+          const from = msg.slides_from ?? undefined
+          const slides = script === undefined && from === undefined ? undefined : { script, from }
+          const { note, meeting } = await (slides === undefined
+            ? this.handlers.joinMeeting(String(msg.meeting_url ?? ''), brief)
+            : this.handlers.joinMeeting(String(msg.meeting_url ?? ''), brief, slides))
           this.send(link, { type: 'ack', request_id: msg.request_id, ok: true, note, meeting })
         } catch (err) {
           this.send(link, { type: 'ack', request_id: msg.request_id, ok: false, note: (err as Error).message })
         }
+        break
+      }
+      case 'slides_status':
+      case 'slides_control': {
+        // Like get_transcript, neither takes the questions: steering the slides is not answering them.
+        const meeting = typeof msg.meeting === 'string' && msg.meeting ? msg.meeting : undefined
+        let result: SlidesReply
+        try {
+          const none: SlidesReply = { ok: false, note: `${identity.name} has no slides to present in any meeting right now` }
+          result =
+            (msg.type === 'slides_status' ? this.handlers.slidesStatus?.(meeting) : this.handlers.slidesControl?.(msg.action, msg.slide, meeting)) ?? none
+        } catch (err) {
+          result = { ok: false, note: (err as Error).message }
+        }
+        const { status, ...rest } = result
+        this.send(link, { type: 'ack', request_id: msg.request_id, ...rest, ...(status ? { slides: status } : {}) })
         break
       }
       case 'get_brief': {

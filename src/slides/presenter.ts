@@ -18,8 +18,9 @@
 // hold, with an event for the owner. The log has states and counts only: never a title, a sentence or a slide's text.
 import { endsOnQuestion } from '../brain/attention.ts'
 import { type HintPlatform, SLIDES_LINES, type SlidesLines } from '../consent.ts'
+import { stripBlockTags } from '../untrusted.ts'
 import { type SlideCommand, slideCommand, windowReply } from './commands.ts'
-import type { Manifest } from './manifest.ts'
+import { MAX_PAGE_TEXT, MAX_TITLE, type Manifest } from './manifest.ts'
 import type { Script } from './script.ts'
 import type { SlideSurface, StartOutcome } from './surface.ts'
 
@@ -29,6 +30,8 @@ export interface PresenterSlide {
   page: number
   /** From the deck: for "Back to <title>." and the transcript's markers. Never in the log. */
   title: string
+  /** The slide's own text, from the deck: for answers about the slide on screen. Never spoken, never in the log. */
+  text: string
   /** The script's sentences, said word for word. None: a silent slide (hold only). */
   sentences: readonly string[]
   /** Extra seconds of silence after it appears, and after its last sentence. */
@@ -49,7 +52,9 @@ export function presenterSlides(script: Script, manifest: Manifest): PresenterSl
     .sort((a, b) => a.page - b.page)
     .map(s => ({
       page: s.page,
-      title: pages.get(s.page)!.title,
+      // A third party's PDF can carry instructions: its block tags never reach a prompt (the loader refuses them too).
+      title: stripBlockTags(pages.get(s.page)!.title).slice(0, MAX_TITLE),
+      text: stripBlockTags(pages.get(s.page)!.text).slice(0, MAX_PAGE_TEXT),
       sentences: [...s.sentences],
       hold: s.hold ?? 0,
       pause: s.pause ?? 0,
@@ -110,7 +115,7 @@ export interface PresenterStatus {
   share: SlideSurface['state']
 }
 
-/** For meeting_ended: how far the deck got, by page. */
+/** For meeting_ended: how far the deck got, by page (0: it never started). */
 export interface PresentationSummary {
   reached: number
   of: number
@@ -143,8 +148,11 @@ export interface PresenterHost {
   /** Opens the session's reply window: the next line is taken without the name. */
   openWindow(ms: number): void
   windowOpen(): boolean
-  /** Adds a marker to the transcript ("showing slide 6: Pricing"), as the assistant's, never a participant's. */
-  marker(text: string): void
+  /**
+   * Adds a marker to the transcript ("showing slide 6: Pricing"), as the assistant's, never a participant's. page: the
+   * slide it is about, if one.
+   */
+  marker(text: string, page?: number): void
 }
 
 export const PRESENTER_TIMING = Object.freeze({
@@ -302,11 +310,17 @@ export class Presenter {
   }
 
   summary(): PresentationSummary {
-    return { reached: this.slides[this.furthest]?.page ?? 0, of: this.slides.length, finished: this.finished }
+    const reached = this.everStarted ? (this.slides[this.furthest]?.page ?? 0) : 0
+    return { reached, of: this.slides.length, finished: this.finished }
   }
 
   get current(): PresenterState {
     return this.state
+  }
+
+  /** Narration has started at least once in this meeting: for the minutes' mention of the presentation. */
+  get started(): boolean {
+    return this.everStarted
   }
 
   // --- What the session tells it ----------------------------------------------------------------------------------
@@ -839,7 +853,7 @@ export class Presenter {
 
   private markShown(i: number, confirmed: boolean): void {
     const slide = this.slides[i]
-    this.opts.host.marker(`showing slide ${slide.page}${slide.title ? `: ${slide.title}` : ''}${confirmed ? '' : ' (not confirmed)'}`)
+    this.opts.host.marker(`showing slide ${slide.page}${slide.title ? `: ${slide.title}` : ''}${confirmed ? '' : ' (not confirmed)'}`, slide.page)
   }
 
   /** What to send after slide i: the one before it and the next narrated one, and the bookmark's during a detour. */

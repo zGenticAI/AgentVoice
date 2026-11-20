@@ -89,6 +89,8 @@ export interface SessionSlides {
   platform: HintPlatform
   /** The page to start from (join --from). */
   from?: number
+  /** What the owner calls the presentation (the script's title, else the deck's label): for the minutes only. */
+  title?: string
   /** The presenter's timings, which tests make short. */
   timing?: Partial<PresenterTiming>
 }
@@ -471,6 +473,11 @@ export class MeetingSession {
       })
       // A meeting someone asked Alex to leave presents nothing more.
       if (this.leaving) this.presenter.dispose()
+      // The presentation's changes and problems go to the owner's session, never one per slide; nothing once Alex is
+      // leaving, since nothing of that meeting is kept.
+      this.presenter.onEvent(event => {
+        if (!this.leaving) deps.bridge.notify({ type: 'presentation', meeting: opts.meetingKey, ...event })
+      })
     }
 
     this.wire(ws)
@@ -1433,7 +1440,9 @@ export class MeetingSession {
       const no_minutes = LEFT_NOTES[this.records.left ?? 'asked'] + (this.records.reported ? LEFT_EARLIER_NOTE : '')
       return { type: 'meeting_ended', meeting, transcript_file: '', questions: [], minutes_file: '', no_minutes }
     }
-    return { type: 'meeting_ended', meeting, transcript_file: this.transcript.file, questions: this.questions, minutes_file: '' }
+    // How far the slides got, so the owner can join again --from there: only in a meeting with slides.
+    const presentation = this.presenter ? { presentation: this.presenter.summary() } : {}
+    return { type: 'meeting_ended', meeting, transcript_file: this.transcript.file, questions: this.questions, minutes_file: '', ...presentation }
   }
 
   /**

@@ -1,9 +1,11 @@
 // What the owner's Claude Code session reaches in the voice service's live sessions through the bridge:
-// a meeting's transcript, its brief additions, its chat, an answer that came too late to be said, and what
-// Alex did with its latest lines (why_not_answered).
+// a meeting's transcript, its brief additions, its chat, an answer that came too late to be said, what
+// Alex did with its latest lines (why_not_answered), and the slides it presents (slides_status, slides_control, and
+// npm run slides -- status and control through the control socket).
 // Kept apart from server.ts so it can be tested without starting the service.
 import type { BridgeHandlers, LineVerdict, SessionAnswer } from './bridge.ts'
 import { identity } from './identity.ts'
+import { OWNER_ACTIONS, type OwnerAction, type PresenterStatus } from './slides/presenter.ts'
 
 const NAME = identity.name
 const OWNER = identity.owner
@@ -19,6 +21,23 @@ export interface LiveSession {
   postChat(message: string): Promise<boolean>
   /** What Alex did with the latest lines, and why. Refused, with a note, once Alex was asked to leave or removed, or the session has ended. */
   whyNotAnswered(lines: number): { ok: boolean; lines?: LineVerdict[]; note?: string }
+  /** A meeting joined with slides presents them: the owner's controls. Null or absent in any other meeting. */
+  readonly presenter?: PresenterControls | null
+}
+
+/** What the owner's controls use of a meeting's Presenter (src/slides/presenter.ts). */
+export interface PresenterControls {
+  owner(action: OwnerAction, slide?: number): { ok: boolean; note: string }
+  status(): PresenterStatus
+}
+
+/** What the owner's slide controls answer: the meeting (its key and bot), how it went, and the presentation now. */
+export interface SlidesAnswer {
+  ok: boolean
+  note?: string
+  meeting?: string
+  bot?: string
+  status?: PresenterStatus
 }
 
 /**
@@ -94,6 +113,53 @@ export function sessionHandlers(sessions: Iterable<LiveSession>): SessionHandler
       const session = findSession(sessions, meeting)
       if (!session) return { ok: false, note: `${NAME} is no longer in that meeting` }
       return session.addToBrief(lateAnswerText(question, answer))
+    },
+  }
+}
+
+/**
+ * The meeting the owner's slide controls are for: with a key (a meeting's key, or its bot's id, which npm run join
+ * prints), that meeting's newest session, never another; without one, the only meeting with slides, and refused while
+ * there are several, as post_chat is.
+ */
+function presenting<S extends LiveSession>(sessions: Iterable<S>, meeting?: string): { session: S; presenter: PresenterControls } | { note: string } {
+  const newestFirst = [...sessions].reverse()
+  if (meeting) {
+    const session = newestFirst.find(s => s.opts.meetingKey === meeting || s.botId === meeting)
+    if (!session) return { note: `${NAME} is not in that meeting right now` }
+    if (!session.presenter) return { note: `that meeting has no slides: send ${NAME} in with slides to present them` }
+    return { session, presenter: session.presenter }
+  }
+  const withSlides = newestFirst.filter(s => s.presenter)
+  const keys = new Set(withSlides.map(s => s.opts.meetingKey))
+  if (!keys.size) return { note: `${NAME} has no slides to present in any meeting right now` }
+  if (keys.size > 1) return { note: `${NAME} has slides in more than one meeting right now: pass the meeting key as "meeting"` }
+  return { session: withSlides[0], presenter: withSlides[0].presenter! }
+}
+
+/** The owner's controls of the slides Alex presents: slides_status and slides_control, and /api/slides. */
+export function slidesHandlers(sessions: Iterable<LiveSession>): {
+  slidesStatus(meeting?: string): SlidesAnswer
+  slidesControl(action: unknown, slide: unknown, meeting?: string): SlidesAnswer
+} {
+  const which = (session: LiveSession) => ({ meeting: session.opts.meetingKey, ...(session.botId ? { bot: session.botId } : {}) })
+  return {
+    slidesStatus: meeting => {
+      const found = presenting(sessions, meeting)
+      if ('note' in found) return { ok: false, note: found.note }
+      return { ok: true, ...which(found.session), status: found.presenter.status() }
+    },
+    slidesControl: (action, slide, meeting) => {
+      if (typeof action !== 'string' || !(OWNER_ACTIONS as readonly string[]).includes(action)) {
+        return { ok: false, note: `action has to be one of ${OWNER_ACTIONS.join(', ')}` }
+      }
+      if (slide !== undefined && slide !== null && (typeof slide !== 'number' || !Number.isInteger(slide) || slide < 1 || slide > 100)) {
+        return { ok: false, note: 'slide has to be a slide number from 1 to 100' }
+      }
+      const found = presenting(sessions, meeting)
+      if ('note' in found) return { ok: false, note: found.note }
+      const done = found.presenter.owner(action as OwnerAction, typeof slide === 'number' ? slide : undefined)
+      return { ...done, ...which(found.session), status: found.presenter.status() }
     },
   }
 }

@@ -10,8 +10,8 @@
 //   While a meeting with slides is sharing them, also the slides page, its script and its link (src/slides/share.ts),
 //   with the share's id and token; while none is, they are not found, as any other path.
 // - control (a Unix socket in the data folder, CONTROL_SOCKET to put it elsewhere): /api/join for npm run join,
-//   /bridge for the Claude Code channel, the screen-share test's /api/share-test/ for npm run join --share-test, and
-//   the detailed /health. No pages. Only you can open it, and no other user can take its place while the service is
+//   /bridge for the Claude Code channel, the screen-share test's /api/share-test/ for npm run join --share-test, the
+//   slides' /api/slides for npm run slides -- status and control, and the detailed /health. No pages. Only you can open it, and no other user can take its place while the service is
 //   down, as one could with a port (src/control-socket.ts).
 //
 // The service owns getting every bot it sent into a meeting out of the call again: it keeps asking Recall until
@@ -28,7 +28,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { Brain } from './brain/brain.ts'
 import { type BriefFor, SERVICE_FEATURES, SessionBridge } from './bridge.ts'
 import { type BriefInUse, MAX_BRIEF_CHARS, SHARED_BRIEF_FILE, briefProblem, briefTooLong, readSharedBrief } from './brief.ts'
-import { ROOT, config, publicUrlProblem, recallRegionProblem, retiredSettings } from './config.ts'
+import { ROOT, type SlidesPlatform, config, publicUrlProblem, recallRegionProblem, retiredSettings } from './config.ts'
 import { cachedLines } from './consent.ts'
 import { prepareControlSocket } from './control-socket.ts'
 import { identity } from './identity.ts'
@@ -37,13 +37,16 @@ import { checkNameAtStartup } from './name-check.ts'
 import { hasLocalToken, sameSecret } from './network.ts'
 import { loadAgentPage } from './pages.ts'
 import { LineCache } from './pipeline/line-cache.ts'
-import { MeetingSession, PAGE_CLOSE, PAGE_ERRORS, type SessionOptions, endSessions } from './pipeline/session.ts'
+import { MeetingSession, PAGE_CLOSE, PAGE_ERRORS, type SessionOptions, type SessionSlides, endSessions } from './pipeline/session.ts'
 import { PROFILE } from './profile.ts'
 import * as recall from './recall.ts'
-import { type LiveSession, sessionHandlers } from './sessions.ts'
+import { type LiveSession, sessionHandlers, slidesHandlers } from './sessions.ts'
 import { decksDir, prepareDecksDir, sweepOldDecks } from './slides/deck.ts'
+import { type MeetingDeck, SlidesRefused, meetingDeck } from './slides/join.ts'
 import { loadSlidesPage } from './slides/page.ts'
-import { type ShareTiming, SlideShares, type SlidesPage } from './slides/share.ts'
+import { slidesNote, slidesPlatformProblem } from './slides/platforms.ts'
+import { MAX_SCRIPT_CHARS } from './slides/script.ts'
+import { type ShareControl, type ShareTiming, SlideShares, type SlidesPage } from './slides/share.ts'
 import { type ShareTestPage, loadShareTestPage, shareTestHeaders } from './sharetest/page.ts'
 import {
   LINK_MAX_BYTES, SHARE_TEST_ACTIONS, SHARE_TEST_LINK_PATH, SHARE_TEST_PAGE_PATH, type ShareTestAction, type TestLineOutcome,
@@ -68,9 +71,10 @@ const RECONNECT_MS = 60_000
 // open: a connection that died on the way can stay so for many minutes. Every quarter of it the page is sent
 // {type: 'hb'} and a ping; the page, which can't see pings, counts the same silence from its side (public/agent.js).
 const PAGE_SILENCE_MS = 4000
-// The most /api/join reads of a request: a meeting link, and the meeting's own brief, every character of which JSON
-// may write as six bytes (\u001f). The local token is checked before any of it is read.
-const MAX_BODY_BYTES = 16_384 + 6 * MAX_BRIEF_CHARS
+// The most /api/join reads of a request: a meeting link, the meeting's own brief, and a presentation script's text, every
+// character of which JSON may write as six bytes (\u001f): 352,384 bytes. The local token is checked before any of it
+// is read.
+const MAX_BODY_BYTES = 16_384 + 6 * (MAX_BRIEF_CHARS + MAX_SCRIPT_CHARS)
 // The most one websocket message may hold. The bot page sends 80 ms frames of audio (2,560 bytes) and short controls;
 // the channel's largest message is a brief (MAX_BRIEF_CHARS, under 100 KB however JSON writes it). ws would otherwise
 // take up to 100 MiB from one message, so one link could make the service hold that much at once.
@@ -274,6 +278,8 @@ export interface ServiceConfig {
   slidesPage?: SlidesPage
   /** The slide shares' timings, which tests make short (src/slides/share.ts). */
   slidesTiming?: Partial<ShareTiming>
+  /** SLIDES_PLATFORMS: the platforms a meeting may be joined with slides on (config.slidesPlatforms unless a test passes one). */
+  slidesPlatforms?: readonly string[]
 }
 
 /** What the server uses of a MeetingSession. */
@@ -296,6 +302,14 @@ export interface ServiceSession extends LiveSession {
   leaveAsAsked?(): void
 }
 
+/** A meeting's slides, from the join until its bot is out of the call: in memory only, like its brief. */
+interface MeetingSlides {
+  deck: MeetingDeck
+  /** Its share (the session reaches it only as its SlideSurface). */
+  share: ShareControl
+  platform: recall.Platform
+}
+
 export interface ServiceDeps<S extends ServiceSession> {
   /** Creates a Recall bot (recall.createBot, unless a test passes a fake). */
   createBot(plan: recall.BotPlan): Promise<{ id: string }>
@@ -308,7 +322,7 @@ export interface ServiceDeps<S extends ServiceSession> {
   startSession(
     ws: WebSocket,
     opts: SessionOptions,
-    ctx: { bridge: SessionBridge; brief: () => string; reconnectMs: number; speakerProbe?: SpeakerProbe },
+    ctx: { bridge: SessionBridge; brief: () => string; reconnectMs: number; speakerProbe?: SpeakerProbe; slides?: SessionSlides },
   ): S
   /**
    * Starts and stops a bot's screen share, resolving with Recall's HTTP status (recall.startScreenshare and
@@ -390,6 +404,11 @@ interface Meeting<S> {
   events?: RecallEvents
   /** Joined with the screen-share test (npm run join --share-test): its shares, and what its camera page did (in memory). */
   shareTest?: ShareTest
+  /**
+   * Joined with slides to present: its script and deck (only the slides it shows), and its share. In memory only, until
+   * its bot is out of the call; the share is closed (blanked, its link revoked) as soon as the meeting starts to end.
+   */
+  slides?: MeetingSlides
 }
 
 export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps: ServiceDeps<S>): Service<S> {
@@ -473,11 +492,22 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     return meeting.brief === undefined ? { brief_for: 'shared' } : { brief_for: 'this_meeting', text: meeting.brief }
   }
 
+  /**
+   * The meeting is ending: its slides are blanked and their link revoked at once, with no call to Recall (the share goes
+   * with the bot), and its script and images are let go.
+   */
+  function dropSlides(meeting: Meeting<S>): void {
+    if (!meeting.slides) return
+    slides.forget(meeting.slides.share)
+    meeting.slides = undefined
+  }
+
   /** The bot is out of its call, or Recall says it can't be asked to leave: its place is free. */
   function gone(meeting: Meeting<S>): void {
     if (closed || meetings.get(meeting.key) !== meeting) return
     clearTimers(meeting)
     meeting.shareTest?.end()
+    dropSlides(meeting)
     // Its own brief goes with it.
     meetings.delete(meeting.key)
     save()
@@ -514,6 +544,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     meeting.events?.stop()
     // Nor the screen-share test: its tokens die, and its page's link closes. The share goes with the bot.
     meeting.shareTest?.end()
+    // Nor the slides, the same way.
+    dropSlides(meeting)
     console.log(`[leave] bot ${meeting.botId}: ${why}, so it is asked to leave its call`)
     const attempt = async (n: number): Promise<void> => {
       if (await askToLeave(meeting)) return
@@ -539,6 +571,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
    */
   function timeUp(meeting: Meeting<S>): void {
     meeting.timeUp = true
+    // The slides go at once, before the line in the chat: no slide stays up while the bot leaves.
+    dropSlides(meeting)
     const why = `it reached the ${cfg.maxMeetingMinutes}-minute limit for one meeting`
     const session = meeting.session
     if (session && (meeting.state === 'live' || meeting.state === 'away')) {
@@ -565,6 +599,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     meeting.page = undefined
     if (meeting.state !== 'live') return
     meeting.shareTest?.cameraDropped()
+    // A camera page that drops right after a share change is suspect: that share stops further ones.
+    meeting.slides?.share.cameraDropped()
     meeting.state = 'away'
     const session = meeting.session
     if (!session || stopping) return // stop() asks its bot to leave, and endSessions ends the session
@@ -624,12 +660,22 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
    * Creates a Recall bot that joins the meeting with the agent page as its camera and microphone. brief: the meeting's
    * own brief, which it then answers from instead of the shared one (undefined: the shared one). speakerProbe: true to
    * measure who is speaking in this meeting (a test meeting: only /api/join asks for it, and only with SPEAKER_PROBE on).
-   * shareTest: true for the screen-share test (a test meeting: only /api/join asks for it).
+   * shareTest: true for the screen-share test (a test meeting: only /api/join asks for it). slides: {script, from} for a
+   * meeting with slides to present, on a platform SLIDES_PLATFORMS lists: the script and its deck are checked and read
+   * here, before any bot is created.
    */
   async function startBot(
     meetingUrl: unknown,
-    { brief, speakerProbe, shareTest }: { brief?: unknown; speakerProbe?: unknown; shareTest?: unknown } = {},
-  ): Promise<{ bot_id: string; platform: recall.Platform; key: string; brief: BriefInUse; speakerProbe: boolean; shareTest: boolean }> {
+    { brief, speakerProbe, shareTest, slides: given }: { brief?: unknown; speakerProbe?: unknown; shareTest?: unknown; slides?: unknown } = {},
+  ): Promise<{
+    bot_id: string
+    platform: recall.Platform
+    key: string
+    brief: BriefInUse
+    speakerProbe: boolean
+    shareTest: boolean
+    slides?: MeetingDeck
+  }> {
     const platform = typeof meetingUrl === 'string' ? recall.meetingPlatform(meetingUrl) : null
     if (typeof meetingUrl !== 'string' || !platform) {
       throw new JoinError('Pass a Zoom, Google Meet or Microsoft Teams meeting link.')
@@ -649,6 +695,15 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     }
     const sharing = shareTest === true
     if (sharing && shareTestPage.problem) throw new JoinError(shareTestPage.problem)
+    // Slides only where the owner has turned presenting on, once the screen-share test passed there: said first, as no
+    // other problem with the deck matters until then. null is JSON's way to leave them out.
+    const presenting = given !== undefined && given !== null
+    if (presenting) {
+      if (sharing) throw new JoinError('A meeting is joined with slides or with the screen-share test, not both.')
+      const off = slidesPlatformProblem(platform, (cfg.slidesPlatforms ?? config.slidesPlatforms) as readonly SlidesPlatform[])
+      if (off) throw new JoinError(off)
+      if (slides.pageProblem) throw new JoinError(`The slides page can't be served, so no presentation could load: ${slides.pageProblem}`)
+    }
     if (!cfg.agentPageToken) throw new JoinError('Set AGENT_PAGE_TOKEN in .env first.')
     // A page the bot can't load would leave it in the meeting, silent, until the page wait runs out or it is asked to leave.
     const unreachable = publicUrlProblem(cfg.publicUrl)
@@ -663,14 +718,28 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
           'Try again once one has ended, or raise MAX_MEETINGS in .env.',
       )
     }
+    // The script and its deck, read before the bot is created: a deck that is gone, or a script with errors, refuses the
+    // join at no cost. Only the slides the script shows are read.
+    let deck: MeetingDeck | undefined
+    if (presenting) {
+      try {
+        deck = meetingDeck(given, { decksDir: decksDir(cfg.dataDir), retentionDays: config.deckRetentionDays })
+      } catch (err) {
+        if (err instanceof SlidesRefused) throw new JoinError(err.message)
+        throw err
+      }
+    }
     const key = randomUUID()
     const pageUrl = `${cfg.publicUrl}/agent?key=${key}&token=${cfg.agentPageToken}`
     // The speaker probe's events connection has a token of its own, new for each meeting: never the page token, and
     // never logged. Without the probe, the bot is asked for exactly what it always was.
     const eventsToken = probing ? randomBytes(32).toString('base64url') : ''
-    const plan: recall.BotPlan = probing
-      ? { meetingUrl, pageUrl, eventsUrl: recall.recallEventsUrl(cfg.publicUrl, key, eventsToken) }
-      : { meetingUrl, pageUrl }
+    // With slides, the chat notice that says so and a silence timer that allows for a presentation; without, exactly
+    // what it always was.
+    const plan: recall.BotPlan = {
+      ...(probing ? { meetingUrl, pageUrl, eventsUrl: recall.recallEventsUrl(cfg.publicUrl, key, eventsToken) } : { meetingUrl, pageUrl }),
+      ...(deck ? { slides: { minutes: deck.script.minutes } } : {}),
+    }
     const creation = deps.createBot(plan)
     creating.add(creation)
     let bot: { id: string }
@@ -683,6 +752,11 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     const meeting: Meeting<S> = { key, botId: bot.id, platform, state: 'waiting', deadline: Date.now() + pageWait, brief: own }
     if (probing) meeting.events = recallEvents(meeting, platform, eventsToken)
     if (sharing) meeting.shareTest = newShareTest(bot.id)
+    if (deck) {
+      const botId = bot.id
+      const share = slides.create({ botId, images: deck.images, start: url => screenshare.start(botId, url), stop: () => screenshare.stop(botId) })
+      meeting.slides = { deck, share, platform }
+    }
     meetings.set(key, meeting)
     save()
     // Stopped while Recall created it: stop() asks it to leave along with the others.
@@ -692,12 +766,18 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     meeting.timer.unref()
     // The bot's id is enough to find it in Recall. The meeting's link stays out of the log, which nothing deletes: for
     // Google Meet even a link without its query string lets anyone join. Nor does any of a brief go there.
-    const extras = [own === undefined ? '' : 'a brief of its own', probing ? 'the speaker probe' : '', sharing ? 'the screen-share test' : '']
+    // Of slides, the count only: never the deck, its title or anything on it.
+    const extras = [
+      own === undefined ? '' : 'a brief of its own',
+      probing ? 'the speaker probe' : '',
+      sharing ? 'the screen-share test' : '',
+      deck ? `slides to present (${deck.slides.length})` : '',
+    ]
       .filter(Boolean)
       .join(' and ')
     console.log(`[join] bot ${bot.id} is joining a ${recall.PLATFORM_NAMES[platform]} meeting${extras ? `, with ${extras}` : ''}`)
     const briefInUse: BriefInUse = own !== undefined ? 'meeting' : sharedBrief().trim() ? 'shared' : 'none'
-    return { bot_id: bot.id, platform, key, brief: briefInUse, speakerProbe: probing, shareTest: sharing }
+    return { bot_id: bot.id, platform, key, brief: briefInUse, speakerProbe: probing, shareTest: sharing, ...(deck ? { slides: deck } : {}) }
   }
 
   /** A meeting's screen-share test: its page's address on the tunnel, with each share's token, and Recall's calls. */
@@ -773,10 +853,14 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     save()
   }
 
+  // The owner's controls of the slides: through the bridge (slides_status, slides_control) and /api/slides alike.
+  const slideControls = slidesHandlers(sessions)
+
   const bridge = new SessionBridge({
     // get_transcript, post_chat, add_to_brief and late answers, each for the meeting named, else the newest
     // meeting the assistant is in; post_chat without a key is refused while it is in more than one (src/sessions.ts).
     ...sessionHandlers(sessions),
+    ...slideControls,
     setBrief: markdown => {
       // Refused, not cut: its end often says what must not be shared. (An empty one clears the shared brief, as before.)
       const tooLong = briefTooLong(markdown)
@@ -787,11 +871,12 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
       fs.chmodSync(briefFile, 0o600) // mode applies only when the file is created
     },
     // Never with the speaker probe: only npm run join asks for it, for a test meeting.
-    joinMeeting: async (meetingUrl, brief) => {
-      const started = await startBot(meetingUrl, { brief })
+    joinMeeting: async (meetingUrl, brief, given) => {
+      const started = await startBot(meetingUrl, { brief, slides: given })
       const { bot_id, platform, key } = started
       // The key is what this meeting's questions and events carry as "meeting".
-      const note = `${identity.name} is joining the ${recall.PLATFORM_NAMES[platform]} meeting (bot ${bot_id}). ${briefNote(started.brief)} ${joinTip()}`
+      const deck = started.slides ? ` ${slidesNote(started.slides, platform)}` : ''
+      const note = `${identity.name} is joining the ${recall.PLATFORM_NAMES[platform]} meeting (bot ${bot_id}). ${briefNote(started.brief)}${deck} ${joinTip()}`
       return { note, meeting: key }
     },
     meetingBrief,
@@ -813,8 +898,13 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     // set_brief, which changes the shared brief, never changes it, and it outlives the meeting's own copy.
     const own = meeting.brief
     const brief = own === undefined ? sharedBrief : () => own
+    // A meeting with slides: its session presents them through the share, which it never sees more of than this.
+    const deck = meeting.slides
+    const slidesCtx: { slides?: SessionSlides } = deck
+      ? { slides: { surface: deck.share, slides: deck.deck.slides, platform: deck.platform, from: deck.deck.from, title: deck.deck.name } }
+      : {}
     try {
-      session = deps.startSession(ws, opts, { bridge, brief, reconnectMs: cfg.reconnectMs ?? RECONNECT_MS, speakerProbe: meeting.events?.probe })
+      session = deps.startSession(ws, opts, { bridge, brief, reconnectMs: cfg.reconnectMs ?? RECONNECT_MS, speakerProbe: meeting.events?.probe, ...slidesCtx })
     } catch (err) {
       console.error('[audio]', (err as Error).message)
       ws.send(JSON.stringify({ type: 'error', message: PAGE_ERRORS.start }))
@@ -1006,6 +1096,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     }
     if (req.method === 'POST' && url.pathname === '/api/join') return join(req, res)
     if (req.method === 'GET' && url.pathname === '/api/share-test/status') return shareTestStatus(req, res, url)
+    if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/slides') return slidesRequest(req, res, url)
     if (req.method === 'POST' && url.pathname === '/api/share-test/action') return shareTestAction(req, res)
     send(res, 404, 'not found')
   }
@@ -1095,6 +1186,37 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     leave(meeting, 'the screen-share test is over')
   }
 
+  /**
+   * /api/slides, for npm run slides -- status and control: GET ?meeting=<key or bot id> is the presentation now, POST
+   * {meeting?, action, slide?} one of the owner's actions. Without a meeting, the only meeting with slides. Refused as
+   * /api/join refuses: from a web page, or without the local token; a POST that isn't JSON too.
+   */
+  async function slidesRequest(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+    if (req.headers.origin !== undefined) {
+      console.warn('[security] refused /api/slides from a web page')
+      return send(res, 403, 'forbidden: /api/slides is not for web pages')
+    }
+    if (!hasLocalToken(req, cfg.localToken)) {
+      console.warn('[security] refused /api/slides without the local token')
+      return send(res, 401, 'The local token is missing or wrong (npm run slides sends the one in the data folder).')
+    }
+    if (req.method === 'GET') {
+      const answer = slideControls.slidesStatus(url.searchParams.get('meeting') || undefined)
+      return send(res, 200, JSON.stringify(answer), 'application/json')
+    }
+    if (!isJson(req)) return send(res, 415, 'Send JSON, with Content-Type: application/json.')
+    let body: Record<string, unknown>
+    try {
+      body = await readJson(req)
+    } catch (err) {
+      return send(res, err instanceof BodyError ? err.status : 400, (err as Error).message)
+    }
+    if (stopping) return send(res, 503, STOPPING)
+    const meeting = typeof body.meeting === 'string' && body.meeting ? body.meeting : undefined
+    const answer = slideControls.slidesControl(body.action, body.slide, meeting)
+    send(res, 200, JSON.stringify(answer), 'application/json')
+  }
+
   /** Starts a meeting bot, for npm run join. */
   async function join(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     // Not for web pages, as a second line: no browser can open the socket, but were one ever to reach it (through a
@@ -1112,8 +1234,8 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     // A form or a "simple" cross-site request can't send JSON without the browser asking first.
     if (!isJson(req)) return send(res, 415, 'Send JSON, with Content-Type: application/json.')
     try {
-      const { meetingUrl, brief, speaker_probe, share_test } = await readJson(req)
-      const started = await startBot(meetingUrl, { brief, speakerProbe: speaker_probe, shareTest: share_test })
+      const { meetingUrl, brief, speaker_probe, share_test, slides: given } = await readJson(req)
+      const started = await startBot(meetingUrl, { brief, speakerProbe: speaker_probe, shareTest: share_test, slides: given })
       const { bot_id, platform } = started
       const answer = {
         bot_id,
@@ -1122,8 +1244,9 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
         brief_note: briefNote(started.brief),
         speaker_probe: started.speakerProbe,
         tip: joinTip(),
-        // Only for a meeting with the screen-share test: any other answer is what it always was.
+        // Only for a meeting with the screen-share test, or with slides: any other answer is what it always was.
         ...(started.shareTest ? { share_test: true } : {}),
+        ...(started.slides ? { slides: true, slides_note: slidesNote(started.slides, platform) } : {}),
       }
       return send(res, 200, JSON.stringify(answer), 'application/json')
     } catch (err) {
@@ -1345,8 +1468,8 @@ async function main(): Promise<void> {
     {
       createBot: recall.createBot,
       leaveCall: recall.leaveCall,
-      startSession: (ws, opts, { bridge, brief, reconnectMs, speakerProbe }) =>
-        new MeetingSession(ws, opts, { brain, bridge, brief, speak: lines.speak, reconnectMs, speakerProbe }),
+      startSession: (ws, opts, { bridge, brief, reconnectMs, speakerProbe, slides }) =>
+        new MeetingSession(ws, opts, { brain, bridge, brief, speak: lines.speak, reconnectMs, speakerProbe, slides }),
       screenshare: { start: recall.startScreenshare, stop: recall.stopScreenshare },
     },
   )

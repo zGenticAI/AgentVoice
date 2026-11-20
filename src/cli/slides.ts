@@ -1,6 +1,7 @@
 // Prepares a slide deck for the assistant to present, and checks its script: npm run slides -- prepare <deck.pdf>
 // [--exclude <pages>] [--label <name>], check <deck.script.md>, list, delete <id> | --all. None of them needs a key or
-// the network. docs/presenting.md says how to export a PDF and write the script.
+// the network. docs/presenting.md says how to export a PDF and write the script. And while it presents in a meeting,
+// status and control <action>, through the running voice service's control socket.
 //
 // prepare reads any PDF it is given and writes its text into data/decks, so a Claude Code session should never be
 // allowed to run it without asking (docs/claude-code.md).
@@ -38,6 +39,11 @@ switch (args.command) {
     break
   case 'delete':
     outcome = runDelete({ decksDir: decks, ids: args.ids, all: args.all })
+    break
+  case 'status':
+  case 'control':
+    // Loaded only for these two, which talk to the voice service on its control socket: prepare and check never do.
+    outcome = await (await import('./slides-control.ts')).runControl(args)
     break
 }
 const print = outcome.code ? console.error : console.log
