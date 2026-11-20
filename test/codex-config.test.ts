@@ -110,7 +110,37 @@ test('.codex/ is committed, for everyone who uses this folder', () => {
 const OURS = JSON.stringify([{ name: 'zoom-meeting', transport: { type: 'stdio', command: 'node_modules/.bin/tsx', args: ['src/channel/server.ts'], env: { AGENTVOICE_CLIENT: 'codex' } } }])
 const THEIRS = JSON.stringify([{ name: 'zoom-meeting', transport: { type: 'stdio', command: '/opt/av/node_modules/.bin/tsx', args: ['/opt/av/src/channel/server.ts'], env: null } }])
 
-/** A copy of what the script uses, a stand-in codex of the given version and answers, and a home folder. */
+/** Whether a path is in a folder, or is that folder, once links are followed. */
+const within = (p: string, folder: string) => {
+  const real = (f: string) => (fs.existsSync(f) ? fs.realpathSync(f) : path.resolve(f))
+  const [at, top] = [real(p), real(folder)]
+  return at === top || at.startsWith(top.endsWith(path.sep) ? top : top + path.sep)
+}
+
+/**
+ * A home folder for the script, outside /tmp and the temporary folder (the script refuses one inside them on Linux),
+ * where a test can see everything written in it: in this checkout's node_modules/.cache, or else in /dev/shm. Removed
+ * after the test.
+ */
+function ownerHome(t: { after: (fn: () => unknown) => void }): string {
+  for (const base of [path.join(ROOT, 'node_modules', '.cache'), '/dev/shm']) {
+    try {
+      fs.mkdirSync(base, { recursive: true })
+      if (within(base, '/tmp') || within(base, os.tmpdir())) continue
+      const home = fs.realpathSync(fs.mkdtempSync(path.join(base, 'av-test-home-')))
+      t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+      return home
+    } catch {
+      // Not there, or not ours to write: the next one.
+    }
+  }
+  return assert.fail('no folder outside /tmp and the temporary folder to make a home folder in')
+}
+
+/**
+ * A copy of what the script uses, a stand-in codex of the given version and answers, and a home folder the script
+ * takes (outside the temporary folders), which the snapshot covers too.
+ */
 function installSandbox(t: { after: (fn: () => unknown) => void }) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'av-cx-install-')))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
@@ -141,17 +171,18 @@ exit 3
 `,
     { mode: 0o755 },
   )
-  const home = path.join(dir, 'home')
-  fs.mkdirSync(home)
-  // The home folder the script is run with: by default one outside the temporary folders, as an owner's is (it need not
-  // exist: the script reads nothing in it).
+  // The home folder the script is run with: by default one outside the temporary folders, as an owner's is.
+  const home = ownerHome(t)
+  // One inside a temporary folder, which the script refuses on Linux.
+  const tmpHome = path.join(dir, 'home')
+  fs.mkdirSync(tmpHome)
   type Options = { version?: string; here?: string; elsewhere?: string; fail?: string; withCodex?: boolean; codexHome?: string; home?: string; tmpdir?: string }
   const run = (args: string[] = [], o: Options = {}) =>
     spawnSync('bash', [path.join(repo, 'scripts/install-codex.sh'), ...args], {
       encoding: 'utf8',
       env: {
         PATH: [...(o.withCodex === false ? [] : [bin]), path.dirname(process.execPath), '/usr/bin', '/bin'].join(':'),
-        HOME: o.home ?? '/home/av-test-owner',
+        HOME: o.home ?? home,
         TMPDIR: o.tmpdir ?? dir,
         FAKE_REPO: repo,
         FAKE_CODEX_VERSION: o.version ?? '0.171.0',
@@ -161,21 +192,22 @@ exit 3
         ...(o.codexHome ? { CODEX_HOME: o.codexHome } : {}),
       },
     })
-  /** Every file and folder under the sandbox, with its size and time: the script must change none of them. */
+  /** Every file and folder in the sandbox and the home folder, with its size and time: the script must change none. */
   const snapshot = () => {
     const out: string[] = []
-    const walk = (at: string) => {
+    const walk = (top: string, label: string, at = top) => {
       for (const name of fs.readdirSync(at).sort()) {
         const full = path.join(at, name)
         const stat = fs.lstatSync(full)
-        out.push(`${path.relative(dir, full)} ${stat.size} ${stat.mtimeMs}`)
-        if (stat.isDirectory()) walk(full)
+        out.push(`${label}/${path.relative(top, full)} ${stat.size} ${stat.mtimeMs}`)
+        if (stat.isDirectory()) walk(top, label, full)
       }
     }
-    walk(dir)
+    walk(dir, 'sandbox')
+    walk(home, 'home')
     return out
   }
-  return { repo, home, run, snapshot }
+  return { repo, home, tmpHome, run, snapshot }
 }
 
 test('install-codex.sh checks Codex and this folder, says how to start Codex here, and writes nothing', t => {
@@ -243,7 +275,7 @@ test('install-codex.sh refuses a home folder inside a temporary folder, where Co
   // folder in /tmp, ~/.ssh, ~/.aws and the rest became empty files, and Codex could no longer start here.
   const box = installSandbox(t)
   const before = box.snapshot()
-  for (const [home, tmpdir] of [[box.home, undefined], ['/tmp/av-owner', '/var/tmp/av-elsewhere'], ['/tmp', undefined]] as const) {
+  for (const [home, tmpdir] of [[box.tmpHome, undefined], ['/tmp/av-owner', '/var/tmp/av-elsewhere'], ['/tmp', undefined], [box.home, path.dirname(box.home)]] as const) {
     const r = box.run([], { home, tmpdir })
     assert.equal(r.status, 1, `${home}: ${r.stdout}`)
     assert.match(r.stderr, /^Your home folder \(.+\) is inside .+, a folder where Codex's sandbox lets commands write\. /, home)
@@ -252,7 +284,16 @@ test('install-codex.sh refuses a home folder inside a temporary folder, where Co
     assert.equal(r.stdout, '')
   }
   assert.deepEqual(box.snapshot(), before, 'nothing written')
-  // A home folder beside them, with a name that only starts the same, is fine.
-  assert.equal(box.run([], { home: '/tmpfiles/owner' }).status, 0)
-  assert.equal(box.run([], { home: '/home/owner' }).status, 0)
+  // A home folder beside them, with a name that only starts the same, is fine: one beside $TMPDIR, which the snapshot
+  // sees, and one beside /tmp, which must still not be there after.
+  const prefix = box.home.slice(0, -1)
+  fs.mkdirSync(prefix)
+  t.after(() => fs.rmSync(prefix, { recursive: true, force: true }))
+  const beside = box.run([], { tmpdir: prefix })
+  assert.equal(beside.status, 0, beside.stderr)
+  const besideTmp = `/tmp-av-test-owner-${process.pid}-${Date.now()}`
+  t.after(() => fs.rmSync(besideTmp, { recursive: true, force: true }))
+  assert.equal(box.run([], { home: besideTmp }).status, 0)
+  assert.ok(!fs.existsSync(besideTmp), 'nothing made there')
+  assert.deepEqual(box.snapshot(), before, 'nothing written')
 })
