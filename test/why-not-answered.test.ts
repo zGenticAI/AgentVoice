@@ -10,7 +10,7 @@ import { WebSocketServer } from 'ws'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { BrainEvent } from '../src/brain/brain.ts'
-import { SessionBridge, WHY_MAX_LINES, type SessionAnswer, type ToSession } from '../src/bridge.ts'
+import { type GaveUp, SessionBridge, WHY_MAX_LINES, type SessionAnswer, type ToSession } from '../src/bridge.ts'
 import { ROOT } from '../src/config.ts'
 import { JOIN_LINE } from '../src/consent.ts'
 import { ensureLocalToken } from '../src/local-token.ts'
@@ -61,7 +61,7 @@ type Reply = (line: string) => string | null | BrainEvent
 
 interface SetupOptions {
   replyWindowMs?: number
-  ask?: (q: unknown, ms: unknown, signal: AbortSignal) => Promise<SessionAnswer | null>
+  ask?: (q: unknown, ms: unknown, signal: AbortSignal, gaveUp?: (why: GaveUp) => void) => Promise<SessionAnswer | null>
   greetDelayMs?: number
   reconnectMs?: number
   /** How long the consent line takes to go out (ms). */
@@ -219,6 +219,28 @@ test("a question handed to Sam's session says what came of it, and never mind sa
   answer(null)
   await settle()
   assert.equal(s.verdicts().at(-1), 'asked/no_session_answer')
+})
+
+test("a question no session could take says so, and to start the meeting-assistant: through the bridge, at once", async t => {
+  // Sam's session links, but has no meeting-assistant taking questions and can't be sent one (Codex): it says so.
+  const bridge = new SessionBridge({ ...sessionHandlers(new Set()), setBrief: () => {}, joinMeeting: async () => ({ note: '' }) })
+  const owner = new FakeSocket()
+  bridge.attach(owner as any)
+  owner.emit('message', JSON.stringify({ type: 'hello', can_push: false }))
+  // Its channel answers each question it is sent with no_taker.
+  const realSend = owner.send.bind(owner)
+  owner.send = (data: Buffer | string) => {
+    realSend(data)
+    const msg = JSON.parse(String(data))
+    if (msg.type === 'question') setImmediate(() => owner.emit('message', JSON.stringify({ type: 'no_taker', id: msg.id })))
+  }
+  const s = setup(t, () => null, { ask: (q, ms, signal, gaveUp) => bridge.ask(q as any, ms as number | undefined, signal, gaveUp) })
+  s.flux.endTurn('Alex, what is our uptime?')
+  await settle()
+  assert.deepEqual(s.verdicts(), ['asked/no_taker'], 'given up at once, not after the minute')
+  const [line] = s.why(1).lines!
+  assert.match(line.why, /handed it to Sam's session, but no session could take it: Sam's session can't be sent questions without its meeting-assistant running/)
+  assert.match(line.why, /Alex said at once that it couldn't reach Sam's notes\. Start the meeting-assistant in Sam's session, with the meeting key, so the next questions reach it\.$/)
 })
 
 test("a checking line ElevenLabs fails partway leaves the question handed to Sam's session, still waiting for its answer", async t => {

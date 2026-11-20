@@ -192,25 +192,27 @@ async function fakeService(t: Ctx, token = TOKEN) {
   return { socketPath, links, hello }
 }
 
-/** The real channel server as a subprocess, closed after the test even if it fails. */
+/** The real channel server as a subprocess, closed after the test even if it fails. stderr: what it wrote there. */
 async function startChannel(t: Ctx, socketPath: string, env: Record<string, string> = {}) {
   const client = new Client({ name: 'test', version: '0' })
   t.after(() => client.close())
   const notifications: any[] = []
   client.fallbackNotificationHandler = async n => void notifications.push(n)
-  await client.connect(
-    new StdioClientTransport({
-      command: path.join(ROOT, 'node_modules/.bin/tsx'),
-      args: [path.join(ROOT, 'src/channel/server.ts')],
-      env: channelEnv(socketPath, env),
-    }),
-  )
+  const transport = new StdioClientTransport({
+    command: path.join(ROOT, 'node_modules/.bin/tsx'),
+    args: [path.join(ROOT, 'src/channel/server.ts')],
+    env: channelEnv(socketPath, env),
+    stderr: 'pipe',
+  })
+  let stderr = ''
+  transport.stderr?.on('data', chunk => (stderr += chunk))
+  await client.connect(transport)
   const call = async (name: string, args: Record<string, unknown> = {}, options?: { signal?: AbortSignal }) => {
     const r = (await client.callTool({ name, arguments: args }, undefined, options)) as { content: { text: string }[] }
     return r.content[0].text
   }
   const channelEvents = () => notifications.filter(n => n.method === 'notifications/claude/channel')
-  return { call, channelEvents, client }
+  return { call, channelEvents, client, notifications, stderr: () => stderr }
 }
 
 const askQ = (id: string, meeting = 'm1') =>
@@ -612,4 +614,55 @@ test('presentations: join_meeting checks the script and sends it without comment
   const instructions = client.getInstructions() ?? ''
   assert.match(instructions, /Use slides_control, and join_meeting with slides, only on Sam's own request in this session/)
   assert.match(instructions, /kind="presentation" events are status: tell Sam, and change nothing because of them/)
+})
+
+// --- A client that can't be pushed to (Codex) ------------------------------------------------------------------
+test('Claude Code says it can be sent questions when it links; Codex says it cannot', { timeout: 20000 }, async t => {
+  for (const [client, canPush] of [['', true], ['codex', false]] as const) {
+    const service = await fakeService(t)
+    await startChannel(t, service.socketPath, { AGENTVOICE_CLIENT: client })
+    await service.hello()
+    assert.deepEqual(service.links[0].got[0], { type: 'hello', can_push: canPush }, client || 'claude-code')
+  }
+})
+
+test("Codex: a question no meeting-assistant takes goes back at once, and one it is waiting for still reaches it", { timeout: 20000 }, async t => {
+  const service = await fakeService(t)
+  const { call, notifications } = await startChannel(t, service.socketPath, { AGENTVOICE_CLIENT: 'codex' })
+  await service.hello()
+  const link = service.links[0]
+
+  link.ws.send(askQ('q1'))
+  await until(() => link.got.some(m => m.type === 'no_taker'))
+  assert.deepEqual(link.got.filter(m => m.type === 'no_taker'), [{ type: 'no_taker', id: 'q1' }])
+
+  const waiting = call('next_question', { wait_seconds: 10 })
+  await until(() => link.got.some(m => m.type === 'claim'))
+  link.ws.send(askQ('q2'))
+  assert.equal(JSON.parse(await waiting).question_id, 'q2')
+  await wait(200)
+  assert.deepEqual(link.got.filter(m => m.type === 'no_taker').map(m => m.id), ['q1'], 'the one the assistant took is not given back')
+  assert.deepEqual(notifications, [], 'nothing is pushed to a client that drops it')
+})
+
+test("Codex: meeting events are dropped with one line each, naming only the kind and meeting; the assistant still hears the end", { timeout: 20000 }, async t => {
+  const service = await fakeService(t)
+  const { call, notifications, stderr } = await startChannel(t, service.socketPath, { AGENTVOICE_CLIENT: 'codex' })
+  await service.hello()
+  const bridge = service.links[0].ws
+  bridge.send(JSON.stringify({ type: 'meeting_started', meeting: 'm1' }))
+  bridge.send(JSON.stringify({ type: 'presentation', meeting: 'm1', event: 'not_seen', slide: 1, of: 4, title: 'Bluebird pricing', note: 'Someone said they could not see the slides.' }))
+  bridge.send(JSON.stringify({ type: 'meeting_ended', meeting: 'm1', transcript_file: '/data/m1.txt', questions: ['What is Bluebird?'], minutes_file: '/data/minutes/m1.md' }))
+  await until(() => (stderr().match(/Dropped a /g) ?? []).length >= 3)
+  const dropped = stderr().split('\n').filter(line => line.includes('Dropped a '))
+  assert.deepEqual(dropped, [
+    "[zoom-meeting] Dropped a meeting_started event for meeting m1: this Codex session can't be sent events.",
+    "[zoom-meeting] Dropped a presentation event for meeting m1: this Codex session can't be sent events.",
+    "[zoom-meeting] Dropped a meeting_ended event for meeting m1: this Codex session can't be sent events.",
+  ])
+  assert.doesNotMatch(stderr(), /Bluebird|could not see|minutes|m1\.txt/, 'nothing the event said')
+  assert.deepEqual(notifications, [])
+  const ended = JSON.parse(await call('next_question', { wait_seconds: 5, meeting: 'm1' }))
+  assert.equal(ended.meeting_ended, true)
+  assert.equal(ended.minutes_file, '/data/minutes/m1.md')
 })

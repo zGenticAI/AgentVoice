@@ -231,3 +231,52 @@ test('attachedUntil covers a waiting call plus the grace period, and is 0 once t
   await call
   assert.equal(d.attachedUntil, 0)
 })
+
+// --- A session that can't be pushed to (Codex, or OpenCode before it knows the owner's session) -----------------------
+/** A desk whose session can be pushed to only while `can.push` is true: what it pushes, and what it gives back. */
+function deskThatCannotPush(graceMs = 1000) {
+  const pushed: string[] = []
+  const noTaker: string[] = []
+  const can = { push: false }
+  const d = new QuestionDesk(question => pushed.push(question.question_id), graceMs, {
+    canPush: () => can.push,
+    noTaker: question => noTaker.push(question.question_id),
+  })
+  return { desk: d, pushed, noTaker, can }
+}
+
+test("with no assistant and no way to push, a question goes back at once as one nobody here can take", () => {
+  const { desk: d, pushed, noTaker } = deskThatCannotPush()
+  d.offer(q('q1'))
+  assert.deepEqual(noTaker, ['q1'])
+  assert.deepEqual(pushed, [])
+})
+
+test('a waiting next_question call still gets the question when the session cannot be pushed to', async () => {
+  const { desk: d, pushed, noTaker } = deskThatCannotPush()
+  const call = d.next(1000)
+  d.offer(q('q1'))
+  assert.deepEqual(await call, { question: q('q1') })
+  assert.deepEqual([pushed, noTaker], [[], []])
+})
+
+test('a queued question nobody takes goes back after the grace period, once, when the session cannot be pushed to', async () => {
+  const { desk: d, pushed, noTaker } = deskThatCannotPush(60)
+  const first = d.next(1000)
+  d.offer(q('q1'))
+  await first
+  d.offer(q('q2')) // queued for the assistant, which never asks again
+  assert.deepEqual(noTaker, [], 'not while the assistant may still take it')
+  await settle(100)
+  assert.deepEqual(noTaker, ['q2'])
+  assert.deepEqual(pushed, [])
+  assert.deepEqual(await d.next(10), { none: true }, 'not handed out a second time')
+})
+
+test('once the session can be pushed to, a question nobody takes is pushed again', () => {
+  const { desk: d, pushed, noTaker, can } = deskThatCannotPush()
+  d.offer(q('q1'))
+  can.push = true
+  d.offer(q('q2'))
+  assert.deepEqual([pushed, noTaker], [['q2'], ['q1']])
+})

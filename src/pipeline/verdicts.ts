@@ -37,6 +37,7 @@ export type Outcome =
   | 'handed'
   | 'session_answered'
   | 'no_session_answer'
+  | 'no_taker'
   | 'cut_off'
   | 'replaced'
   | 'failed'
@@ -103,6 +104,10 @@ const OUTCOMES: Record<Outcome, (v: Verdict) => string> = {
   handed: () => `${HANDED}, and is waiting for its answer.`,
   session_answered: () => `${HANDED}, and said its answer.`,
   no_session_answer: () => `${HANDED}, but no answer came in time (or no session was linked), so ${NAME} said it couldn't reach ${OWNER}'s notes.`,
+  no_taker: () =>
+    `${HANDED}, but no session could take it: ${OWNER}'s session can't be sent questions without its meeting-assistant running, and none was ` +
+    `taking them, so ${NAME} said at once that it couldn't reach ${OWNER}'s notes. Start the meeting-assistant in ${OWNER}'s session, ` +
+    'with the meeting key, so the next questions reach it.',
   cut_off: v =>
     (v.byConsent
       ? `${NAME} stopped before it finished: the consent line came due as it answered, and took its place. The line was not answered after it.`

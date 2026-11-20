@@ -8,7 +8,7 @@ import { BriefAdditions } from '../brain/additions.ts'
 import type { Brain } from '../brain/brain.ts'
 import { attention, endsOnQuestion, isFillerOnly, wordsThatCount } from '../brain/attention.ts'
 import { isCancelRequest, isLeaveReply, isLeaveRequest } from '../brain/text.ts'
-import type { LineVerdict, SessionAnswer, SessionBridge, ToSession } from '../bridge.ts'
+import type { GaveUp, LineVerdict, SessionAnswer, SessionBridge, ToSession } from '../bridge.ts'
 import { CHECKING_LINES, type HintPlatform, JOIN_LINE, LEAVE_LINE, PROGRESS_LINE, REFUSAL_LINE, SESSION_OFFLINE_LINE, SLIDES_LINES } from '../consent.ts'
 import { PARTICIPANT_LABEL, SLIDES_LABEL, identity } from '../identity.ts'
 import { type MinutesInput, writeMinutes } from '../minutes.ts'
@@ -1026,7 +1026,9 @@ export class MeetingSession {
         // turn's signal goes with it: when the meeting moves on (Alex is talked over, told never mind, asked
         // something else or to leave, or its page goes), the bridge stops waiting at once, tells the owner's
         // session that Alex won't say its answer, and keeps the answer with the meeting's additions as a
-        // late one (see SessionBridge.lateReply), so asking again still gets it at once.
+        // late one (see SessionBridge.lateReply), so asking again still gets it at once. When no session can take it
+        // (none has its meeting-assistant taking questions, and none can be sent one), the bridge says so at once.
+        let gaveUp: GaveUp | undefined
         const asking = this.deps.bridge.ask(
           {
             question: event.question,
@@ -1036,6 +1038,7 @@ export class MeetingSession {
           },
           undefined,
           signal,
+          why => (gaveUp = why),
         )
         // A checking line that fails to play (ElevenLabs busy, the line not kept yet) must not lose the answer
         // already on its way: Alex goes on waiting for it.
@@ -1049,7 +1052,7 @@ export class MeetingSession {
         if (answer) this.keepAnswer(event.question, answer)
         if (signal.aborted) return
         if (!answer) {
-          heard.outcome = 'no_session_answer'
+          heard.outcome = gaveUp === 'no_taker' ? 'no_taker' : 'no_session_answer'
           await this.say(SESSION_OFFLINE_LINE, signal)
           continue
         }

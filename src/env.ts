@@ -6,7 +6,12 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+// Which coding client started the zoom-meeting channel (src/channel/client-text.ts) is read before .env: .env is shared
+// by every client that starts the channel in this folder, so only a client's own config may say (Codex's and
+// OpenCode's set it; Claude Code's leaves it unset). inDotenv: .env set it too, which is ignored.
+const clientBeforeDotenv = process.env.AGENTVOICE_CLIENT
 loadEnv({ path: path.join(ROOT, '.env'), quiet: true })
+export const CLIENT_SETTING = { value: clientBeforeDotenv, inDotenv: process.env.AGENTVOICE_CLIENT !== clientBeforeDotenv }
 
 /**
  * A path from .env, with a leading "~" taken as the home folder (dotenv doesn't expand it, and the service's own

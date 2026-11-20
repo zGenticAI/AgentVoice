@@ -1,8 +1,8 @@
-// Link between the voice service and the owner's live Claude Code session.
+// Link between the voice service and the owner's live coding session (Claude Code, Codex or OpenCode).
 // The zoom-meeting channel server (src/channel/server.ts) runs inside that session
 // and connects here over a localhost-only websocket.
 //
-// Every Claude Code process with the channel loaded links here, including idle pre-started
+// Every coding-client process with the channel loaded links here, including idle pre-started
 // ones, so several can be linked at once. All of them stay linked. Questions and meeting events
 // go to the ACTIVE one:
 // 1. a session whose meeting-assistant is taking questions (its claim holds until hold_until);
@@ -11,6 +11,12 @@
 //    wins does not depend on the order they reconnect in after the voice service restarts.
 //    get_transcript, get_brief, why_not_answered, set_brief, add_to_brief and post_chat never move the questions.
 // 3. else, when no session has claimed, every linked session: the first reply wins.
+//
+// A session that can't take a question (no meeting-assistant is taking them, and its client can't be sent one, as
+// Codex can't) says so at once ("no_taker"). The question then goes to the other linked sessions that can be sent one,
+// the most recently used first, one at a time; when none is left, Alex stops waiting for it at once ('no_taker') and
+// tells the meeting it couldn't reach the owner's notes. Each channel says whether its client can be sent questions
+// when it links, and again when that changes; an older channel never says, and counts as one that can, as before.
 //
 // Alex waits 60 seconds for a reply, then tells the meeting it couldn't reach the owner's notes. It also stops
 // waiting at once when the meeting moves on first: it was talked over, told never mind, asked something
@@ -85,7 +91,12 @@ export type ToSession =
     }
 
 export type FromSession =
-  | { type: 'hello' }
+  // Sent first on every link, and again when can_push changes: whether this session can be sent a question that no
+  // meeting-assistant is taking (an older channel leaves it out, and can).
+  | { type: 'hello'; can_push?: boolean }
+  // The question with this id went to a session that can't take it: no meeting-assistant is taking questions, and its
+  // client can't be sent one (an older channel never says, and the question waits out its minute).
+  | { type: 'no_taker'; id: string }
   // "Send the questions to me". at: when this session last used join_meeting, reply or next_question
   // (epoch ms; now if left out). hold_until: until when its meeting-assistant is taking questions.
   | { type: 'claim'; at?: number; hold_until?: number }
@@ -145,9 +156,10 @@ export type Ack = Extract<ToSession, { type: 'ack' }>
  * Why Alex stopped waiting for a question. 'timeout': no answer came in time (or the only session it went
  * to unlinked), and it told the meeting it couldn't reach the owner's notes. 'stopped': the meeting moved on
  * first (it was talked over, told never mind, asked something else or asked to leave, or its page went),
- * so it never said anything about it.
+ * so it never said anything about it. 'no_taker': no linked session could take it (none had its meeting-assistant
+ * taking questions, and none could be sent one), so it told the meeting at once that it couldn't reach the notes.
  */
-export type GaveUp = 'timeout' | 'stopped'
+export type GaveUp = 'timeout' | 'stopped' | 'no_taker'
 
 export interface BridgeHandlers {
   /** A meeting's transcript (the one with this key, else the latest): its latest lines, up to maxChars characters if given. */
@@ -204,11 +216,17 @@ export const LEFT_NOTE = `${identity.name} was asked to leave that meeting, or r
 
 /** A question Alex is waiting for an answer to. */
 interface Waiting {
-  /** The sessions it went to. */
+  /** The sessions it is with: sent to, and none has said it can't take it. */
   links: Set<Link>
+  /** Every session it has been sent to, so none is sent it twice. */
+  tried: Set<Link>
   meeting: string
   question: string
-  resolve: (answer: SessionAnswer | null) => void
+  /** The rest of what was asked, to send it on to another session. */
+  asked_by: string
+  context: string
+  /** why: set when Alex stopped waiting without an answer. */
+  resolve: (answer: SessionAnswer | null, why?: GaveUp) => void
 }
 
 /**
@@ -234,9 +252,13 @@ interface Link {
   holdUntil: number
   /** Orders claims made in the same millisecond. */
   seq: number
+  /** Whether it can be sent a question no meeting-assistant is taking (its hello says; an older channel can). */
+  canPush: boolean
 }
 
 const isOpen = (link: Link) => link.ws.readyState === WebSocket.OPEN
+// The most recently used first: the latest claim, then the one linked last.
+const byLatestUse = (a: Link, b: Link) => b.at - a.at || b.seq - a.seq || b.n - a.n
 // What a meeting key can look like (they are random UUIDs): anything else is no meeting's.
 const MEETING_KEY = /^[\w-]{1,100}$/
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
@@ -281,9 +303,9 @@ export class SessionBridge {
   }
 
   attach(ws: WebSocket): void {
-    const link: Link = { ws, n: ++this.linked, at: 0, holdUntil: 0, seq: 0 }
+    const link: Link = { ws, n: ++this.linked, at: 0, holdUntil: 0, seq: 0, canPush: true }
     this.links.push(link)
-    console.log(`[bridge] Claude Code session linked (${this.links.length} linked)`)
+    console.log(`[bridge] Coding session linked (${this.links.length} linked)`)
     this.send(link, { type: 'service', features: [...SERVICE_FEATURES] })
     ws.on('message', data => void this.onMessage(link, data.toString()))
     ws.on('error', () => {}) // close follows
@@ -295,7 +317,7 @@ export class SessionBridge {
         if (!w.links.delete(link) || w.links.size) continue
         this.giveUp(id, w, 'timeout')
       }
-      console.log(`[bridge] Claude Code session unlinked (${this.links.length} linked)`)
+      console.log(`[bridge] Coding session unlinked (${this.links.length} linked)`)
       this.logActive(this.active)
     })
     this.logActive(this.active)
@@ -319,32 +341,38 @@ export class SessionBridge {
   }
 
   /**
-   * Sends a question to the active session (every session if none has claimed); resolves with the first
-   * answer, or null on timeout or no session. signal: the turn that asked. When it aborts (the meeting has
-   * moved on), Alex stops waiting at once and resolves null, and a reply that comes later goes the late way.
+   * Sends a question to the active session (every session if none has claimed), and on to others if it can't take it;
+   * resolves with the first answer, or null on timeout, no session or no taker. signal: the turn that asked. When it
+   * aborts (the meeting has moved on), Alex stops waiting at once and resolves null, and a reply that comes later goes
+   * the late way. gaveUp: told why, when Alex stops waiting without an answer.
    */
   ask(
     q: { question: string; asked_by: string; meeting: string; context: string },
     timeoutMs = 60_000,
     signal?: AbortSignal,
+    gaveUp?: (why: GaveUp) => void,
   ): Promise<SessionAnswer | null> {
     // A turn that has already stopped asks nothing.
     if (signal?.aborted) return Promise.resolve(null)
     const targets = this.targets()
     if (!targets.length) return Promise.resolve(null)
     if (targets.length > 1) {
-      console.warn(`[bridge] No Claude Code session has claimed the questions, so this one goes to all ${targets.length} linked sessions. Use a zoom-meeting tool in ${identity.owner}'s session (join_meeting, reply or next_question) to claim them.`)
+      console.warn(`[bridge] No coding session has claimed the questions, so this one goes to all ${targets.length} linked sessions. Use a zoom-meeting tool in ${identity.owner}'s session (join_meeting, reply or next_question) to claim them.`)
     }
     const id = randomUUID().slice(0, 8)
     return new Promise(resolve => {
       const stopped = () => this.giveUp(id, w, 'stopped')
       const w: Waiting = {
         links: new Set(targets),
+        tried: new Set(targets),
         meeting: q.meeting,
         question: q.question,
-        resolve: answer => {
+        asked_by: q.asked_by,
+        context: q.context,
+        resolve: (answer, why) => {
           clearTimeout(timer)
           signal?.removeEventListener('abort', stopped)
+          if (why) gaveUp?.(why)
           resolve(answer)
         },
       }
@@ -365,7 +393,23 @@ export class SessionBridge {
     // Forgotten on time even when nothing else happens on the bridge for hours: the words are the meeting's.
     setTimeout(() => this.expired.delete(id), this.lateAnswerMs).unref()
     this.forgetOldQuestions()
-    w.resolve(null)
+    w.resolve(null, why)
+  }
+
+  /**
+   * A question none of the sessions it is with can take: on to the linked session that can be sent one and was used
+   * most recently, among those not sent it yet. When none is left, Alex stops waiting for it at once.
+   */
+  private passOn(id: string, w: Waiting, from: Link): void {
+    const next = this.links.filter(l => isOpen(l) && l.canPush && !w.tried.has(l)).sort(byLatestUse)[0]
+    if (!next) {
+      console.log(`[bridge] No coding session could take a question (none has its meeting-assistant taking them, and none can be sent one): ${identity.name} says it couldn't reach ${identity.owner}'s notes`)
+      return this.giveUp(id, w, 'no_taker')
+    }
+    console.log(`[bridge] Coding session #${from.n} could not take a question: it goes to session #${next.n}`)
+    w.links.add(next)
+    w.tried.add(next)
+    this.send(next, { type: 'question', id, question: w.question, asked_by: w.asked_by, meeting: w.meeting, context: w.context })
   }
 
   /** Forgets the questions given up on more than lateAnswerMs ago, and the oldest past LATE_QUESTIONS_KEPT. */
@@ -416,7 +460,7 @@ export class SessionBridge {
     const now = active ? `#${active.n}` : this.connected ? 'all' : 'none'
     if (now === this.logged) return
     this.logged = now
-    if (active) console.log(`[bridge] Questions now go to Claude Code session #${active.n}`)
+    if (active) console.log(`[bridge] Questions now go to coding session #${active.n}`)
     else if (this.connected) console.log('[bridge] No session has claimed the questions: they go to every linked session')
   }
 
@@ -438,6 +482,25 @@ export class SessionBridge {
     }
     if (typeof msg?.type !== 'string') return
     switch (msg.type) {
+      case 'hello':
+        // Whether this session can be sent questions: said on every link, and again when it changes.
+        if (typeof msg.can_push === 'boolean' && msg.can_push !== link.canPush) {
+          link.canPush = msg.can_push
+          console.log(
+            msg.can_push
+              ? `[bridge] Coding session #${link.n} can be sent questions`
+              : `[bridge] Coding session #${link.n} can't be sent questions: only its meeting-assistant takes them`,
+          )
+        }
+        break
+      case 'no_taker': {
+        // Once every session the question is with has said so, it goes on to another, or Alex stops waiting.
+        const id = String(msg.id ?? '')
+        const w = this.waiting.get(id)
+        if (!w || !w.links.delete(link) || w.links.size) break
+        this.passOn(id, w, link)
+        break
+      }
       case 'claim':
         this.claim(link, num(msg.at), num(msg.hold_until))
         break
