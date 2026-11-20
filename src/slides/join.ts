@@ -43,6 +43,11 @@ export interface DeckPlace {
   /** DECK_RETENTION_DAYS, for the message about a deck that is gone. */
   retentionDays: number
   now?: Date
+  /**
+   * false: a check only, as npm run join makes before the service is asked, which may still refuse the join (presenting
+   * off on that platform). The deck's last-used date is left alone: only a join the service takes keeps a deck longer.
+   */
+  touch?: boolean
 }
 
 const CHECK_IT = 'npm run slides -- check <your script> lists everything'
@@ -108,10 +113,12 @@ export function meetingDeck(given: unknown, place: DeckPlace): MeetingDeck {
     }
   }
   // A join is a use of the deck: the retention sweep keeps it. A deck that can't be marked is still presented.
-  try {
-    store.touch(script.deck, place.now)
-  } catch {
-    // Only the retention date is lost.
+  if (place.touch !== false) {
+    try {
+      store.touch(script.deck, place.now)
+    } catch {
+      // Only the retention date is lost.
+    }
   }
   return {
     script,
@@ -150,7 +157,7 @@ export function joinScript(file: string, from: number | undefined, place: DeckPl
   if (!parsed.script || parsed.errors.length) return { ok: false, problem: `${name} can't be used: ${problemsText(parsed.errors)}. ${CHECK_IT}.` }
   const text = canonicalText(parsed.script)
   try {
-    const deck = meetingDeck({ script: text, from }, place)
+    const deck = meetingDeck({ script: text, from }, { ...place, touch: false })
     const warnings = checkScript(parsed, deck.manifest, { figures: false }).warnings.length
     return { ok: true, text, deck, warnings }
   } catch (err) {

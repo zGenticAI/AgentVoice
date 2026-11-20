@@ -282,12 +282,18 @@ test("only the slides the script shows are read: an excluded page's image is nev
 test('npm run join --slides checks the file on this computer, comments and all, and sends its canonical text without them', t => {
   const dir = tempDir(t)
   const decks = decksDir(dir)
-  writeDeck(decks)
+  const deck = writeDeck(decks)
   const file = path.join(dir, 'q4-plan.script.md')
   fs.writeFileSync(file, SCRIPT)
   const place = { decksDir: decks, retentionDays: 30 }
+  // The check on this computer is not a use of the deck: the service may still refuse the join (presenting off on that
+  // platform), so the deck's last-used date is left for the service to mark when it takes the join.
+  const manifest = path.join(deck.dir, 'manifest.json')
+  const old = new Date('2026-01-01T00:00:00Z')
+  fs.utimesSync(manifest, old, old)
   const ok = joinScript(file, undefined, place)
   assert.ok(ok.ok)
+  assert.equal(fs.statSync(manifest).mtimeMs, old.getTime(), 'the deck is not marked as used')
   assert.equal(ok.text, CANONICAL)
   assert.doesNotMatch(ok.text, /<!--|never say the discount/)
   assert.ok(ok.ok && ok.deck.slides.length === 4)

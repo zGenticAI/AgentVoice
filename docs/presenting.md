@@ -338,7 +338,7 @@ npm run slides -- delete --all
 ```
 
 - `data/decks` and each deck's folder are readable only by you (0700, files 0600). The loader refuses a deck that isn't: any file another user could read or write, a symbolic link, a file it doesn't expect, an image that isn't exactly what prepare made.
-- A deck is deleted `DECK_RETENTION_DAYS` (30 unless set) after it was last used: prepared or checked. The voice service checks when it starts and every hour, with the transcripts. Your script is yours: nothing deletes it, and `prepare` makes the deck again from your PDF.
+- A deck is deleted `DECK_RETENTION_DAYS` (30 unless set) after it was last used: prepared, checked, or sent into a meeting (a join the voice service took; `npm run join` checking it first, or a join the service refused, doesn't count). The voice service checks when it starts and every hour, with the transcripts. Your script is yours: nothing deletes it, and `prepare` makes the deck again from your PDF.
 - `delete` deletes at once. `list` shows each deck, its slides, when it was last used, and when it will be deleted.
 - While prepare runs, a copy of your PDF is in a temporary `data/decks/.tmp-*` folder, removed when it ends or when you stop it. If it was killed outright, the next prepare or `delete --all` removes that folder once it is 10 minutes old (`list` says when one is there).
 
