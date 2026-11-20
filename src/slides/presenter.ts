@@ -642,8 +642,9 @@ export class Presenter {
         if (!this.presenting()) return null
         const from = this.view ?? this.resume.i
         if (this.inDetour() || this.state === 'qa') {
-          const to = from + 1
-          if (to >= this.slides.length) return 'next (no slide after it)'
+          // In order, as narration goes: a backup slide is shown only when asked for by number.
+          const to = this.nextNarrated(from)
+          if (to === null) return 'next (no slide after it)'
           if (to === this.resume.i && this.state !== 'qa') {
             if (this.ownerPaused && !owner) {
               // Back on the bookmark's slide, still held: only the owner resumes.
@@ -663,8 +664,8 @@ export class Presenter {
       }
       case 'back': {
         if (!this.presenting()) return null
-        const to = (this.view ?? this.resume.i) - 1
-        if (to < 0) return 'back (the first slide)'
+        const to = this.prevNarrated(this.view ?? this.resume.i)
+        if (to === null) return 'back (the first slide)'
         this.detour(to, owner)
         return 'back'
       }
@@ -947,6 +948,8 @@ export class Presenter {
     while (this.live(run, signal)) {
       if (!this.normalise()) return this.toQuestions()
       const { i } = this.resume
+      // However narration got to this slide (in order, a move, wrap_up, a start from --from), it was reached.
+      this.furthest = Math.max(this.furthest, i)
       const slide = this.slides[i]
       await this.showSlide(i)
       if (!this.live(run, signal)) return
@@ -1314,6 +1317,11 @@ export class Presenter {
 
   private nextNarrated(i: number): number | null {
     for (let j = i + 1; j < this.slides.length; j++) if (!this.slides[j].onRequest) return j
+    return null
+  }
+
+  private prevNarrated(i: number): number | null {
+    for (let j = i - 1; j >= 0; j--) if (!this.slides[j].onRequest) return j
     return null
   }
 

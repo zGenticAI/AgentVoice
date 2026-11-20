@@ -232,7 +232,7 @@ Anyone who says the name may start, pause, carry on, move between the slides you
 | --- | --- |
 | "Alex, start the presentation" (or "begin the slides", "present your slides", "start presenting") | It starts, from where it stopped if it had started before. |
 | "Alex, next slide" | The next slide in order. |
-| "Alex, go back" | The slide before, out of order: "Here's slide 4.", and it waits there. |
+| "Alex, go back" | The slide before, out of order: "Here's slide 4.", and it waits there. "Next" and "go back" step over backup slides (`on-request: yes`): those come only when asked for by number. |
 | "Alex, go to slide 9" (or "show slide 9", "the last slide") | A slide behind, or a backup slide (`on-request: yes`), is shown out of order; one ahead is moved to, skipping the ones between. An excluded slide gets "I don't have slide 9 to show." |
 | "Alex, go through that slide again" | The slide on screen, from its start. |
 | "Alex, pause" (or "wait", "hold on", "one moment") | It stops at that sentence, and waits. |

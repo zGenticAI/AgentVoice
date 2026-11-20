@@ -742,6 +742,42 @@ test('a detour keeps the bookmark: "go back" shows the slide before, "carry on" 
   done(s)
 })
 
+test('"go back" and "next" step over a backup slide: it is shown only when asked for by number', async () => {
+  const s = start({ from: 5, voice: { 'We ship in March.': 600 } })
+  await narrating(s)
+  await until(() => s.spoken.includes('We ship in March.'))
+  s.said('Alex, go back.')
+  await until(() => s.spoken.includes("Here's slide 2."), 'the slide before, in order')
+  assert.deepEqual([s.presenter.status().slide, s.presenter.status().bookmark], [2, 5])
+  // In a detour from the bookmark, next goes in order, and reaching the bookmark carries on there.
+  s.said('Alex, go to slide 1.')
+  await until(() => s.spoken.includes("Here's slide 1."))
+  s.said('Alex, next slide.')
+  await until(() => s.spoken.filter(l => l === "Here's slide 2.").length === 2, 'next, in order')
+  s.said('Alex, next slide.')
+  await until(() => s.presenter.current === 'narrating' && s.presenter.status().slide === 5, 'back at the bookmark')
+  // In questions too.
+  await until(() => s.presenter.current === 'qa', 'questions', 5000)
+  s.said('Alex, go back.')
+  await until(() => s.spoken.filter(l => l === "Here's slide 2.").length === 3, 'back from questions, in order')
+  assert.ok(!s.spoken.includes("Here's slide 4."), 'never the backup slide')
+  s.said('Alex, go to slide 4.')
+  await until(() => s.spoken.includes("Here's slide 4."), 'by number, it is shown')
+  done(s)
+})
+
+test('wrap_up reaches the last slide: meeting_ended says so, even while it is still being said', async () => {
+  const s = start({ voice: { 'We ship in March.': 2000 } })
+  await narrating(s)
+  assert.equal(s.presenter.owner('wrap_up').ok, true)
+  await until(() => s.spoken.includes('We ship in March.'))
+  s.session.end()
+  await until(() => s.notified.some(n => n.type === 'meeting_ended'))
+  const ended = s.notified.find(n => n.type === 'meeting_ended') as Extract<ToSession, { type: 'meeting_ended' }>
+  assert.deepEqual(ended.presentation, { reached: 5, of: 4, finished: false })
+  s.session.transcript.delete()
+})
+
 test('go to slide N: an excluded one is refused, a backup slide is a detour, one ahead is a move', async () => {
   const s = start()
   await narrating(s)
