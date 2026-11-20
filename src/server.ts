@@ -854,8 +854,11 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     save()
   }
 
-  // The owner's controls of the slides: through the bridge (slides_status, slides_control) and /api/slides alike.
-  const slideControls = slidesHandlers(sessions)
+  // The owner's controls of the slides: through the bridge (slides_status, slides_control) and /api/slides alike. A
+  // meeting with slides whose bot's page has not connected yet has no session, but is answered for all the same.
+  const slideControls = slidesHandlers(sessions, () =>
+    [...meetings.values()].filter(m => m.state === 'waiting' && m.slides).map(m => ({ key: m.key, botId: m.botId })),
+  )
 
   const bridge = new SessionBridge({
     // get_transcript, post_chat, add_to_brief and late answers, each for the meeting named, else the newest

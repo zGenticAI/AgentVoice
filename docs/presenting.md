@@ -263,7 +263,7 @@ npm run slides -- control end --meeting <bot id>
 | `stop` | As "Alex, stop presenting", but said as "I'll stop sharing my slides now.", since nobody in the meeting asked. |
 | `end` | Stops it for good in this meeting, with the same line: the room can't start it again. Yours only. |
 
-Without `--meeting` (or `meeting`), they act on the only meeting with slides, and are refused while there are several. `status` says where it stands: the state, the slide on screen, the slide it carries on from, and the share.
+Without `--meeting` (or `meeting`), they act on the only meeting with slides, and are refused while there are several. `status` says where it stands: the state, the slide on screen, the slide it carries on from, and the share. Until Alex is in the meeting (it is joining, or in a waiting room), they say it has the slides but is not in yet.
 
 Your session also gets a `presentation` event when the presentation starts, finishes or stops, and when something goes wrong (below), never one per slide. When the meeting ends, `meeting_ended` says how far it got (`presentation: {reached, of, finished}`), so you can join again with `--from`.
 

@@ -364,6 +364,39 @@ test('/api/slides is the presentation of the one meeting with slides, refused fr
   assert.equal(s.started[0].actions.length, 0)
 })
 
+test('right after the join, before Alex is in the meeting, status and control say the slides are there and it is not in yet', async t => {
+  const s = await start(t)
+  const joined = await join(s, { meetingUrl: ZOOM, slides: { script: CANONICAL } })
+  assert.equal(joined.status, 200, joined.body)
+  const waiting = {
+    ok: false,
+    note: 'Not yet: Alex has the slides, but is not in the meeting yet (bot bot-1 is joining, or waiting to be let in): the presentation can start once it is in',
+    meeting: s.keyOf(0),
+    bot: 'bot-1',
+  }
+  // Before the bot's page connects: no session yet, but its deck is loaded.
+  assert.deepEqual(JSON.parse((await slidesApi(s)).body), waiting)
+  for (const meeting of [undefined, 'bot-1', s.keyOf(0)]) {
+    assert.deepEqual(JSON.parse((await slidesApi(s, { action: 'start', ...(meeting ? { meeting } : {}) })).body), waiting, String(meeting))
+  }
+  assert.deepEqual(JSON.parse((await slidesApi(s, { action: 'start', meeting: 'bot-9' })).body), { ok: false, note: 'Alex is not in that meeting right now' })
+  const printed = presentationLines(await slidesApi(s), 'Alex')
+  assert.deepEqual(printed.lines, [`${waiting.note}.`])
+  // A meeting without slides waiting too changes nothing; a second one with slides makes the key needed.
+  await join(s, { meetingUrl: ZOOM })
+  assert.deepEqual(JSON.parse((await slidesApi(s)).body), waiting)
+  await join(s, { meetingUrl: ZOOM, slides: { script: CANONICAL } })
+  assert.deepEqual(JSON.parse((await slidesApi(s)).body), { ok: false, note: 'Alex has slides in more than one meeting right now: pass the meeting key as "meeting"' })
+  const third = JSON.parse((await request(s.control, { path: '/api/slides?meeting=bot-3', headers: auth(s) })).body)
+  assert.deepEqual(third, { ...waiting, note: waiting.note.replace('bot-1', 'bot-3'), meeting: s.keyOf(2), bot: 'bot-3' })
+  // Once its page connects, the first meeting's presenter answers.
+  await openPage(s.publicPort, s.keyOf(0))
+  await until(() => s.started.length === 1)
+  assert.deepEqual(JSON.parse((await slidesApi(s, { action: 'start', meeting: 'bot-1' })).body), { ok: true, note: 'did start', meeting: s.keyOf(0), bot: 'bot-1', status: STATUS })
+  assert.deepEqual(JSON.parse((await slidesApi(s, { action: 'start', meeting: 'bot-3' })).body), { ...waiting, note: waiting.note.replace('bot-1', 'bot-3'), meeting: s.keyOf(2), bot: 'bot-3' })
+  assert.deepEqual(s.started[0].actions, [{ action: 'start' }])
+})
+
 test('the slide controls refuse without a key while two meetings have slides, and check the action and the slide', () => {
   const session = (key: string, bot: string, withSlides: boolean) => {
     const actions: string[] = []
