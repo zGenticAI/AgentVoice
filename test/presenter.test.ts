@@ -628,6 +628,24 @@ test('a question mid-narration is answered, then "Back to <title>." and the sent
   done(s)
 })
 
+test('"Back to" says the heading the owner wrote, never the PDF\'s title: its own mark left out, and the slide\'s number when it has none', async () => {
+  // The PDF's title of slide 2 is a chart caption the owner never checked for speech.
+  const manifest = { ...MANIFEST, slides: MANIFEST.slides.map(x => (x.n === 2 ? { ...x, title: 'Q3: Revenue +18% YoY' } : x)) }
+  for (const [heading, back] of [['## 2 · Why now?', 'Back to Why now.'], ['## 2', 'Back to slide 2.']] as const) {
+    const deck = presenterSlides(parseScript(SCRIPT.replace('## 2 · Pricing', heading)).script!, manifest)
+    const s = start({ deck, voice: LONG, answers: [[{ kind: 'say', text: 'It is per user, per month.' }]] })
+    await narrating(s)
+    await until(() => s.spoken.includes('Team is twelve dollars.'))
+    await wait(300)
+    s.flux.turn('StartOfTurn', '')
+    s.flux.turn('EndOfTurn', 'Alex, is that per month?')
+    await until(() => s.spoken.some(l => l.startsWith('Back to')), heading)
+    assert.equal(s.next('It is per user, per month.'), back, heading)
+    assert.ok(s.markers().includes('showing slide 2: Q3: Revenue +18% YoY'), 'the markers keep the deck title')
+    done(s)
+  }
+})
+
 test('a question asked in a quiet moment, after a slide was heard in full, goes on to the next slide with no "Back to"', async () => {
   const s = start({ answers: [[{ kind: 'say', text: 'Yes.' }]], timing: { slideQuietMs: 400 } })
   await narrating(s)

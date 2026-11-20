@@ -140,7 +140,7 @@ exclude: yes
 ```
 
 - **The front matter:** `deck` is the prepared deck's id (prepare writes it). `title` names the presentation. `minutes` is how long you have: check compares its estimate with it. A `#` after a space starts a comment there, so write "No. 2" or "#2", with no space before the `#`.
-- **One section per slide**, headed `## <page> · <title>`, with the PDF page number (`-`, `–` or `:` work in place of `·`). Sections run in page order. The title in the heading is for you.
+- **One section per slide**, headed `## <page> · <title>`, with the PDF page number (`-`, `–` or `:` work in place of `·`). Sections run in page order. The title in the heading is yours, and Alex says it after answering a question: "Back to <title>." (with no title, "Back to slide 6."). Write it as it is spoken: `check` warns about figures, signs and abbreviations in it, as in the narration. Prepare starts it from the slide's own title.
 - **Keys go directly under the heading. Then a blank line, then what Alex says.** A line such as `Note: ...` under a heading is an unknown key: an error, never spoken and never dropped.
 - **Paragraphs** are separated by blank lines. You can wrap a paragraph over several lines: Alex says it in whole sentences all the same.
 - **Write figures as they are spoken:** "twelve dollars", not "$12"; "eighteen percent", not "18%". Check warns about signs, figures and abbreviations, and about figures that aren't on the slide.

@@ -29,8 +29,13 @@ import type { SlideSurface, StartOutcome } from './surface.ts'
 export interface PresenterSlide {
   /** The PDF page number: "slide N" means it. */
   page: number
-  /** From the deck: for "Back to <title>." and the transcript's markers. Never in the log. */
+  /** From the deck: for the transcript's markers and the brain. Never in the log. */
   title: string
+  /**
+   * The title in the script's heading: the owner's own words, said in "Back to <heading>." (check warns about what the
+   * voice may read wrongly in it). Empty: "Back to slide N.".
+   */
+  spoken: string
   /** The slide's own text, from the deck: for answers about the slide on screen. Never spoken, never in the log. */
   text: string
   /** The script's sentences, said word for word. None: a silent slide (hold only). */
@@ -55,6 +60,7 @@ export function presenterSlides(script: Script, manifest: Manifest): PresenterSl
       page: s.page,
       // A third party's PDF can carry instructions: its block tags never reach a prompt (the loader refuses them too).
       title: stripBlockTags(pages.get(s.page)!.title).slice(0, MAX_TITLE),
+      spoken: s.heading,
       text: stripBlockTags(pages.get(s.page)!.text).slice(0, MAX_PAGE_TEXT),
       sentences: [...s.sentences],
       hold: s.hold ?? 0,
@@ -948,14 +954,16 @@ export class Presenter {
   }
 
   /**
-   * "Back to <title>." for the slide narration carries on from, or nothing when it starts a slide afresh, or when no
-   * sentence of the deck has been said yet: there is nothing to go back to.
+   * "Back to <heading>." for the slide narration carries on from, or nothing when it starts a slide afresh, or when no
+   * sentence of the deck has been said yet: there is nothing to go back to. The heading is the owner's, never the
+   * PDF's title, which nobody checked for speech ("Q3: Revenue +18% YoY", or "Why now?." with its own mark).
    */
   private backTo(): string | undefined {
     const at = this.resume
     const slide = this.slides[at.i]
     if (!slide || at.k >= slide.sentences.length || this.spoke === null) return undefined
-    return slide.title ? `Back to ${slide.title}.` : `Back to slide ${slide.page}.`
+    const heading = slide.spoken.replace(/[\s.!?…:;,]+$/u, '')
+    return heading ? `Back to ${heading}.` : `Back to slide ${slide.page}.`
   }
 
   /** Starts narrating as the session's turn: from the bookmark, or one detour slide (detour). */
