@@ -353,6 +353,42 @@ test('a saved "Allow always" that lifts what always asks stops the push until it
   assert.equal(await sink.push(QUESTION), true)
 })
 
+test('saved approvals that could not be read at an owner-only call are read again before each post: one slow answer does not stop the meeting', async t => {
+  const { file, register } = stateDir(t)
+  let savedStatus = 500
+  const got: string[] = []
+  const server = http.createServer((req, res) => {
+    got.push(`${req.method} ${req.url}`)
+    req.resume()
+    req.on('end', () => {
+      const json = (status: number, body: unknown) => (res.writeHead(status, { 'content-type': 'application/json' }), res.end(JSON.stringify(body)))
+      if (req.url === '/api/info') return json(200, { version: '2.3.2', pid: 1 })
+      if (req.url === '/api/session/ses_owner') return json(200, { data: { id: 'ses_owner', projectID: 'prj_1' } })
+      if (req.url === '/api/permission/saved?projectID=prj_1') return json(savedStatus, savedStatus === 200 ? { data: [] } : { error: 'busy' })
+      json(200, { data: { id: 'msg_1' } })
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => (server.closeAllConnections(), new Promise(resolve => server.close(resolve))))
+  register({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, pid: 1, password: PASSWORD })
+  const logged: string[] = []
+  const sink = openCodeSink({ file, ancestor: ANY_PID, log: line => void logged.push(line) })
+  // The owner's join_meeting, while the service fails that one read.
+  await sink.ownerCalled('ses_owner')
+  assert.deepEqual(logged, [
+    "[zoom-meeting] Could not check OpenCode's saved approvals (HTTP 500): they are checked again before each post, and nothing is posted while they can't be read.",
+  ])
+  assert.equal(sink.canPush(), true)
+  // Still unreadable at the post: nothing is posted, and the question is given up at once (no_taker).
+  assert.equal(await sink.push(QUESTION), false)
+  assert.ok(!got.some(r => r.startsWith('POST')), 'nothing posted while they cannot be read')
+  // Readable again, with nothing that lifts an ask: the next question is posted, with no owner-only call in between.
+  savedStatus = 200
+  assert.equal(sink.canPush(), true)
+  assert.equal(await sink.push(QUESTION), true)
+  assert.deepEqual(got.slice(-2), ['GET /api/permission/saved?projectID=prj_1', 'POST /api/session/ses_owner/synthetic'])
+})
+
 test('which saved approvals lift what always asks: as OpenCode matches a rule, for the tools and for npm run slides', () => {
   assert.deepEqual([...new Set(ALWAYS_ASK.map(a => a.named))], ['join_meeting', 'set_brief', 'slides_control', 'npm run slides'])
   const row = (action: string, resource = '*') => ({ id: 'psv_1', projectID: 'prj_1', action, resource })

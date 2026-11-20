@@ -483,8 +483,13 @@ export function openCodeSink(options: OpenCodeSinkOptions = {}): OpenCodePushSin
       owner = session
       project = found.project
       if (now === null) {
-        lifted = ['(unknown)']
-        say(`Could not check OpenCode's saved approvals (${saved.ok ? 'an answer it could not read' : saved.why}): nothing is posted into your session`)
+        // Not known for now. Nothing is lost by going on: each post reads them first, and nothing is posted while they
+        // can't be read (deliver). One slow answer here must not stop every push of the meeting.
+        lifted = []
+        log(
+          `[zoom-meeting] Could not check OpenCode's saved approvals (${saved.ok ? 'an answer it could not read' : saved.why}): ` +
+            "they are checked again before each post, and nothing is posted while they can't be read.",
+        )
         return
       }
       lifted = now.named

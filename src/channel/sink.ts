@@ -118,22 +118,38 @@ export function plainEvent(event: ChannelEvent): string {
 // Characters that look like a tag's or the header's brackets, or a slash, and that NFKC leaves as they are (it gives
 // "<" for a fullwidth or small form, and U+3008 for U+2329 and U+FE3F, both "〈" to the eye).
 const LOOKALIKES: Record<string, string> = {
-  '<': '\u02C2\u2039\u27E8\u276C\u276E\u2770\u29FC\u3008\u300A\u00AB\u1438',
-  '>': '\u02C3\u203A\u27E9\u276D\u276F\u2771\u29FD\u3009\u300B\u00BB\u1433',
+  '<': '\u02C2\u02F1\u2039\u27E8\u276C\u276E\u2770\u29FC\u3008\u300A\u00AB\u1438',
+  '>': '\u02C3\u02F2\u203A\u27E9\u276D\u276F\u2771\u29FD\u3009\u300B\u00BB\u1433',
   '/': '\u2215\u2044\u29F8\u2571',
   '[': '\u27E6\u3010\u3014\u301A\u3016',
   ']': '\u27E7\u3011\u3015\u301B\u3017',
+  // Letters of other scripts (Cyrillic, Greek, Armenian) and Latin forms that look like the letters of the tag and the
+  // header ("meeting_event", "AgentVoice zoom-meeting event"), in either case: the patterns ignore case. Not every
+  // lookalike there is, but the ones that look the same in ordinary fonts.
+  a: '\u0430\u0251\u03B1\u0410\u0391',
+  c: '\u0441\u03F2\u1D04\u0421\u03F9',
+  e: '\u0435\u04BD\u0415\u0395',
+  g: '\u0261\u0581\u050C',
+  i: '\u0456\u0131\u03B9\u0269\u04CF\u0406\u0399\u04C0',
+  m: '\u041C\u039C',
+  n: '\u0578\u039D',
+  o: '\u043E\u03BF\u0585\u1D0F\u041E\u039F\u0555',
+  t: '\u0422\u03A4',
+  v: '\u03BD\u0475\u1D20\u0474',
+  z: '\u1D22\u0396',
 }
 const AS_PLAIN = new Map(Object.entries(LOOKALIKES).flatMap(([plain, looks]) => [...looks].map(c => [c, plain] as const)))
+// Characters that show nothing: format characters (zero-width spaces and joiners, direction marks, soft hyphens) and
+// the other default-ignorable ones (the combining grapheme joiner, variation selectors, Hangul fillers and the rest).
+const SHOWS_NOTHING = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu
 
 /**
  * One character as it is read, for finding tags and the header only: its compatibility form (fullwidth "＜" as "<", a
- * non-breaking hyphen as a hyphen), a lookalike bracket or slash as the plain one, and nothing for a character with no
- * look of its own (zero-width spaces and joiners, direction marks, soft hyphens), which could hide a tag or the header
- * from the patterns.
+ * non-breaking hyphen as a hyphen), a lookalike bracket, slash or letter as the plain one, and nothing for a character
+ * with no look of its own (SHOWS_NOTHING), which could hide a tag or the header from the patterns.
  */
 const readAs = (c: string) =>
-  c.charCodeAt(0) < 0x80 ? c : [...c.normalize('NFKC').replace(/\p{Cf}/gu, '')].map(x => AS_PLAIN.get(x) ?? x).join('')
+  c.charCodeAt(0) < 0x80 ? c : [...c.normalize('NFKC').replace(SHOWS_NOTHING, '')].map(x => AS_PLAIN.get(x) ?? x).join('')
 
 /**
  * The text without what a pattern finds in it as it is read. Each match is taken out of the text itself, from the

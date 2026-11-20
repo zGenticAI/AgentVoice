@@ -118,15 +118,16 @@ const within = (p: string, folder: string) => {
 }
 
 /**
- * A home folder for the script, outside /tmp and the temporary folder (the script refuses one inside them on Linux),
- * where a test can see everything written in it: in this checkout's node_modules/.cache, or else in /dev/shm. Removed
- * after the test.
+ * A home folder for the script where a test can see everything written in it: in this checkout's node_modules/.cache,
+ * or else in /dev/shm. On Linux it must be outside /tmp and the temporary folder, which the script refuses there;
+ * elsewhere the script never refuses one, and the temporary folder will do too. Removed after the test.
  */
 function ownerHome(t: { after: (fn: () => unknown) => void }): string {
-  for (const base of [path.join(ROOT, 'node_modules', '.cache'), '/dev/shm']) {
+  const linux = process.platform === 'linux'
+  for (const base of [path.join(ROOT, 'node_modules', '.cache'), '/dev/shm', ...(linux ? [] : [os.tmpdir()])]) {
     try {
       fs.mkdirSync(base, { recursive: true })
-      if (within(base, '/tmp') || within(base, os.tmpdir())) continue
+      if (linux && (within(base, '/tmp') || within(base, os.tmpdir()))) continue
       const home = fs.realpathSync(fs.mkdtempSync(path.join(base, 'av-test-home-')))
       t.after(() => fs.rmSync(home, { recursive: true, force: true }))
       return home
