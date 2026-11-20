@@ -383,6 +383,8 @@ export class MeetingSession {
   // presenter, which changes slides and resumes only in a quiet room. Only timings.
   private roomTurnOpen = false
   private roomQuietSince = Date.now()
+  // The turn now under way talked over the narration and held the slides: its line's verdict says so (why_not_answered).
+  private heldDeck = false
 
   constructor(
     ws: WebSocket,
@@ -425,7 +427,10 @@ export class MeetingSession {
       // TurnResumed, which are not asked for) goes on with it.
       const text = (turn.transcript ?? '').trim()
       this.measure(turn, text)
-      if (turn.event === 'StartOfTurn') this.roomTurnOpen = true
+      if (turn.event === 'StartOfTurn') {
+        this.roomTurnOpen = true
+        this.heldDeck = false
+      }
       if (turn.event === 'EndOfTurn') {
         this.roomTurnOpen = false
         this.roomQuietSince = Date.now()
@@ -838,6 +843,9 @@ export class MeetingSession {
    * leave, and once the session has ended.
    */
   private async onUtterance(text: string): Promise<void> {
+    // Whether this line's turn held the slides: told once, with its own verdict.
+    const heldDeck = this.heldDeck
+    this.heldDeck = false
     // Once someone has asked Alex to leave, nothing more is recorded or answered. No verdict: nothing is kept.
     if (this.leaving) return
     // "Um" on its own is someone thinking, not talking: it doesn't answer, open or use up anything.
@@ -872,6 +880,7 @@ export class MeetingSession {
         duringConsent: this.greeting !== null,
         window: closed ? { kind: window.kind, closedMs: Date.now() - window.until } : undefined,
         ...(command ? { command } : {}),
+        ...(heldDeck ? { heldDeck } : {}),
       })
     }
     if (!filler) {
@@ -981,7 +990,9 @@ export class MeetingSession {
 
   /** Answers a line. heard: its verdict for why_not_answered, which follows what Alex does with it. */
   private async answer(latest: string, signal: AbortSignal, heard: Verdict): Promise<void> {
-    const events = this.deps.brain.respond({ transcript: this.transcript.recent(), latest, brief: this.deps.brief(), additions: this.additions.text(), signal })
+    // In a meeting with slides: what it presents, for answers about them (an outline, and the slide on screen).
+    const slides = this.presenter ? { slides: this.presenter.forBrain() } : {}
+    const events = this.deps.brain.respond({ transcript: this.window(), latest, brief: this.deps.brief(), additions: this.additions.text(), signal, ...slides })
     for await (const event of events) {
       if (signal.aborted) return
       if (event.kind === 'say') {
@@ -1003,7 +1014,7 @@ export class MeetingSession {
             question: event.question,
             asked_by: 'meeting participant',
             meeting: this.opts.meetingKey,
-            context: this.transcript.recent(HANDOFF_CONTEXT_CHARS),
+            context: this.handOffContext(),
           },
           undefined,
           signal,
@@ -1035,13 +1046,30 @@ export class MeetingSession {
   }
 
   /**
+   * The transcript the brain answers from: the latest lines, and in a meeting with slides, the narration of slides no
+   * longer on screen folded into one line per run, so a long talk doesn't push the room's discussion out.
+   */
+  private window(maxChars?: number): string {
+    if (!this.presenter) return this.transcript.recent(maxChars)
+    return this.transcript.recent(maxChars, { collapse: this.presenter.collapse(identity.name) })
+  }
+
+  /** What a question handed to the owner's session carries: the meeting so far, and the slide on screen if any. */
+  private handOffContext(): string {
+    const onScreen = this.presenter?.onScreenLine() ?? ''
+    return `${onScreen ? `${onScreen}\n\n` : ''}${this.window(HANDOFF_CONTEXT_CHARS)}`
+  }
+
+  /**
    * Says a line: into the transcript, then out to the page as ElevenLabs makes it. The transcript has the whole line
    * from the start, and keeps only what the meeting heard of it if it is cut off (see Playback). Resolves with whether
    * all of it went out to the page.
    */
   private async say(text: string, signal: AbortSignal, tag?: NarrationTag): Promise<boolean> {
     if (!text.trim()) return false
-    const line = this.transcript.add(identity.name, text, 'agent')
+    // A sentence of the owner's script is narration, of its slide: the brain's window folds it once the slide is gone.
+    const page = tag ? this.deps.slides?.slides[tag.i]?.page : undefined
+    const line = this.transcript.add(identity.name, text, 'agent', tag ? { kind: 'narration', ...(page === undefined ? {} : { slide: page }) } : undefined)
     if (line && tag) this.lineTags.set(line, tag)
     // Not once the transcript is gone (the goodbye): there is nothing to correct.
     const playing = line ? this.playback.begin(line, text) : null
@@ -1106,7 +1134,7 @@ export class MeetingSession {
       },
       windowOpen: () => Date.now() < this.awaitingUntil,
       // As the assistant's line, so a talk to a silent room still gets no minutes.
-      marker: text => void this.transcript.add(SLIDES_LABEL, text, 'agent'),
+      marker: (text, page) => void this.transcript.add(SLIDES_LABEL, text, 'agent', { kind: 'marker', ...(page === undefined ? {} : { slide: page }) }),
     }
   }
 
@@ -1216,7 +1244,8 @@ export class MeetingSession {
   private talkedOver(): void {
     this.watching = false
     if (!this.audible() && !this.turn) return this.dropPause()
-    // The slides hold at the sentence the meeting stopped hearing, before the turn stops.
+    // The slides hold at the sentence the meeting stopped hearing, before the turn stops; the line that did it says so.
+    if (this.presenter?.current === 'narrating') this.heldDeck = true
     this.presenter?.hold('talk')
     this.bargeIn()
   }
@@ -1516,6 +1545,8 @@ export class MeetingSession {
         platform: this.opts.platform,
         startedAt: this.startedAt,
         endedAt: new Date(),
+        // The minutes mention a presentation in one sentence, and never take the script for decisions.
+        ...(this.presenter?.started ? { presented: { title: this.deps.slides?.title ?? '', slides: this.deps.slides?.slides.length ?? 0 } } : {}),
       })
       this.records.files.add(file)
       if (this.leaving) {

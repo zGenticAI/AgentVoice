@@ -122,6 +122,31 @@ export interface PresentationSummary {
   finished: boolean
 }
 
+/**
+ * What the brain answers from in a meeting with slides (src/brain/brain.ts): the outline, the same all meeting, for the
+ * cached block; and the slide on screen now, for the request itself. All of it is content, never instructions.
+ */
+export interface SlidesForBrain {
+  /** Each slide presented in order or on request: its page, title and first sentence. */
+  outline: readonly { page: number; title: string; first: string; onRequest: boolean }[]
+  /** The slide on screen, or null when none is (not started, stopped). */
+  current: {
+    page: number
+    /** How many slides the meeting has. */
+    of: number
+    title: string
+    /** The owner's script for it. */
+    script: string
+    /** The slide's own text, from the PDF. */
+    text: string
+    /** The sentence narration was at, or ''. */
+    saying: string
+    /** The titles of the slides before and after it, or ''. */
+    before: string
+    after: string
+  } | null
+}
+
 export type OwnerAction = 'start' | 'pause' | 'resume' | 'next' | 'back' | 'goto' | 'restart' | 'wrap_up' | 'stop' | 'end'
 export const OWNER_ACTIONS: readonly OwnerAction[] = ['start', 'pause', 'resume', 'next', 'back', 'goto', 'restart', 'wrap_up', 'stop', 'end']
 
@@ -300,6 +325,57 @@ export class Presenter {
       detour: this.inDetour(),
       share: this.opts.surface.state,
     }
+  }
+
+  /** What the brain answers from (SlidesForBrain): the outline, and the slide on screen now. */
+  forBrain(): SlidesForBrain {
+    const outline = this.slides.map(s => ({ page: s.page, title: s.title, first: s.sentences[0] ?? '', onRequest: s.onRequest }))
+    const i = this.onScreen()
+    if (i === null) return { outline, current: null }
+    const slide = this.slides[i]
+    // The sentence narration was at on this slide: the one it carries on from, or the last one heard.
+    const k = Math.min(this.resume.k, slide.sentences.length - 1)
+    const saying = this.resume.i === i && this.resume.k > 0 && k >= 0 ? slide.sentences[k] : ''
+    return {
+      outline,
+      current: {
+        page: slide.page,
+        of: this.slides.length,
+        title: slide.title,
+        script: slide.sentences.join(' '),
+        text: slide.text,
+        saying,
+        before: i > 0 ? this.titled(i - 1) : '',
+        after: i + 1 < this.slides.length ? this.titled(i + 1) : '',
+      },
+    }
+  }
+
+  /** "slide 5, Adoption" */
+  private titled(i: number): string {
+    const slide = this.slides[i]
+    return `slide ${slide.page}${slide.title ? `, ${slide.title}` : ''}`
+  }
+
+  /** The slide on screen (its index), while the slides are shared; null otherwise. */
+  private onScreen(): number | null {
+    if (this.view === null) return null
+    return this.state === 'narrating' || this.state === 'held' || this.state === 'qa' || this.state === 'checking' ? this.view : null
+  }
+
+  /** For a hand-off to the owner's session: "On screen: slide N of M, <title>.", or '' when no slide is. */
+  onScreenLine(): string {
+    const i = this.onScreen()
+    if (i === null) return ''
+    const slide = this.slides[i]
+    return `On screen: slide ${slide.page} of ${this.slides.length}${slide.title ? `, ${slide.title}` : ''}.`
+  }
+
+  /** How the brain's window folds the narration (Transcript.recent): every slide's but the one on screen. */
+  collapse(name: string): { current: number | null; name: string; title: (page: number) => string } {
+    const i = this.onScreen()
+    const titles = new Map(this.slides.map(s => [s.page, s.title]))
+    return { current: i === null ? null : this.slides[i].page, name, title: page => titles.get(page) ?? '' }
   }
 
   /** The slide narration carries on from: the next one when the bookmark's was heard in full. */

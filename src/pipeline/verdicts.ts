@@ -65,6 +65,8 @@ export interface Verdict {
   readonly window?: ClosedWindow
   /** For a slide command: which one ("next", "go to slide 5"), and what came of it. */
   readonly command?: string
+  /** It talked over the slides Alex was presenting, and held them at the sentence the meeting stopped hearing. */
+  readonly heldDeck?: boolean
 }
 
 const READINGS: Record<Reading, (v: Verdict) => string> = {
@@ -113,6 +115,11 @@ const OUTCOMES: Record<Outcome, (v: Verdict) => string> = {
   slide_command: () => `${NAME} did what the command asked of the slides, if it could then.`,
 }
 
+/** Why the slides stopped: a line that talked over the narration. */
+const HELD_DECK =
+  `It talked over the slides ${NAME} was presenting, so ${NAME} stopped at that sentence and held them. ` +
+  `They carry on from that sentence: after an answer, with "Back to" the slide's title; after other talk, once the room is quiet and ${NAME} has asked "Shall I carry on?".`
+
 /** A window that had closed before the line came, which would otherwise have taken it without the name. */
 const windowText = (w: ClosedWindow) =>
   `${NAME} had been waiting for ${w.kind === 'reply' ? 'a reply to its question' : 'the line after a call'}, ` +
@@ -151,7 +158,7 @@ export class Verdicts {
       line: capped(v.text),
       did: v.outcome,
       read: v.reading,
-      why: [READINGS[v.reading](v), v.window && windowText(v.window), OUTCOMES[v.outcome](v)].filter(Boolean).join(' '),
+      why: [READINGS[v.reading](v), v.window && windowText(v.window), OUTCOMES[v.outcome](v), v.heldDeck && HELD_DECK].filter(Boolean).join(' '),
     }))
   }
 

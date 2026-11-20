@@ -185,11 +185,12 @@ function start(opts: Options = {}) {
   // What the brain was given for each answer, and what went to the owner's session.
   const inputs: any[] = []
   const asked: any[] = []
+  const minutes: any[] = []
   const spoken: string[] = []
   const notified: ToSession[] = []
   const events: PresentationEvent[] = []
   const slides: SessionSlides | undefined =
-    opts.slides === false ? undefined : { surface, slides: SLIDES, platform: 'zoom', from: opts.from, timing: { ...FAST, ...opts.timing } }
+    opts.slides === false ? undefined : { surface, slides: SLIDES, platform: 'zoom', from: opts.from, title: 'Q4 plan', timing: { ...FAST, ...opts.timing } }
   const session = new MeetingSession(ws as any, { meetingKey: `presenter-${process.pid}-${++meetings}`, botId: `bot-${meetings}` }, {
     brain: {
       async *respond(i: { latest: string }) {
@@ -218,7 +219,10 @@ function start(opts: Options = {}) {
       deleteMedia: async () => true,
       howBotEnded: async () => ({ kind: 'ended', sub_code: 'bot_received_leave_call' }) as const,
     },
-    writeMinutes: async () => '/tmp/minutes.md',
+    writeMinutes: async (input: unknown) => {
+      minutes.push(input)
+      return '/tmp/minutes.md'
+    },
     greetDelayMs: 5,
     sttFlushMs: 0,
     leaveDelayMs: 0,
@@ -235,7 +239,7 @@ function start(opts: Options = {}) {
   const alex = () => session.transcript.lines.filter(l => l.role === 'agent' && l.speaker !== SLIDES_LABEL).map(l => l.text)
   const markers = () => session.transcript.lines.filter(l => l.speaker === SLIDES_LABEL).map(l => l.text)
   const after = (line: string) => spoken.slice(spoken.lastIndexOf(line) + 1)
-  return { ws, flux, surface, session, answered, inputs, asked, spoken, notified, events, said, alex, markers, after, presenter: session.presenter! }
+  return { ws, flux, surface, session, answered, inputs, asked, minutes, spoken, notified, events, said, alex, markers, after, presenter: session.presenter! }
 }
 
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -716,4 +720,93 @@ test("the presentation's events go to the owner's session, and meeting_ended say
   await until(() => plain.notified.some(n => n.type === 'meeting_ended'))
   assert.ok(!('presentation' in (plain.notified.find(n => n.type === 'meeting_ended') as object)))
   plain.session.transcript.delete()
+})
+
+test('a question mid-deck: the brain gets the outline and the slide on screen, and the earlier narration folded into one line', async () => {
+  const s = start({ voice: LONG, answers: [[{ kind: 'say', text: 'It is per user.' }]] })
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  await wait(300)
+  s.flux.turn('StartOfTurn', '')
+  s.flux.turn('EndOfTurn', 'Alex, is that per month?')
+  await until(() => s.inputs.length === 1)
+  const { slides, transcript } = s.inputs[0]
+  assert.deepEqual(
+    slides.outline.map((o: any) => [o.page, o.title, o.first, o.onRequest]),
+    [[1, 'Welcome', 'Hello everyone.', false], [2, 'Pricing', 'Team is twelve dollars.', false], [4, 'Security', 'Here are the security details.', true], [5, 'Next steps', 'We ship in March.', false]],
+  )
+  assert.deepEqual(slides.current, {
+    page: 2,
+    of: 4,
+    title: 'Pricing',
+    script: 'Team is twelve dollars. Business is twenty-nine. Any questions so far?',
+    text: '',
+    saying: '',
+    before: 'slide 1, Welcome',
+    after: 'slide 4, Security',
+  })
+  // Slide 1's narration is one line; the slide on screen is as it was.
+  assert.match(transcript, /^\(Alex presented slide 1 from the script: Welcome\)$/m)
+  assert.doesNotMatch(transcript, /Hello everyone|This is the plan/)
+  assert.match(transcript, /^Slides: showing slide 2: Pricing$/m)
+  assert.match(transcript, /^Speaker: Alex, is that per month\?$/m)
+  // The transcript itself keeps every line.
+  assert.ok(s.alex().includes('Hello everyone.'))
+  done(s)
+})
+
+test('a question handed to the owner mid-deck carries the slide on screen; a meeting without slides hands off as before', async () => {
+  const s = start({ voice: LONG, answers: [[{ kind: 'ask_session', question: 'What does the enterprise plan cost?' }]] })
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  await wait(300)
+  s.flux.turn('StartOfTurn', '')
+  s.flux.turn('EndOfTurn', 'Alex, what does the enterprise plan cost?')
+  await until(() => s.asked.length === 1)
+  assert.match(s.asked[0].context, /^On screen: slide 2 of 4, Pricing\.\n\n/)
+  done(s)
+  const plain = start({ slides: false, answers: [[{ kind: 'ask_session', question: 'Is the pilot on track?' }]] })
+  await until(() => plain.session.consentDone)
+  plain.said('Alex, is the pilot on track?')
+  await until(() => plain.asked.length === 1)
+  assert.doesNotMatch(plain.asked[0].context, /On screen/)
+  assert.equal(plain.inputs[0].slides, undefined, 'no slides for the brain in a meeting without them')
+  assert.ok(!('slides' in plain.inputs[0]))
+  done(plain)
+})
+
+test('why_not_answered says when a line talked over the slides and held them', async () => {
+  const s = start({ voice: LONG })
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  await wait(300)
+  s.flux.turn('StartOfTurn', '')
+  s.flux.turn('EndOfTurn', "That's interesting.")
+  await until(() => s.session.whyNotAnswered(5).lines!.length > 1)
+  const lines = s.session.whyNotAnswered(5).lines!
+  const held = lines.find(l => l.line === "That's interesting.")!
+  assert.match(held.why, /It talked over the slides Alex was presenting, so Alex stopped at that sentence and held them/)
+  // A line that didn't stop the narration says nothing of it.
+  assert.ok(lines.filter(l => l !== held).every(l => !/talked over the slides/.test(l.why)))
+  done(s)
+})
+
+test('the minutes of a meeting whose slides were presented are told so; a deck never started, or no deck, changes nothing', async () => {
+  const s = start()
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  s.said('Thanks, that was clear.')
+  await wait(30)
+  s.session.end()
+  await until(() => s.minutes.length === 1)
+  assert.deepEqual(s.minutes[0].presented, { title: 'Q4 plan', slides: 4 })
+  s.session.transcript.delete()
+  const idle = start()
+  await until(() => idle.session.consentDone)
+  idle.said('Hello everyone.')
+  await wait(30)
+  idle.session.end()
+  await until(() => idle.minutes.length === 1)
+  assert.ok(!('presented' in idle.minutes[0]))
+  idle.session.transcript.delete()
 })
