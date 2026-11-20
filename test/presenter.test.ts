@@ -5,9 +5,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import type { BrainEvent } from '../src/brain/brain.ts'
+import { type BrainEvent, slideSection } from '../src/brain/brain.ts'
 import type { ToSession } from '../src/bridge.ts'
 import { JOIN_LINE, LEAVE_LINE, SLIDES_LINES } from '../src/consent.ts'
+import { statusLine } from '../src/cli/slides-status.ts'
 import { SLIDES_LABEL } from '../src/identity.ts'
 import { MeetingSession, type SessionSlides } from '../src/pipeline/session.ts'
 import type { OwnerAction, PresentationEvent, PresenterSlide, PresenterTiming } from '../src/slides/presenter.ts'
@@ -1370,6 +1371,7 @@ test('a question mid-deck: the brain gets the outline and the slide on screen, a
   )
   assert.deepEqual(slides.current, {
     page: 2,
+    position: 2,
     of: 4,
     title: 'Pricing',
     script: 'Team is twelve dollars. Business is twenty-nine. Any questions so far?',
@@ -1400,6 +1402,21 @@ test('a question asked as a slide appears, before any of it is said: the brain i
   done(s)
 })
 
+test('slide numbers are page numbers: with a page left out of the meeting, nothing says "slide 5 of 4"', async () => {
+  const s = start({ from: 5, voice: { 'We ship in March.': 600 } })
+  await narrating(s)
+  await until(() => s.spoken.includes('We ship in March.'))
+  assert.equal(s.presenter.onScreenLine(), 'On screen: slide 5 (4th of 4 in this presentation), Next steps.')
+  const current = s.presenter.forBrain().current!
+  assert.deepEqual([current.page, current.position, current.of], [5, 4, 4])
+  assert.match(slideSection(current, 'Sam'), /^On screen now: slide 5 \(4th of 4 in this presentation\), Next steps\.$/m)
+  assert.equal(
+    statusLine(s.presenter.status()),
+    'presenting, slide 5 on screen ("Next steps"); it carries on from slide 5; 4 slides are in this meeting. The share is loaded.',
+  )
+  done(s)
+})
+
 test('a question handed to the owner mid-deck carries the slide on screen; a meeting without slides hands off as before', async () => {
   const s = start({ voice: LONG, answers: [[{ kind: 'ask_session', question: 'What does the enterprise plan cost?' }]] })
   await narrating(s)
@@ -1408,7 +1425,7 @@ test('a question handed to the owner mid-deck carries the slide on screen; a mee
   s.flux.turn('StartOfTurn', '')
   s.flux.turn('EndOfTurn', 'Alex, what does the enterprise plan cost?')
   await until(() => s.asked.length === 1)
-  assert.match(s.asked[0].context, /^On screen: slide 2 of 4, Pricing\.\n\n/)
+  assert.match(s.asked[0].context, /^On screen: slide 2 \(2nd of 4 in this presentation\), Pricing\.\n\n/)
   done(s)
   const plain = start({ slides: false, answers: [[{ kind: 'ask_session', question: 'Is the pilot on track?' }]] })
   await until(() => plain.session.consentDone)

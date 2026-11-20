@@ -282,7 +282,8 @@ function presentationText(msg: Extract<ToSession, { type: 'presentation' }>): st
 function presentationEnd(p: PresentationSummary): string {
   if (!p.reached) return `The presentation was never started (${p.of} slides).`
   if (p.finished) return `The presentation was given to its last slide (${p.of} slides).`
-  return `The presentation got as far as slide ${p.reached} (${p.of} slides): to carry on in another meeting, join with slides_from ${p.reached}.`
+  // Slide numbers are PDF page numbers: with pages left out, "slide 9 (8 slides)" would read as past the end.
+  return `The presentation got as far as slide ${p.reached} (of the ${p.of} slide${p.of === 1 ? '' : 's'} in the meeting): to carry on in another meeting, join with slides_from ${p.reached}.`
 }
 
 /**

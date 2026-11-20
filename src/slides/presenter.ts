@@ -63,6 +63,18 @@ export function presenterSlides(script: Script, manifest: Manifest): PresenterSl
     }))
 }
 
+/** "1st", "2nd", "11th", "23rd". */
+const ordinal = (n: number): string => {
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? 'th' : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')
+  return `${n}${suffix}`
+}
+
+/**
+ * Where a slide is among the meeting's slides: "4th of 4 in this presentation". Slide numbers are PDF page numbers, and
+ * pages left out of the meeting make them run past the count, so the two are never put as "slide 5 of 4".
+ */
+export const placeIn = (position: number, of: number): string => `${ordinal(position)} of ${of} in this presentation`
+
 export type PresenterState = 'ready' | 'starting' | 'checking' | 'narrating' | 'held' | 'qa' | 'stopped' | 'ended' | 'disposed'
 
 /**
@@ -132,8 +144,10 @@ export interface SlidesForBrain {
   outline: readonly { page: number; title: string; first: string; onRequest: boolean }[]
   /** The slide on screen, or null when none is (not started, stopped). */
   current: {
+    /** The PDF page number: "slide N" means it. */
     page: number
-    /** How many slides the meeting has. */
+    /** Where it is among the meeting's slides (1 for the first), and how many there are: never "slide 5 of 4". */
+    position: number
     of: number
     title: string
     /** The owner's script for it. */
@@ -374,6 +388,7 @@ export class Presenter {
       outline,
       current: {
         page: slide.page,
+        position: i + 1,
         of: this.slides.length,
         title: slide.title,
         script: slide.sentences.join(' '),
@@ -397,12 +412,12 @@ export class Presenter {
     return this.state === 'narrating' || this.state === 'held' || this.state === 'qa' || this.state === 'checking' ? this.view : null
   }
 
-  /** For a hand-off to the owner's session: "On screen: slide N of M, <title>.", or '' when no slide is. */
+  /** For a hand-off to the owner's session: "On screen: slide 5 (4th of 4 in this presentation), <title>.", or ''. */
   onScreenLine(): string {
     const i = this.onScreen()
     if (i === null) return ''
     const slide = this.slides[i]
-    return `On screen: slide ${slide.page} of ${this.slides.length}${slide.title ? `, ${slide.title}` : ''}.`
+    return `On screen: slide ${slide.page} (${placeIn(i + 1, this.slides.length)})${slide.title ? `, ${slide.title}` : ''}.`
   }
 
   /** How the brain's window folds the narration (Transcript.recent): every slide's but the one on screen. */

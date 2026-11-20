@@ -308,7 +308,7 @@ When Alex's camera page reconnects, the slides wait, and carry on two seconds af
 - **The voice service** gets your script without its comments, and the slides it shows, in memory only, until the bot is out of the call.
 - **Anthropic**, with each answer during the meeting: the outline (each slide's title and first sentence) and the slide on screen (your script for it and its text); with the minutes request, the presentation's title.
 - **ElevenLabs** speaks your script.
-- **Your Claude Code session** sees the script, comments included, when it reads it to send Alex in, and slide titles in its events, `slides_status` and the questions it is handed ("On screen: slide 6 of 9, Pricing.").
+- **Your Claude Code session** sees the script, comments included, when it reads it to send Alex in, and slide titles in its events, `slides_status` and the questions it is handed ("On screen: slide 6 (5th of 8 in this presentation), Pricing.").
 - **The meeting**: anyone in it can screenshot or record what Alex shares.
 - **The transcript** has your script as Alex said it, and `Slides:` lines saying which slide was on screen, as Alex's own lines: a talk to a room where nobody spoke gets no minutes. The minutes mention the presentation in one sentence, and never take your script for decisions or actions.
 - "Alex, please leave" deletes the transcript as always, and blanks the slides before the goodbye. It doesn't delete the prepared deck: that is yours, on your computer before the meeting. `npm run slides -- delete` does.

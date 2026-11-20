@@ -31,7 +31,9 @@ export function statusLine(status: PresenterStatus, bot?: string): string {
   const on = status.slide === null ? 'no slide on screen' : `slide ${status.slide} on screen${status.title ? ` ("${status.title}")` : ''}`
   const held = status.state === 'held' && status.held ? ` (${HOLDS[status.held]})` : ''
   const where = bot ? `Bot ${bot}: ` : ''
-  return `${where}${STATES[status.state] ?? status.state}${held}, ${on}; it carries on from slide ${status.bookmark}, of ${status.of} in the meeting. The share is ${status.share}.`
+  // Slide numbers are PDF page numbers, so the count of slides in the meeting is put apart from them.
+  const count = `${status.of} slide${status.of === 1 ? ' is' : 's are'} in this meeting`
+  return `${where}${STATES[status.state] ?? status.state}${held}, ${on}; it carries on from slide ${status.bookmark}; ${count}. The share is ${status.share}.`
 }
 
 /** The lines to print, and the exit code, for the voice service's answer to /api/slides. */

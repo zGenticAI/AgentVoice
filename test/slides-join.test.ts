@@ -430,7 +430,7 @@ test('npm run slides -- status and control: the arguments, and what they print',
   const held: PresenterStatus = { state: 'held', slide: 2, bookmark: 2, of: 4, title: 'Pricing', held: 'owner', detour: false, share: 'loaded' }
   assert.equal(
     statusLine(held, 'bot-2'),
-    'Bot bot-2: held (you paused it: only you can resume it), slide 2 on screen ("Pricing"); it carries on from slide 2, of 4 in the meeting. The share is loaded.',
+    'Bot bot-2: held (you paused it: only you can resume it), slide 2 on screen ("Pricing"); it carries on from slide 2; 4 slides are in this meeting. The share is loaded.',
   )
   assert.deepEqual(presentationLines({ status: 200, body: JSON.stringify({ ok: false, note: 'Alex has no slides to present in any meeting right now' }) }, 'Alex'), {
     lines: ['Not done: Alex has no slides to present in any meeting right now.'],
