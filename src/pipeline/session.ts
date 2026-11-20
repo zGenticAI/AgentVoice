@@ -1453,6 +1453,12 @@ export class MeetingSession {
   async reachedTimeLimit(minutes: number): Promise<void> {
     if (this.ended || this.leaving || !this.opts.botId) return
     console.log(`[leave] bot ${this.opts.botId} reached the ${minutes}-minute limit for one meeting (MAX_MEETING_MINUTES)`)
+    // The slides went at the limit (the server blanked them): the narration goes now too, the line it is saying cut,
+    // rather than talking on over the ended frame while the chat line is on its way. An answer under way is left to end.
+    if (this.presenter) {
+      if (this.presenter.current === 'narrating') this.interrupt()
+      this.presenter.dispose()
+    }
     // The bot leaves even if Recall is slow to post the line: the limit is there to stop the cost.
     const posted = this.postChat(timeLimitLine(minutes)).catch(err => console.error('[chat]', (err as Error).message))
     await within(posted.then(() => {}), TIME_LIMIT_CHAT_WAIT_MS)

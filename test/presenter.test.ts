@@ -186,6 +186,8 @@ interface Options {
   deck?: PresenterSlide[]
   /** Lines sent in ten pieces over their length (ms of voice), as the line cache and a live stream send them. */
   paced?: Set<string>
+  /** Recall's chat post: at once unless given. */
+  chat?: (text: string) => Promise<void>
 }
 
 function start(opts: Options = {}) {
@@ -236,7 +238,7 @@ function start(opts: Options = {}) {
       }
     },
     recall: {
-      sendChat: async () => {},
+      sendChat: async (_bot: string, text: string) => opts.chat?.(text),
       leaveCall: async () => {},
       deleteMedia: async () => true,
       howBotEnded: async () => ({ kind: 'ended', sub_code: 'bot_received_leave_call' }) as const,
@@ -1359,6 +1361,28 @@ test('a share that throws or rejects at every step never reaches uncaughtExcepti
     process.off('uncaughtException', onError)
     process.off('unhandledRejection', onError)
   }
+})
+
+test('at the time limit narration stops with the slides, the line it is saying cut, however slow the chat line is', async () => {
+  const s = start({
+    voice: { 'Hello everyone.': 300, 'This is the plan.': 300, 'Team is twelve dollars.': 300, 'Business is twenty-nine.': 300 },
+    chat: () => wait(600).then(() => {}),
+  })
+  await narrating(s)
+  await until(() => s.spoken.includes('Hello everyone.'), 'narration')
+  const before = s.spoken.length
+  const limitAt = Date.now()
+  const reached = s.session.reachedTimeLimit(1)
+  await wait(400)
+  assert.deepEqual(s.spoken.slice(before), [], 'nothing more is said while the chat line is on its way')
+  assert.equal(s.presenter.current, 'disposed')
+  assert.ok(s.surface.calls.includes('close') && !s.surface.calls.includes('stop'), 'blanked and revoked, with no call to Recall')
+  assert.ok(s.ws.controls.some(c => c.type === 'clear' && c.at >= limitAt), 'the line in flight is cut on the page')
+  await reached
+  await until(() => s.notified.some(n => n.type === 'meeting_ended'), 'meeting_ended')
+  const ended = s.notified.find(n => n.type === 'meeting_ended') as Extract<ToSession, { type: 'meeting_ended' }>
+  assert.deepEqual(ended.presentation, { reached: 1, of: 4, finished: false })
+  s.session.transcript.delete()
 })
 
 test('a transcript file the disk cannot take: the slides go on, a "no" still stops the share and tells the owner, nothing crashes', async () => {
