@@ -1132,7 +1132,13 @@ export class MeetingSession {
   /** What the presenter uses of this session (src/slides/presenter.ts). */
   private presenterHost(): PresenterHost {
     return {
-      runTurn: work => this.runTurn(work),
+      // As an answer does, the slides' speech waits for the consent line, which is said in full: a command said during
+      // a repeat of it would stop it otherwise. What the command changes (the bookmark, a hold) changes at once.
+      runTurn: async work => {
+        while (this.greeting) await this.greeting
+        if (this.ended || this.leaving) return
+        return this.runTurn(work)
+      },
       say: (text, signal, tag) => this.say(text, signal, tag),
       interrupt: () => this.interrupt(),
       playing: () => this.playback.paused || this.playback.playsUntil > this.clock(),

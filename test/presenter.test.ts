@@ -183,6 +183,8 @@ interface Options {
   delay?: Record<string, number>
   /** The meeting's slides, when not the test deck's. */
   deck?: PresenterSlide[]
+  /** Lines sent in ten pieces over their length (ms of voice), as the line cache and a live stream send them. */
+  paced?: Set<string>
 }
 
 function start(opts: Options = {}) {
@@ -222,7 +224,15 @@ function start(opts: Options = {}) {
       if (opts.failing?.has(text)) throw new Error('voice failed')
       if (opts.latency) await wait(opts.latency)
       if (opts.delay?.[text]) await wait(opts.delay[text])
-      yield Buffer.alloc((opts.voice?.[text] ?? 20) * 32)
+      const ms = opts.voice?.[text] ?? 20
+      if (!opts.paced?.has(text)) {
+        yield Buffer.alloc(ms * 32)
+        return
+      }
+      for (let piece = 0; piece < 10; piece++) {
+        if (piece) await wait(ms / 10)
+        yield Buffer.alloc((ms / 10) * 32)
+      }
     },
     recall: {
       sendChat: async () => {},
@@ -806,6 +816,47 @@ test('the camera page away holds the slides; 2 s after it is back, "Back to <tit
   s.session.attach(page as any, {})
   await until(() => s.spoken.includes('Back to Pricing.'))
   done(s)
+})
+
+test('a slide command during a repeat of the consent line waits for it: the line is said whole, and the deck goes on after', async () => {
+  type S = ReturnType<typeof start>
+  const cases: [string, (s: S) => unknown, (s: S) => Promise<unknown>][] = [
+    [
+      '"Alex, next slide"',
+      s => s.said('Alex, next slide.'),
+      async s => {
+        await until(() => s.presenter.current === 'qa', 'questions', 5000)
+        await until(() => s.surface.calls.includes('stop'), 'the quiet stop after questions: the session is free again')
+      },
+    ],
+    ['"Alex, go back"', s => s.said('Alex, go back.'), s => until(() => s.spoken.includes("Here's slide 1."), 'the slide before')],
+    [
+      '"Alex, stop presenting"',
+      s => s.said('Alex, stop presenting.'),
+      async s => {
+        await until(() => s.surface.calls.includes('stop'), 'stopped')
+        s.said('Alex, start the presentation.')
+        await until(() => s.surface.calls.filter(c => c.startsWith('start')).length === 2, 'started again')
+      },
+    ],
+    ["the owner's next", s => s.presenter.owner('next'), s => until(() => s.spoken.includes('Moving to slide 5.'), 'the move, said')],
+  ]
+  for (const [what, command, after] of cases) {
+    // The consent line goes out in pieces over 600 ms, as the line cache and a live stream send it.
+    const s = start({ voice: { [SLIDES_LINES.join]: 600 }, paced: new Set([SLIDES_LINES.join]) })
+    await narrating(s)
+    await until(() => s.spoken.includes('Team is twelve dollars.'))
+    // The page comes back without saying what it had: the consent line is said again.
+    s.ws.drop()
+    s.session.attach(new FakeSocket() as any, {})
+    await until(() => s.spoken.filter(l => l === SLIDES_LINES.join).length === 2, `${what}: the consent line again`)
+    await wait(150)
+    command(s)
+    await until(() => s.session.consentDone, `${what}: the consent line said in full`)
+    assert.equal(s.alex().filter(l => l.startsWith("Hello, I'm")).at(-1), SLIDES_LINES.join, `${what}: whole in the transcript`)
+    await after(s)
+    done(s)
+  }
 })
 
 test('speech recognition lost: the sentence ends, the fixed line is said, and nothing more until hearing is back', async () => {
