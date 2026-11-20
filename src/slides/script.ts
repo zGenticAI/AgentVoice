@@ -401,6 +401,14 @@ export function parseScript(source: string): Parsed {
       if (section.check === 'yes') warnings.push({ ...at, message: 'drafted, not yet checked by you: read it, then delete "check: yes"' })
       const hazards = sayAs(section.paragraphs.join(' '))
       if (hazards.length) warnings.push({ ...at, message: `say-as: ${hazards.map(h => `"${h}"`).join(', ')}: write figures, signs and abbreviations as they are spoken ("twelve dollars")` })
+      // The heading is said too, after a question: "Back to <heading>.".
+      const spoken = sayAs(section.heading)
+      if (spoken.length) {
+        warnings.push({
+          ...at,
+          message: `say-as in the heading, which is said as "Back to ${section.heading.replace(/[\s.!?…:;,]+$/u, '')}.": ${spoken.map(h => `"${h}"`).join(', ')}: write it as it is spoken`,
+        })
+      }
     } else if (section.check === 'changed') {
       // An exclude is a choice about one slide. When the merge finds another slide under it, or its own slide
       // elsewhere, the owner must look, or the excluded section would hide a slide nobody chose to hide.
@@ -413,6 +421,20 @@ export function parseScript(source: string): Parsed {
   const length = canonicalText(script).length
   if (length > MAX_SCRIPT_CHARS) errors.push({ message: `the script is ${length} characters without its comments: at most ${MAX_SCRIPT_CHARS} (about 45 minutes)` })
   return { script, errors, warnings }
+}
+
+/**
+ * A script's errors in one line, for a join that refuses it: the first few, each with where it is ("page 4, line 23:"),
+ * and how many more. npm run slides -- check lists them all.
+ */
+export function problemsText(problems: readonly Problem[], max = 3): string {
+  const at = (p: Problem) => {
+    const parts = [p.page ? `page ${p.page}` : '', p.line ? `line ${p.line}` : ''].filter(Boolean)
+    return parts.length ? `${parts.join(', ')}: ` : ''
+  }
+  const shown = problems.slice(0, max).map(p => `${at(p)}${p.message}`)
+  const more = problems.length - shown.length
+  return `${shown.join('; ')}${more > 0 ? ` (and ${more} more)` : ''}`
 }
 
 /** What the voice may read wrongly: currency and percent signs, figures, and all-capital abbreviations. */

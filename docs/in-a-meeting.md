@@ -20,13 +20,36 @@ Alex also leaves by itself, through Recall's automatic leave:
 - after 10 minutes in a waiting room or lobby without being let in;
 - 5 minutes after it got in, if nobody else has joined;
 - as soon as everyone else has left, and when only other bots (such as note-takers) are left, by Recall's own checks;
-- after 15 minutes in which nobody has said anything, counted once it has been in the call 10 minutes. A longer silent break ends Alex's part of the meeting, so send it in again after one.
+- after 15 minutes in which nobody has said anything, counted once it has been in the call 10 minutes. A longer silent break ends Alex's part of the meeting, so send it in again after one. In a meeting it has slides to present in, Alex's own voice doesn't count as sound, so the silence allowed is longer: the script's `minutes` plus 15, from 15 to 60 minutes (60 when the script gives no `minutes`).
 
 Each of these ends the meeting as usual: Alex keeps the transcript, and Claude writes minutes if anyone spoke (see [Minutes](minutes-and-data.md#minutes)).
 
 To stop Alex without making it leave, say "Alex, never mind" (or "Alex, stop", "Alex, cancel that", "Alex, don't worry about it", "Alex, leave it", "Never mind, Alex"). It stops talking at once, even the end of an answer the page is still playing, drops a question it is still checking with your session (the answer is still kept, so asking again gets it at once), and says nothing. A question that only contains such a word, such as "Alex, can you stop the recording?", is answered like any other. It doesn't stop the consent line, which is always said in full.
 
 Removing Alex from the meeting (from the participant list, or from the waiting room) counts the same as "Alex, please leave": once Recall says the host removed the bot, the transcript and any minutes of the meeting are deleted and no minutes are written. See "How it ended" under [Minutes](minutes-and-data.md#minutes).
+
+## When Alex presents
+
+In a meeting Sam sent it into with slides ([Presenting slides](presenting.md)), Alex's consent line also says it has slides to present, and how to start them. Nothing is shared until someone says "Alex, start the presentation" (or Sam starts it). Then Alex shares its slides as a screen, asks once whether everyone can see them, and says Sam's script, word for word, changing slides between sentences when the room is quiet. Its camera tile is unchanged.
+
+Anyone who says the name can steer it, by these phrases only, said to Alex as the whole sentence ("please", "thanks" or "now" may follow):
+- start: "Alex, start the presentation", "begin the slides", "present your slides", "start presenting";
+- move: "Alex, next slide", "skip this slide", "go back", "previous slide", "go to slide 5" (or "show slide five", "the last slide"), "go through that slide again";
+- pause: "Alex, pause", "wait", "hold on", "hang on", "one moment", "give me a second";
+- carry on: "Alex, carry on", "continue", "go on", "keep going", "resume", "go ahead", "back to the slides";
+- stop: "Alex, stop presenting", "stop sharing", "stop the presentation", "that's enough slides".
+
+How it stops, and carries on:
+- A question by name stops it at that sentence. It answers in a few sentences, then says "Back to <the slide's title>." and that sentence again.
+- Talking over it, not to it, stops it at that sentence too. Once the room is quiet it asks "Shall I carry on?": "yes", or silence, carries on; "no" or "wait" holds it until someone says "Alex, carry on". It asks once each time.
+- "Alex, pause" holds it until someone says "Alex, carry on". When Sam paused it, only Sam can resume it: "Alex, carry on" gets "I'll wait for Sam on that." The room can still change slides and stop sharing, but after a stop, "Alex, start the presentation" gets the same answer until Sam starts it.
+- "Alex, go back" or "go to" an earlier slide shows it ("Here's slide 4.") and waits; "Alex, carry on" goes back to where it was.
+- If its page reconnects, it carries on a moment after it is back. If it can't hear the meeting, it stops at the end of the sentence and says so, and says nothing more until it hears again, even if Sam moves the slides meanwhile: it never talks on when it couldn't hear "please leave".
+- After the last slide it takes questions with that slide up, and stops sharing after two quiet minutes.
+
+"Alex, please leave" works at any moment, as always: the slides are blanked at once, before the goodbye. "Alex, never mind" (or "Alex, stop") stops what it is saying and holds the slides until someone says carry on. Only Sam can end the presentation for good or jump to its last slide. Alex doesn't notice when someone else starts sharing their screen: say "Alex, pause" or "Alex, stop presenting".
+
+A slide command is never a question for Alex: `why_not_answered` shows it as a slide command, and a line that talked over the slides says it held them.
 
 ## If the connection drops
 

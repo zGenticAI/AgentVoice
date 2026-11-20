@@ -4,11 +4,13 @@ A test you run in a test meeting you host, with your real Recall account. These 
 
 ## What it checks, and why
 
-The slides feature ([Presenting slides](presenting.md)) will have Alex present a deck by sharing a page as its screen, while its camera page keeps carrying its voice and its hearing. One thing no Recall document settles: when the bot starts, replaces or stops a screen share mid-call, does Alex's camera page keep running untouched? If it reloads, or its connection drops, Alex goes deaf and silent for a moment, or drops out of the meeting.
+The slides feature ([Presenting slides](presenting.md)) has Alex present a deck by sharing a page as its screen, while its camera page keeps carrying its voice and its hearing. One thing no Recall document settles: when the bot starts, replaces or stops a screen share mid-call, does Alex's camera page keep running untouched? If it reloads, or its connection drops, Alex goes deaf and silent for a moment, or drops out of the meeting.
 
 `npm run join -- "<link>" --share-test` checks it. Alex joins as usual, then shares a test page as its screen, step by step, while the service watches its camera page. You answer a few questions in the terminal about what you see and hear. At the end it prints a report to paste back to your Claude Code session. It takes about 10 minutes for each platform: Zoom, Google Meet and Microsoft Teams.
 
 The decisive result is the camera page: whether it dropped, connected again, or a copy of it loaded again, in any step from S2 to S9. The test page shows nothing of the meeting and makes no sound.
+
+Presenting is off on every platform until this test has passed there: once its verdict says slides look safe on a platform, add that platform to `SLIDES_PLATFORMS` in `.env` (`zoom`, `google_meet` or `microsoft_teams`, comma-separated) and restart the service. Until then, a join with slides there is refused before any bot is created.
 
 ## What you need
 

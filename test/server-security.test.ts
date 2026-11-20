@@ -332,7 +332,9 @@ test('/api/join needs the local token, and starts a bot with it', async t => {
 
   assert.equal((await joinRequest(s.control, s.auth, '{not json')).status, 400)
   assert.equal((await joinRequest(s.control, s.auth, JSON.stringify({ meetingUrl: 'https://evil.example/j/1' }))).status, 400)
-  assert.equal((await joinRequest(s.control, s.auth, JSON.stringify({ meetingUrl: 'x'.repeat(120_000) }))).status, 413)
+  // A brief and a presentation script, every character of which JSON may write as six bytes, fit; more does not.
+  assert.equal((await joinRequest(s.control, s.auth, JSON.stringify({ meetingUrl: 'x'.repeat(352_384) }))).status, 413)
+  assert.equal((await joinRequest(s.control, s.auth, JSON.stringify({ meetingUrl: 'x'.repeat(340_000) }))).status, 400)
   assert.equal(s.bots.length, 1)
 })
 
@@ -544,7 +546,7 @@ test('the public /health says only that the service is up; the control one says 
   assert.equal(pub.status, 200)
   assert.equal(pub.body, '{"ok":true}', 'nothing about meetings or the session link')
   const control = JSON.parse((await request(s.control, { path: '/health' })).body)
-  assert.deepEqual(control, { ok: true, session_linked: false, meetings: 0, bot_meetings: 0, max_meetings: 3, features: ['meeting_brief', 'why_not_answered', 'share_test'], speaker_probe: false })
+  assert.deepEqual(control, { ok: true, session_linked: false, meetings: 0, bot_meetings: 0, max_meetings: 3, features: ['meeting_brief', 'why_not_answered', 'share_test', 'slides'], speaker_probe: false })
 })
 
 test('a message over its limit closes the connection it came on: 1 MiB on /bridge, 64 KiB on /audio', async t => {

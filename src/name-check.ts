@@ -5,7 +5,8 @@
 // Errors are names the rules can't hear or would mistake: not one word of plain letters, too short or long,
 // the participants' label, or a word the attention, leave and cancel rules already use ("Will" would answer
 // every "Will you ...?"). And three lines must read as they do for the default name: "<Name>, please leave"
-// (the consent line teaches it), "<Name>, what is the timeline?" and "I asked <Name> yesterday.".
+// (the consent line teaches it), "<Name>, what is the timeline?" and "I asked <Name> yesterday.". So must the two a
+// meeting with slides teaches: "<Name>, start the presentation" (its consent line) and "<Name>, pause" (its chat notice).
 // Warnings are names that work but cost something: everyday words, forms of address and replies ("Dude", "Sweet":
 // said to anyone), other assistants' wake words, very short names and accents (ignored when matching). A spelling
 // (AGENT_NAME_VARIANTS) is warned about when it is an everyday word or a form of address; a mishearing
@@ -22,6 +23,7 @@
 // must be set, and each goes into prompts and onto the bot page, so it must be one short line of plain name text.
 import { GRAMMAR_WORDS, isFillerOnly, makeAttention } from './brain/attention.ts'
 import { LEAVE_AND_CANCEL_WORDS, makeNameRules } from './brain/text.ts'
+import { makeSlideCommands } from './slides/commands.ts'
 import {
   ADDRESS_WORDS, type AgentName, COMMON_FIRST_NAMES, COMMON_WORD_NAMES, IDENTITY_WARNINGS, type Identity, type Names, PARTICIPANT_LABEL,
   WAKE_WORDS, defaultBotName, fold, hasWord, identity, stripAccents,
@@ -180,6 +182,14 @@ export function checkName(agent: AgentName & { readonly botName?: string; readon
     }
     if (grammar.attention(`I asked ${name} yesterday.`) !== 'mentioned') {
       errors.push(`"I asked ${name} yesterday." is not taken as talk about the assistant.`)
+    }
+    // The consent line of a meeting with slides teaches how to start them, and its chat notice how to pause them.
+    const slides = makeSlideCommands(agent)
+    if (slides.command(`${name}, start the presentation`)?.kind !== 'start') {
+      errors.push(`"${name}, start the presentation" is not taken as the start of a presentation, but the consent line of a meeting with slides tells the meeting to say it.`)
+    }
+    if (slides.command(`${name}, pause`)?.kind !== 'pause') {
+      errors.push(`"${name}, pause" is not taken as a pause of the slides, but the chat notice of a meeting with slides tells the meeting to say it.`)
     }
   }
 

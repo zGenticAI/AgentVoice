@@ -100,6 +100,29 @@ export function speakerProbeSetting(raw: string, warn: (message: string) => void
   return false
 }
 
+/** The platforms SLIDES_PLATFORMS may list: the ids meetingPlatform (src/recall.ts) gives. */
+export const SLIDES_PLATFORM_IDS = ['zoom', 'google_meet', 'microsoft_teams'] as const
+export type SlidesPlatform = (typeof SLIDES_PLATFORM_IDS)[number]
+
+/**
+ * SLIDES_PLATFORMS: where Alex may present slides, comma-separated (zoom, google_meet, microsoft_teams). Empty unless
+ * set, so presenting is off everywhere until the owner turns a platform on, once the screen-share test has passed there
+ * (docs/share-test.md): whether a share leaves the camera page running is known only from a real meeting. An entry
+ * that is not one of them is left out, with a warning, so a typo never turns a platform on.
+ */
+export function slidesPlatformsSetting(raw: string, warn: (message: string) => void = console.warn): SlidesPlatform[] {
+  const platforms: SlidesPlatform[] = []
+  for (const entry of raw.split(',').map(t => t.trim()).filter(Boolean)) {
+    const id = entry.toLowerCase()
+    if ((SLIDES_PLATFORM_IDS as readonly string[]).includes(id)) {
+      if (!platforms.includes(id as SlidesPlatform)) platforms.push(id as SlidesPlatform)
+    } else {
+      warn(`[config] SLIDES_PLATFORMS: "${entry}" is not one of ${SLIDES_PLATFORM_IDS.join(', ')}, so it is left out`)
+    }
+  }
+  return platforms
+}
+
 /**
  * Settings an older install may still have in .env that do nothing now: a warning for each, which the service
  * says once at start.
@@ -211,4 +234,6 @@ export const config = {
   // For test meetings only: a meeting joined with npm run join -- "<link>" --speaker-probe also measures how Recall's
   // participant events line up with what the assistant hears (src/speakers/probe.ts). Off unless set.
   speakerProbe: speakerProbeSetting(optional('SPEAKER_PROBE')),
+  // Where a meeting joined with slides may be presented in: none unless set (slidesPlatformsSetting).
+  slidesPlatforms: slidesPlatformsSetting(optional('SLIDES_PLATFORMS')),
 }

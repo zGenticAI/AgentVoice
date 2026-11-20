@@ -22,9 +22,9 @@ export const CLOSED_WINDOW_SHOWN_MS = 60_000
  * How Alex read a line: the attention rules' verdict (asked, called, nothing_asked, mentioned, no_name), or what the
  * session decided before asking them. reply and after_call: taken without the name, in the window an answer that
  * ended on a question, or a call ("Alex?"), opened. filler: only "um" or "uh". cancel: "Alex, never mind".
- * page_away: heard while the bot page was reconnecting.
+ * page_away: heard while the bot page was reconnecting. slides: a slide command, in a meeting with slides to present.
  */
-export type Reading = Attention | 'reply' | 'after_call' | 'filler' | 'cancel' | 'page_away'
+export type Reading = Attention | 'reply' | 'after_call' | 'filler' | 'cancel' | 'page_away' | 'slides'
 
 /** What Alex did with a line. Those taken change as the answer goes on (waiting, answering, handed, then the end). */
 export type Outcome =
@@ -40,6 +40,7 @@ export type Outcome =
   | 'cut_off'
   | 'replaced'
   | 'failed'
+  | 'slide_command'
 
 /** A window Alex had opened (see Reading) that closed before a line it would have taken: which, and how long before (ms). */
 export interface ClosedWindow {
@@ -62,6 +63,10 @@ export interface Verdict {
   byConsent?: boolean
   /** For a line not taken: a window that had closed less than CLOSED_WINDOW_SHOWN_MS before it. */
   readonly window?: ClosedWindow
+  /** For a slide command: which one ("next", "go to slide 5"), and what came of it. */
+  readonly command?: string
+  /** It talked over the slides Alex was presenting, and held them at the sentence the meeting stopped hearing. */
+  readonly heldDeck?: boolean
 }
 
 const READINGS: Record<Reading, (v: Verdict) => string> = {
@@ -82,6 +87,9 @@ const READINGS: Record<Reading, (v: Verdict) => string> = {
   filler: () => `Only "um", "uh" or the like: someone thinking. It changes nothing, and leaves a reply window open.`,
   cancel: () => `Told never mind, or to stop.`,
   page_away: () => `Heard while ${NAME}'s bot page was reconnecting: kept in the transcript, but not answered, since ${NAME} could not have said the answer.`,
+  slides: v =>
+    `Read as a command for the slides ${NAME} is presenting (${v.command ?? 'a slide command'}): said to ${NAME} by name, or in a window it had opened, ` +
+    'so it was not a question to answer.',
 }
 
 const HANDED = `${NAME} handed it to ${OWNER}'s session`
@@ -104,7 +112,13 @@ const OUTCOMES: Record<Outcome, (v: Verdict) => string> = {
     'Asked during the consent line, and dropped before the line was over: something said after it took its place (another question, or never mind), ' +
     `or ${NAME}'s bot page went.`,
   failed: () => `${NAME} could not answer: Claude or ElevenLabs failed (the service log has the error).`,
+  slide_command: () => `${NAME} did what the command asked of the slides, if it could then.`,
 }
+
+/** Why the slides stopped: a line that talked over the narration. */
+const HELD_DECK =
+  `It talked over the slides ${NAME} was presenting, so ${NAME} stopped at that sentence and held them. ` +
+  `They carry on from that sentence: after an answer, with "Back to" the slide's title; after other talk, once the room is quiet and ${NAME} has asked "Shall I carry on?".`
 
 /** A window that had closed before the line came, which would otherwise have taken it without the name. */
 const windowText = (w: ClosedWindow) =>
@@ -144,7 +158,7 @@ export class Verdicts {
       line: capped(v.text),
       did: v.outcome,
       read: v.reading,
-      why: [READINGS[v.reading](v), v.window && windowText(v.window), OUTCOMES[v.outcome](v)].filter(Boolean).join(' '),
+      why: [READINGS[v.reading](v), v.window && windowText(v.window), OUTCOMES[v.outcome](v), v.heldDeck && HELD_DECK].filter(Boolean).join(' '),
     }))
   }
 

@@ -1,10 +1,13 @@
 // What npm run slides takes. Kept apart from the command so it can be tested without rendering anything.
+import { OWNER_ACTIONS, type OwnerAction } from '../slides/presenter.ts'
 
 export const SLIDES_USAGE = `Usage:
   npm run slides -- prepare <deck.pdf> [--exclude <pages>] [--label <name>]
   npm run slides -- check <deck.script.md>
   npm run slides -- list
   npm run slides -- delete <deck id> | --all
+  npm run slides -- status [--meeting <bot id>]
+  npm run slides -- control <${OWNER_ACTIONS.join('|')}> [<slide>] [--meeting <bot id>]
 See docs/presenting.md.`
 
 export type SlidesArgs =
@@ -12,6 +15,8 @@ export type SlidesArgs =
   | { command: 'check'; file: string }
   | { command: 'list' }
   | { command: 'delete'; ids: string[]; all: boolean }
+  | { command: 'status'; meeting?: string }
+  | { command: 'control'; action: OwnerAction; slide?: number; meeting?: string }
   | { command: 'help' }
 
 /** Pages as "3,9" or "3-5", from 1 to 100, or null. */
@@ -46,12 +51,19 @@ export function slidesArgs(argv: readonly string[]): SlidesArgs | { problem: str
       options.set(name, [])
       continue
     }
-    if (name !== '--exclude' && name !== '--label') return { problem: `Unknown option ${name}.` }
+    if (name !== '--exclude' && name !== '--label' && name !== '--meeting') return { problem: `Unknown option ${name}.` }
     const value = eq < 0 ? rest[++i] : arg.slice(eq + 1)
     if (value === undefined || value === '' || (eq < 0 && value.startsWith('--'))) return { problem: `${name} needs a value after it.` }
     options.set(name, [...(options.get(name) ?? []), value])
   }
-  const allowed: Record<string, string[]> = { prepare: ['--exclude', '--label'], check: [], list: [], delete: ['--all'] }
+  const allowed: Record<string, string[]> = {
+    prepare: ['--exclude', '--label'],
+    check: [],
+    list: [],
+    delete: ['--all'],
+    status: ['--meeting'],
+    control: ['--meeting'],
+  }
   if (!Object.hasOwn(allowed, command)) return { problem: `Unknown command ${command}.` }
   const extra = [...options.keys()].find(o => !allowed[command].includes(o))
   if (extra) return { problem: `${command} takes no ${extra}.` }
@@ -72,6 +84,24 @@ export function slidesArgs(argv: readonly string[]): SlidesArgs | { problem: str
   if (command === 'list') {
     if (plain.length) return { problem: 'list takes nothing more.' }
     return { command }
+  }
+  if (command === 'status' || command === 'control') {
+    const meetings = options.get('--meeting') ?? []
+    if (meetings.length > 1) return { problem: 'Give --meeting once.' }
+    const meeting = meetings.length ? { meeting: meetings[0] } : {}
+    if (command === 'status') {
+      if (plain.length) return { problem: 'status takes nothing more than --meeting.' }
+      return { command, ...meeting }
+    }
+    const [action, slide, ...more] = plain
+    if (!action || !(OWNER_ACTIONS as readonly string[]).includes(action)) return { problem: `control takes one of ${OWNER_ACTIONS.join(', ')}.` }
+    if (more.length) return { problem: 'control takes one action, and a slide number for goto.' }
+    if (action === 'goto') {
+      if (!slide || !/^\d{1,3}$/.test(slide) || Number(slide) < 1 || Number(slide) > 100) return { problem: 'goto takes a slide number from 1 to 100.' }
+      return { command, action, slide: Number(slide), ...meeting }
+    }
+    if (slide !== undefined) return { problem: `${action} takes no slide number.` }
+    return { command, action: action as OwnerAction, ...meeting }
   }
   const all = options.has('--all')
   if (all === Boolean(plain.length)) return { problem: 'Give the deck ids to delete, or --all.' }

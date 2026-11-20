@@ -79,6 +79,26 @@ export interface BotPlan {
   pageUrl: string
   /** Where Recall sends the meeting's participant events: only for a meeting with the speaker probe (recallEventsUrl). */
   eventsUrl?: string
+  /**
+   * Only for a meeting joined with slides to present: the chat notice says so, and the silence timer allows for a
+   * presentation. minutes: the script's own estimate of its length, if it gives one. Without it, the request is
+   * exactly what it always was.
+   */
+  slides?: { minutes?: number | null }
+}
+
+/** Seconds of silence after which a meeting with slides is left: the script's minutes plus 15, from 15 to 60 minutes. */
+export const DECK_SILENCE_MIN_S = 900
+export const DECK_SILENCE_MAX_S = 3600
+
+/**
+ * The silence timeout of a meeting with slides (s). The assistant's own voice probably doesn't count as sound for
+ * Recall's silence detection (only what it hears does), so a long presentation to a quiet room would otherwise be taken
+ * as a silent meeting after 15 minutes. With no minutes in the script, Recall's own default, an hour.
+ */
+export function deckSilenceTimeout(minutes?: number | null): number {
+  if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes <= 0) return DECK_SILENCE_MAX_S
+  return Math.min(DECK_SILENCE_MAX_S, Math.max(DECK_SILENCE_MIN_S, Math.round((minutes + 15) * 60)))
 }
 
 /**
@@ -109,7 +129,8 @@ export function botRequest(plan: BotPlan): Record<string, unknown> {
     output_media: { camera: { kind: 'webpage', config: { url: plan.pageUrl } } },
     // Output audio can stutter on the default bot size.
     variant: { zoom: 'web_4_core', google_meet: 'web_4_core', microsoft_teams: 'web_4_core' },
-    chat: { on_bot_join: { send_to: 'everyone', message: joinChatMessage() } },
+    // A meeting with slides gets the notice that says so: set here, it never needs changing later.
+    chat: { on_bot_join: { send_to: 'everyone', message: plan.slides ? joinChatMessage(undefined, undefined, { slides: true }) : joinChatMessage() } },
     // Recall gets the bot out by itself (https://docs.recall.ai/docs/automatic-leaving-behavior, and bot_create for the
     // fields): after 10 minutes in a waiting room; 5 minutes after it got in if nobody else has joined (Recall's default
     // is 20); after 15 minutes in which nobody has said anything, counted once it has been in the call 10 minutes
@@ -119,7 +140,8 @@ export function botRequest(plan: BotPlan): Record<string, unknown> {
     automatic_leave: {
       waiting_room_timeout: 600,
       noone_joined_timeout: 300,
-      silence_detection: { timeout: 900, activate_after: 600 },
+      // A meeting with slides: longer, for a presentation to a quiet room (deckSilenceTimeout).
+      silence_detection: { timeout: plan.slides ? deckSilenceTimeout(plan.slides.minutes) : 900, activate_after: 600 },
     },
     // Zero Data Retention: Recall keeps no recording media (audio, video, transcript) for the bot, so
     // "I keep no recording of the meeting" holds from the start. Output media still works with it; leaving
@@ -150,7 +172,7 @@ export async function leaveCall(botId: string): Promise<void> {
   await call('POST', `/bot/${botId}/leave_call/`)
 }
 
-// --- A screen share mid-call (only the screen-share test uses these: npm run join --share-test) ---------------------
+// --- A screen share mid-call: the screen-share test (npm run join --share-test), and a meeting's slides (src/slides/share.ts)
 // https://docs.recall.ai/docs/meeting-agents-share-and-control-an-agents-webpage-via-camera-or-screenshare (2026-11-18)
 
 /**

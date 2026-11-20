@@ -8,7 +8,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import WebSocket from 'ws'
 import { spokenThinking, systemPrompt } from '../brain/brain.ts'
 import { ROOT, config, publicUrlProblem, recallRegionProblem } from '../config.ts'
-import { JOIN_LINE, joinChatMessage } from '../consent.ts'
+import { JOIN_LINE, SLIDES_LINES, joinChatMessage } from '../consent.ts'
 import { IDENTITY_WARNINGS, identity } from '../identity.ts'
 import { checkName, checkOwner, describeName } from '../name-check.ts'
 import { SAMPLE_RATE } from '../pipeline/deepgram.ts'
@@ -127,6 +127,9 @@ if (!owned.errors.length && !named.errors.length) {
   const rules = systemPrompt(identity, PROFILE).split('\n')
   console.log(`  Consent line: ${JOIN_LINE}`)
   console.log(`  Chat notice: ${joinChatMessage()}`)
+  // A meeting with slides says more: read these before turning presenting on (SLIDES_PLATFORMS).
+  console.log(`  Consent line with slides: ${SLIDES_LINES.join}`)
+  console.log(`  Chat notice with slides: ${joinChatMessage(undefined, undefined, { slides: true })}`)
   console.log(`  Spoken answers' rules start: ${rules[0]}\n    ${rules[1]}`)
 }
 
@@ -160,6 +163,12 @@ if (page) {
 
 // The speaker probe: for test meetings only, so it is said whenever it is on.
 console.log(config.speakerProbe ? `  Speaker probe: on. ${PROBE_ON}` : '  Speaker probe: off (SPEAKER_PROBE, for test meetings only: docs/speaker-probe.md)')
+// Presenting slides: off on each platform until the screen-share test has passed there and SLIDES_PLATFORMS lists it.
+console.log(
+  config.slidesPlatforms.length
+    ? `  Slides: presenting is on for ${config.slidesPlatforms.join(', ')} (SLIDES_PLATFORMS)`
+    : '  Slides: presenting is off on every platform (SLIDES_PLATFORMS: add one once the screen-share test passes there, docs/share-test.md)',
+)
 
 for (const [name, keys, run] of checks) {
   const shape = keys.map(keyShape).filter(Boolean)

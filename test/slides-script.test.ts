@@ -303,6 +303,12 @@ test('warnings: drafts, say-as hazards, figures not on the slide, timing, pages 
   assert.deepEqual(at(3), ["no section, so it won't be shown"])
   assert.deepEqual(errorsOf(text, manifest), [])
 
+  // The heading is said after a question ("Back to <heading>."): what the voice may read wrongly in it is warned about.
+  const heading = warningsOf(script('## 1 · Q3: Revenue +18% YoY\n\nRevenue grew by eighteen percent.\n\n## 2 · Why now?\nhold: 2s\n\nAs you can see.\n'), manifest)
+  assert.deepEqual(heading.filter(w => /heading/.test(w.message)).map(w => [w.page, w.message]), [
+    [1, 'say-as in the heading, which is said as "Back to Q3: Revenue +18% YoY.": "3", "18%": write it as it is spoken'],
+  ])
+
   const short = warningsOf(script('## 1 · Pricing\n\nHi.\n'), manifest)
   assert.ok(short.some(w => w.message === 'on screen for only a few seconds: add "hold: 3s" so people can read it'))
   // A TODO section is not written yet: its error says so, and it is neither timed nor warned about as narration.

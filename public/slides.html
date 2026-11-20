@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280, initial-scale=1">
+<title>Slides</title>
+<style>
+  /* Shared as the bot's screen while the assistant presents (docs/presenting.md). Recall shows it at 1280x720, so each
+     slide is an image of exactly that size, with no scaling, fade or animation. Two images are stacked: the next slide
+     is decoded into the hidden one, then the two swap at once. The frames show no slide content, only who is
+     presenting, and that it is an AI. The page makes no sound and uses no microphone. */
+  html, body { margin: 0; width: 1280px; height: 720px; overflow: hidden; background: #000; color: #f6f7f9;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  img { position: absolute; top: 0; left: 0; width: 1280px; height: 720px; visibility: hidden; }
+  img.on { visibility: visible; }
+  .frame { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; background: #0b0d12; }
+  .frame.on { display: flex; }
+  .big { margin: 0 80px; font-size: 52px; font-weight: 600; line-height: 1.2; }
+  .who { margin: 28px 80px 0; font-size: 34px; color: #b9bfca; }
+</style>
+</head>
+<body data-slides-page="1">
+<img id="a" alt="">
+<img id="b" alt="">
+<div class="frame on" id="starting">
+  <p class="big">{{name}}, {{owner}}'s AI assistant, is about to present</p>
+</div>
+<div class="frame" id="paused">
+  <p class="big">Slides paused</p>
+  <p class="who">{{name}}, {{owner}}'s AI assistant</p>
+</div>
+<div class="frame" id="ended">
+  <p class="big">Slides ended</p>
+  <p class="who">{{name}}, {{owner}}'s AI assistant</p>
+</div>
+<script type="module" src="/slides.js"></script>
+</body>
+</html>

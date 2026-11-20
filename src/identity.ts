@@ -41,6 +41,8 @@ export const DEFAULT_NAME = 'Alex'
 
 /** The participants' label in the transcript, so no assistant may have it as a name. */
 export const PARTICIPANT_LABEL = 'Speaker'
+/** The transcript's label for its slide markers in a meeting with slides ("showing slide 6: Pricing"): the assistant's lines, never a participant's. */
+export const SLIDES_LABEL = 'Slides'
 
 /** The name and the other ways speech recognition writes it. The lists are folded (see fold()). */
 export interface AgentName {

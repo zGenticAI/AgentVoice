@@ -32,12 +32,72 @@ function freeFile(meetingKey: string): string {
 /** Who said a line: the assistant, or anyone else in the meeting. Minutes depend on it, not on the label. */
 export type Role = 'agent' | 'participant'
 
+/**
+ * In a meeting with slides, what one of the assistant's lines is: a sentence of the owner's script (narration), or a
+ * slide marker ("showing slide 6: Pricing", labelled Slides). Both are the assistant's (role agent), so a talk to a
+ * silent room still gets no minutes. Never in the transcript file: only the brain's window folds them.
+ */
+export type LineKind = 'narration' | 'marker'
+
 export interface Line {
   at: Date
   /** The label in the transcript: the assistant's name, or "Speaker" for everyone else. */
   speaker: string
   text: string
   role: Role
+  /** Only in a meeting with slides: narration or a marker. */
+  kind?: LineKind
+  /** The slide (PDF page) a narration line or a marker is about. */
+  slide?: number
+}
+
+/**
+ * How the brain's window folds a presentation (recent): the narration of slides other than the one on screen, and their
+ * markers, become one line per run, so a long talk doesn't push the room's discussion out of the window. The script is
+ * in the brain's slides block anyway.
+ */
+export interface Collapse {
+  /** The slide on screen (its page), whose lines are kept as they are; null when none is. */
+  current: number | null
+  /** The assistant's name, for the folded line. */
+  name: string
+  /** A slide's title, by page ('' when it has none). */
+  title(page: number): string
+}
+
+/** "slide 3", "slides 2–5" when they follow on, or "slides 2, 4 and 7". */
+function slidesWord(pages: readonly number[]): string {
+  if (pages.length === 1) return `slide ${pages[0]}`
+  const runOn = pages.every((p, i) => i === 0 || p === pages[i - 1] + 1)
+  if (runOn) return `slides ${pages[0]}–${pages.at(-1)}`
+  return `slides ${pages.slice(0, -1).join(', ')} and ${pages.at(-1)}`
+}
+
+/** The lines as the brain's window shows them, with each run of narration away from the slide on screen folded. */
+function folded(lines: readonly Line[], c: Collapse): string[] {
+  const out: string[] = []
+  let run: Line[] = []
+  const flush = () => {
+    if (!run.length) return
+    const pages = [...new Set(run.filter(l => l.kind === 'narration').map(l => l.slide as number))]
+    if (pages.length) {
+      const titles = pages.map(p => c.title(p) || `slide ${p}`).join('; ')
+      out.push(`(${c.name} presented ${slidesWord(pages)} from the script: ${titles})`)
+    } else {
+      for (const l of run) out.push(`${l.speaker}: ${l.text}`)
+    }
+    run = []
+  }
+  for (const l of lines) {
+    if (l.kind && l.slide !== undefined && l.slide !== c.current) {
+      run.push(l)
+      continue
+    }
+    flush()
+    out.push(`${l.speaker}: ${l.text}`)
+  }
+  flush()
+  return out
 }
 
 export class Transcript {
@@ -56,10 +116,13 @@ export class Transcript {
     return this.deleted
   }
 
-  /** Adds a line, and says which it is (to amend later), or null once the transcript has been deleted. */
-  add(speaker: string, text: string, role: Role = 'participant'): Line | null {
+  /**
+   * Adds a line, and says which it is (to amend later), or null once the transcript has been deleted. about: in a meeting
+   * with slides, what an assistant's line is (narration or a marker), and its slide.
+   */
+  add(speaker: string, text: string, role: Role = 'participant', about?: { kind: LineKind; slide?: number }): Line | null {
     if (this.deleted) return null
-    const line = { at: new Date(), speaker, text, role }
+    const line: Line = { at: new Date(), speaker, text, role, ...(about ? { kind: about.kind, ...(about.slide === undefined ? {} : { slide: about.slide }) } : {}) }
     this.lines.push(line)
     fs.appendFileSync(this.file, `${fileLine(line)}\n`, { mode: 0o600 })
     return line
@@ -104,13 +167,16 @@ export class Transcript {
     return this.lines.some(l => l.role === 'participant')
   }
 
-  /** The most recent lines, newest last, capped by character count. */
-  recent(maxChars = 12000): string {
+  /**
+   * The most recent lines, newest last, capped by character count. collapse: in a meeting with slides, the narration of
+   * slides other than the one on screen folded, one line per run (Collapse).
+   */
+  recent(maxChars = 12000, opts: { collapse?: Collapse } = {}): string {
+    const shown = opts.collapse ? folded(this.lines, opts.collapse) : this.lines.map(l => `${l.speaker}: ${l.text}`)
     const out: string[] = []
     let size = 0
-    for (let i = this.lines.length - 1; i >= 0; i--) {
-      const l = this.lines[i]
-      const s = `${l.speaker}: ${l.text}`
+    for (let i = shown.length - 1; i >= 0; i--) {
+      const s = shown[i]
       if (size + s.length > maxChars) break
       out.unshift(s)
       size += s.length + 1

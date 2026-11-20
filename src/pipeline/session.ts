@@ -9,13 +9,15 @@ import type { Brain } from '../brain/brain.ts'
 import { attention, endsOnQuestion, isFillerOnly, wordsThatCount } from '../brain/attention.ts'
 import { isCancelRequest, isLeaveReply, isLeaveRequest } from '../brain/text.ts'
 import type { LineVerdict, SessionAnswer, SessionBridge, ToSession } from '../bridge.ts'
-import { CHECKING_LINES, JOIN_LINE, LEAVE_LINE, PROGRESS_LINE, REFUSAL_LINE, SESSION_OFFLINE_LINE } from '../consent.ts'
-import { PARTICIPANT_LABEL, identity } from '../identity.ts'
+import { CHECKING_LINES, type HintPlatform, JOIN_LINE, LEAVE_LINE, PROGRESS_LINE, REFUSAL_LINE, SESSION_OFFLINE_LINE, SLIDES_LINES } from '../consent.ts'
+import { PARTICIPANT_LABEL, SLIDES_LABEL, identity } from '../identity.ts'
 import { type MinutesInput, writeMinutes } from '../minutes.ts'
 import { sameSecret } from '../network.ts'
 import * as recall from '../recall.ts'
 import { type Ending, type SpeakerProbe, probeCodeword } from '../speakers/probe.ts'
 import type { TestLineOutcome } from '../sharetest/protocol.ts'
+import { type NarrationTag, Presenter, type PresenterHost, type PresenterSlide, type PresenterTiming } from '../slides/presenter.ts'
+import type { SlideSurface } from '../slides/surface.ts'
 import { type Line, Transcript } from '../transcript.ts'
 import { FluxStream, SAMPLE_RATE, type TurnInfo } from './deepgram.ts'
 import { Playback } from './playback.ts'
@@ -69,6 +71,28 @@ export interface SessionDeps {
    * end and when Alex's voice plays, never what was said; dropped on "please leave"; written as the meeting ends.
    */
   speakerProbe?: Pick<SpeakerProbe, 'turnStarted' | 'fluxLag' | 'turnEnded' | 'agentAudio' | 'agentStopped' | 'discard' | 'write'>
+  /**
+   * Only for a meeting joined with slides to present: its share, its slides and its platform. The session then owns a
+   * Presenter (src/slides/presenter.ts), says the consent line of a meeting with slides, and reads slide commands.
+   * Without it, the session is exactly what it always was.
+   */
+  slides?: SessionSlides
+}
+
+/** What a meeting with slides gives its session. */
+export interface SessionSlides {
+  /** The meeting's slide share (the server's ShareControl, or a test's fake). */
+  surface: SlideSurface
+  /** The meeting's slides, in page order: the surface's images are in the same order. */
+  slides: readonly PresenterSlide[]
+  /** The meeting's platform, for the hint after "no" to "Can everyone see my slides?". */
+  platform: HintPlatform
+  /** The page to start from (join --from). */
+  from?: number
+  /** What the owner calls the presentation (the script's title, else the deck's label): for the minutes only. */
+  title?: string
+  /** The presenter's timings, which tests make short. */
+  timing?: Partial<PresenterTiming>
 }
 
 /** What a session uses of speech recognition: a FluxStream, unless a test passes a fake (which may not end turns). */
@@ -300,6 +324,9 @@ export class MeetingSession {
   // Which window awaitingUntil is for: the reply to a question Alex ended on, or the line after a call. Only for
   // why_not_answered.
   private windowKind: 'reply' | 'called' = 'called'
+  // The window open is one the slides opened (their own questions, a pause: slide): only there, and after a call, is a
+  // slide command read without the name. Never in the reply window of an answer: "Go ahead." there is a reply to Alex.
+  private slidesWindow = false
   // While Alex says the consent line: it is said in full, whoever talks meanwhile, and a question asked
   // during it is answered once it is over. Only leaving, removal or the end of the session stop it. Null
   // once it has all gone out to the page.
@@ -348,6 +375,19 @@ export class MeetingSession {
   private readonly lineVerdicts = new WeakMap<Line, Verdict>()
   // How many of Alex's lines the page has stopped short: the test line waits for the page, and is cut off if one is.
   private linesCut = 0
+  /**
+   * In a meeting with slides only: what presents them, from the owner's script. Null in any other meeting, which then
+   * runs exactly as it always has.
+   */
+  readonly presenter: Presenter | null = null
+  // The narration sentence each of Alex's narration lines is, so the presenter hears where the meeting stopped hearing.
+  private readonly lineTags = new WeakMap<Line, NarrationTag>()
+  // Whether someone is in the middle of a turn now, and since when the room has been quiet (epoch ms): for the
+  // presenter, which changes slides and resumes only in a quiet room. Only timings.
+  private roomTurnOpen = false
+  private roomQuietSince = Date.now()
+  // The turn now under way talked over the narration and held the slides: its line's verdict says so (why_not_answered).
+  private heldDeck = false
 
   constructor(
     ws: WebSocket,
@@ -368,6 +408,9 @@ export class MeetingSession {
       // it failed; and a checking line ElevenLabs failed partway leaves the question waiting for the owner's session.
       const running = this.turn !== null && !this.turn.signal.aborted && this.turnVerdicts.get(this.turn.signal) === heard
       if (heard && !running && heard.outcome !== 'failed') heard.outcome = 'cut_off'
+      // A narration sentence the meeting did not hear to the end: the presenter resumes at it.
+      const tag = this.lineTags.get(line)
+      if (tag) this.presenter?.cut(tag)
     }, this.clock)
     this.recall = deps.recall ?? recall
     // The speaker probe needs to know when the audio of each word came in: nothing of it is kept otherwise.
@@ -387,6 +430,14 @@ export class MeetingSession {
       // TurnResumed, which are not asked for) goes on with it.
       const text = (turn.transcript ?? '').trim()
       this.measure(turn, text)
+      if (turn.event === 'StartOfTurn') {
+        this.roomTurnOpen = true
+        this.heldDeck = false
+      }
+      if (turn.event === 'EndOfTurn') {
+        this.roomTurnOpen = false
+        this.roomQuietSince = Date.now()
+      }
       if (turn.event === 'StartOfTurn') return this.turnStarted(text)
       if (turn.event !== 'EndOfTurn') return this.turnGoesOn(text)
       // The verdict first: a stop clears the page and stops the turn before the line can start an answer.
@@ -399,13 +450,23 @@ export class MeetingSession {
     this.flux.on('lost', why => {
       console.error(`[stt] can't hear the meeting: ${why}`)
       this.deaf = true
+      // A turn under way gets no EndOfTurn now: the room counts as quiet, so the slides' waits for quiet can end.
+      this.roomTurnOpen = false
+      this.roomQuietSince = Date.now()
+      // Nor does a turn that talked over the slides: the watch ends, or the presenter would wait for it for good.
+      if (this.presenter && this.watching) this.endWatch()
       this.control({ type: 'error', message: PAGE_ERRORS.hearing })
+      // Alex never talks on when it can't hear "please leave": the slides stop at the end of the sentence.
+      this.presenter?.hearing(false)
     })
     this.flux.on('open', () => {
       if (!this.deaf) return
       this.deaf = false
+      // Quiet counts from when it can hear the room again.
+      this.roomQuietSince = Date.now()
       console.log('[stt] hearing the meeting again')
       this.control({ type: 'hearing' })
+      this.presenter?.hearing(true)
     })
     this.flux.on('close', (code, reason) => {
       // FluxStream closes only when asked to: as the session ends, or once Alex is leaving (see stopRecording). A
@@ -414,6 +475,25 @@ export class MeetingSession {
       console.error(`[stt] Deepgram closed the stream (${code}${reason ? `: ${reason}` : ''})`)
       this.control({ type: 'error', message: PAGE_ERRORS.hearing })
     })
+
+    if (deps.slides) {
+      this.presenter = new Presenter({
+        surface: deps.slides.surface,
+        slides: deps.slides.slides,
+        platform: deps.slides.platform,
+        from: deps.slides.from,
+        timing: deps.slides.timing,
+        host: this.presenterHost(),
+        botId: opts.botId,
+      })
+      // A meeting someone asked Alex to leave presents nothing more.
+      if (this.leaving) this.presenter.dispose()
+      // The presentation's changes and problems go to the owner's session, never one per slide; nothing once Alex is
+      // leaving, since nothing of that meeting is kept.
+      this.presenter.onEvent(event => {
+        if (!this.leaving) deps.bridge.notify({ type: 'presentation', meeting: opts.meetingKey, ...event })
+      })
+    }
 
     this.wire(ws)
     this.control({ type: 'ready', sampleRate: SAMPLE_RATE, rejoin: this.rejoin })
@@ -500,6 +580,8 @@ export class MeetingSession {
     if (this.consent === 'saying') this.consent = 'due'
     this.lineCount++
     this.calledDuringConsent = false
+    // The slides hold where they were, before the turn stops: they carry on once the page is back.
+    this.presenter?.hold('page_away')
     // The bridge stops waiting for the owner's session with the turn, and keeps a late answer, so asking again gets it
     // at once.
     this.turn?.abort()
@@ -571,6 +653,8 @@ export class MeetingSession {
     }
     // At once, so nothing still playing ahead of it (the end of an answer) can be paused or stopped meanwhile.
     if (this.consent === 'due' && this.greetDue) this.greet()
+    // The slides carry on a moment after the page is back, and after any repeat of the consent line.
+    this.presenter?.pageBack()
   }
 
   /** The page is back, or the session is over: nothing more waits for the page. */
@@ -626,7 +710,8 @@ export class MeetingSession {
     const replaced = this.turn && !this.turn.signal.aborted ? this.turnVerdicts.get(this.turn.signal) : undefined
     if (replaced) replaced.byConsent = true
     const greeting = this.runTurn(async signal => {
-      const complete = await this.say(JOIN_LINE, signal)
+      // A meeting with slides has its own consent line, which says how to start them.
+      const complete = await this.say(this.presenter ? SLIDES_LINES.join : JOIN_LINE, signal)
       // Not when it was stopped: by then the timings may already be the goodbye's.
       if (signal.aborted) return
       // Where it ends in what went out to the page: a page that drops and comes back having had less is told it again.
@@ -650,6 +735,7 @@ export class MeetingSession {
         this.calledDuringConsent = false
         this.awaitingUntil = Math.max(Date.now(), this.consentPlaysUntil) + (this.deps.calledWindowMs ?? CALLED_WINDOW_MS)
         this.windowKind = 'called'
+        this.slidesWindow = false
       }
     })
     this.greeting = greeting
@@ -768,6 +854,9 @@ export class MeetingSession {
    * leave, and once the session has ended.
    */
   private async onUtterance(text: string): Promise<void> {
+    // Whether this line's turn held the slides: told once, with its own verdict.
+    const heldDeck = this.heldDeck
+    this.heldDeck = false
     // Once someone has asked Alex to leave, nothing more is recorded or answered. No verdict: nothing is kept.
     if (this.leaving) return
     // "Um" on its own is someone thinking, not talking: it doesn't answer, open or use up anything.
@@ -778,6 +867,7 @@ export class MeetingSession {
     // The window this line finds, open or not, for why_not_answered: a line that isn't filler closes it, so one that
     // is set and not open has run out.
     const window = this.awaitingUntil ? { kind: this.windowKind, until: this.awaitingUntil } : null
+    const slidesWindow = this.slidesWindow
     // A request to leave, by name; or in an open window, where a line goes to Alex without it, a plain
     // "Please leave the meeting."
     if (isLeaveRequest(text) || (awaiting && isLeaveReply(text))) {
@@ -793,7 +883,7 @@ export class MeetingSession {
     // What Alex does with the line, and why, for why_not_answered. A window it found closed is told only for a line
     // the rules left alone (one still open would have taken it, whatever it was), and not for filler, which leaves a
     // window as it is, nor a line heard with the page away, which nothing would have taken.
-    const verdict = (reading: Reading, outcome: Outcome = 'nothing'): Verdict => {
+    const verdict = (reading: Reading, outcome: Outcome = 'nothing', command?: string): Verdict => {
       const closed = window && outcome === 'nothing' && reading !== 'filler' && reading !== 'page_away' && Date.now() >= window.until
       return this.verdicts.add({
         text,
@@ -801,6 +891,8 @@ export class MeetingSession {
         outcome,
         duringConsent: this.greeting !== null,
         window: closed ? { kind: window.kind, closedMs: Date.now() - window.until } : undefined,
+        ...(command ? { command } : {}),
+        ...(heldDeck ? { heldDeck } : {}),
       })
     }
     if (!filler) {
@@ -816,17 +908,28 @@ export class MeetingSession {
     // Words heard while the page is away (said just before it dropped) are kept, but not answered: Alex could not say
     // the answer, and the meeting may have moved on by the time the page is back. With its verdict.
     if (!this.ws) return void verdict('page_away')
+    // In a meeting with slides only: a slide command ("Alex, next slide"), or the answer to the presenter's own question.
+    // Never a question for Alex, so never in the questions the meeting asked. A filler is never one, and leaves the
+    // presenter's window open, as it leaves the session's: "Hmm." then silence after "Shall I carry on?" is still a yes.
+    // Without the name, only in a window the slides opened or after a call: in an answer's reply window, "Go ahead." is
+    // the reply to Alex's question, as in a meeting without slides.
+    const nameless = awaiting && (slidesWindow || window?.kind === 'called')
+    const command = filler ? null : (this.presenter?.hear(text, { awaiting: nameless }) ?? null)
+    if (command) return void verdict('slides', 'slide_command', command)
     const how = attention(text)
     const addressed = how === 'asked' || awaiting
     if (!addressed && how === 'called') {
       this.awaitingUntil = Date.now() + (this.deps.calledWindowMs ?? CALLED_WINDOW_MS)
       this.windowKind = 'called'
+      this.slidesWindow = false
       this.calledDuringConsent = this.greeting !== null
     }
     // Not for Alex: with its verdict.
     if (!addressed) return void verdict(filler ? 'filler' : how)
     // For Alex: its verdict follows what comes of it, to the end of the turn.
     const heard = verdict(how === 'asked' ? 'asked' : window?.kind === 'reply' ? 'reply' : 'after_call', this.greeting ? 'waiting' : 'answering')
+    // The slides hold where they were, before the answer stops the narration: "Back to <title>." once it is over.
+    this.presenter?.hold('question')
     this.questions.push(text)
     const line = ++this.lineCount
     if (this.greeting) {
@@ -853,6 +956,7 @@ export class MeetingSession {
       if (!signal.aborted && endsOnQuestion(this.lastSaid)) {
         this.awaitingUntil = Date.now() + (this.deps.replyWindowMs ?? REPLY_WINDOW_MS)
         this.windowKind = 'reply'
+        this.slidesWindow = false
       }
     })
   }
@@ -864,6 +968,8 @@ export class MeetingSession {
    * Not the consent line, which is always said in full.
    */
   private cancel(): void {
+    // The slides hold, until someone says carry on.
+    this.presenter?.hold('asked')
     // A question waiting for the consent line to end is dropped too.
     this.lineCount++
     this.awaitingUntil = 0
@@ -902,7 +1008,9 @@ export class MeetingSession {
 
   /** Answers a line. heard: its verdict for why_not_answered, which follows what Alex does with it. */
   private async answer(latest: string, signal: AbortSignal, heard: Verdict): Promise<void> {
-    const events = this.deps.brain.respond({ transcript: this.transcript.recent(), latest, brief: this.deps.brief(), additions: this.additions.text(), signal })
+    // In a meeting with slides: what it presents, for answers about them (an outline, and the slide on screen).
+    const slides = this.presenter ? { slides: this.presenter.forBrain() } : {}
+    const events = this.deps.brain.respond({ transcript: this.window(), latest, brief: this.deps.brief(), additions: this.additions.text(), signal, ...slides })
     for await (const event of events) {
       if (signal.aborted) return
       if (event.kind === 'say') {
@@ -924,7 +1032,7 @@ export class MeetingSession {
             question: event.question,
             asked_by: 'meeting participant',
             meeting: this.opts.meetingKey,
-            context: this.transcript.recent(HANDOFF_CONTEXT_CHARS),
+            context: this.handOffContext(),
           },
           undefined,
           signal,
@@ -956,13 +1064,31 @@ export class MeetingSession {
   }
 
   /**
+   * The transcript the brain answers from: the latest lines, and in a meeting with slides, the narration of slides no
+   * longer on screen folded into one line per run, so a long talk doesn't push the room's discussion out.
+   */
+  private window(maxChars?: number): string {
+    if (!this.presenter) return this.transcript.recent(maxChars)
+    return this.transcript.recent(maxChars, { collapse: this.presenter.collapse(identity.name) })
+  }
+
+  /** What a question handed to the owner's session carries: the meeting so far, and the slide on screen if any. */
+  private handOffContext(): string {
+    const onScreen = this.presenter?.onScreenLine() ?? ''
+    return `${onScreen ? `${onScreen}\n\n` : ''}${this.window(HANDOFF_CONTEXT_CHARS)}`
+  }
+
+  /**
    * Says a line: into the transcript, then out to the page as ElevenLabs makes it. The transcript has the whole line
    * from the start, and keeps only what the meeting heard of it if it is cut off (see Playback). Resolves with whether
    * all of it went out to the page.
    */
-  private async say(text: string, signal: AbortSignal): Promise<boolean> {
+  private async say(text: string, signal: AbortSignal, tag?: NarrationTag): Promise<boolean> {
     if (!text.trim()) return false
-    const line = this.transcript.add(identity.name, text, 'agent')
+    // A sentence of the owner's script is narration, of its slide: the brain's window folds it once the slide is gone.
+    const page = tag ? this.deps.slides?.slides[tag.i]?.page : undefined
+    const line = this.transcript.add(identity.name, text, 'agent', tag ? { kind: 'narration', ...(page === undefined ? {} : { slide: page }) } : undefined)
+    if (line && tag) this.lineTags.set(line, tag)
     // Not once the transcript is gone (the goodbye): there is nothing to correct.
     const playing = line ? this.playback.begin(line, text) : null
     // The line it answers, if any (not the consent line): told if the page stops this one short.
@@ -1001,6 +1127,63 @@ export class MeetingSession {
       this.speaking = false
       this.control({ type: 'speaking', on: false })
     }
+  }
+
+  /** What the presenter uses of this session (src/slides/presenter.ts). */
+  private presenterHost(): PresenterHost {
+    return {
+      // As an answer does, the slides' speech waits for the consent line, which is said in full: a command said during
+      // a repeat of it would stop it otherwise. What the command changes (the bookmark, a hold) changes at once.
+      runTurn: async work => {
+        while (this.greeting) await this.greeting
+        if (this.ended || this.leaving) return
+        return this.runTurn(work)
+      },
+      say: (text, signal, tag) => this.say(text, signal, tag),
+      interrupt: () => this.interrupt(),
+      playing: () => this.playback.paused || this.playback.playsUntil > this.clock(),
+      quietMs: () => (this.roomTurnOpen ? 0 : Math.max(0, Date.now() - this.roomQuietSince)),
+      attached: () => this.attached(),
+      busy: () => this.turn !== null,
+      lineLeftMs: () => this.playback.lineLeft(),
+      // As interrupt, but the turn goes on: it says why the slides stopped. The consent line is still heard in full.
+      clear: () => {
+        if (this.ws && Date.now() >= this.consentPlaysUntil) this.clearPage()
+      },
+      free: () =>
+        !this.ended &&
+        !this.leaving &&
+        !this.deaf &&
+        this.attached() &&
+        this.greeting === null &&
+        (this.consent === 'sent' || this.consent === 'heard') &&
+        this.turn === null &&
+        !this.watching,
+      openWindow: ms => {
+        this.awaitingUntil = Date.now() + ms
+        this.windowKind = 'reply'
+        this.slidesWindow = true
+      },
+      // Only while no line has closed it: the presenter's own window is then the one open.
+      closeWindow: () => void (this.awaitingUntil = 0),
+      windowOpen: () => Date.now() < this.awaitingUntil,
+      // As the assistant's line, so a talk to a silent room still gets no minutes. Never throws: a full or failing disk
+      // must not stop the slides half way (or the service), so the error's code alone is logged, as amend does.
+      marker: (text, page) => {
+        try {
+          this.transcript.add(SLIDES_LABEL, text, 'agent', { kind: 'marker', ...(page === undefined ? {} : { slide: page }) })
+        } catch (err) {
+          console.error(`[transcript] could not add a slides line to the transcript file: ${(err as NodeJS.ErrnoException).code ?? 'error'}`)
+        }
+      },
+    }
+  }
+
+  /** The owner's own move: whatever Alex is saying stops, as on "never mind", but the consent line is said in full. */
+  private interrupt(): void {
+    if (this.greeting) return
+    if (this.ws && Date.now() >= this.consentPlaysUntil) this.clearPage()
+    this.turn?.abort()
   }
 
   /**
@@ -1102,6 +1285,9 @@ export class MeetingSession {
   private talkedOver(): void {
     this.watching = false
     if (!this.audible() && !this.turn) return this.dropPause()
+    // The slides hold at the sentence the meeting stopped hearing, before the turn stops; the line that did it says so.
+    if (this.presenter?.current === 'narrating') this.heldDeck = true
+    this.presenter?.hold('talk')
     this.bargeIn()
   }
 
@@ -1194,6 +1380,8 @@ export class MeetingSession {
   private stopRecording(): void {
     const first = !this.leaving
     this.leaving = true
+    // The slides are blanked and their link revoked at once, before the goodbye: no DELETE, the share goes with the bot.
+    this.presenter?.dispose()
     // No pause or resume goes to the page after this: the clear below ends a pause, and the goodbye is never paused.
     this.watching = false
     this.dropPause()
@@ -1265,6 +1453,12 @@ export class MeetingSession {
   async reachedTimeLimit(minutes: number): Promise<void> {
     if (this.ended || this.leaving || !this.opts.botId) return
     console.log(`[leave] bot ${this.opts.botId} reached the ${minutes}-minute limit for one meeting (MAX_MEETING_MINUTES)`)
+    // The slides went at the limit (the server blanked them): the narration goes now too, the line it is saying cut,
+    // rather than talking on over the ended frame while the chat line is on its way. An answer under way is left to end.
+    if (this.presenter) {
+      if (this.presenter.current === 'narrating') this.interrupt()
+      this.presenter.dispose()
+    }
     // The bot leaves even if Recall is slow to post the line: the limit is there to stop the cost.
     const posted = this.postChat(timeLimitLine(minutes)).catch(err => console.error('[chat]', (err as Error).message))
     await within(posted.then(() => {}), TIME_LIMIT_CHAT_WAIT_MS)
@@ -1281,6 +1475,8 @@ export class MeetingSession {
   end(): void {
     if (this.ended) return
     this.ended = true
+    // The slides go with the bot: blanked and revoked, with no call to Recall.
+    this.presenter?.dispose()
     // why_not_answered is for a live meeting only.
     this.verdicts.clear()
     this.stopWaiting()
@@ -1320,7 +1516,9 @@ export class MeetingSession {
       const no_minutes = LEFT_NOTES[this.records.left ?? 'asked'] + (this.records.reported ? LEFT_EARLIER_NOTE : '')
       return { type: 'meeting_ended', meeting, transcript_file: '', questions: [], minutes_file: '', no_minutes }
     }
-    return { type: 'meeting_ended', meeting, transcript_file: this.transcript.file, questions: this.questions, minutes_file: '' }
+    // How far the slides got, so the owner can join again --from there: only in a meeting with slides.
+    const presentation = this.presenter ? { presentation: this.presenter.summary() } : {}
+    return { type: 'meeting_ended', meeting, transcript_file: this.transcript.file, questions: this.questions, minutes_file: '', ...presentation }
   }
 
   /**
@@ -1394,6 +1592,8 @@ export class MeetingSession {
         platform: this.opts.platform,
         startedAt: this.startedAt,
         endedAt: new Date(),
+        // The minutes mention a presentation in one sentence, and never take the script for decisions.
+        ...(this.presenter?.started ? { presented: { title: this.deps.slides?.title ?? '', slides: this.deps.slides?.slides.length ?? 0 } } : {}),
       })
       this.records.files.add(file)
       if (this.leaving) {

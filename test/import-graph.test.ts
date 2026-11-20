@@ -3,7 +3,8 @@
 //   native canvas: a hostile PDF is parsed only in the converter's own process;
 // - the converter never imports env.ts or config.ts, even through another module: importing env.ts loads .env, and
 //   would put every API key back into the process whose environment was cleared of them;
-// - npm run slides reaches no network code: prepare and check need no key and no network.
+// - npm run slides reaches no network code: prepare and check need no key and no network. Only its status and control,
+//   loaded on their own, talk to the voice service, on its control socket, and to nothing else.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -27,15 +28,15 @@ function specifiers(source: string): string[] {
   return [...source.matchAll(SPECIFIER)].map(m => m[1] ?? m[2] ?? m[3])
 }
 
-/** Everything reachable from these entry modules, following relative imports. */
-function graph(entries: string[], root = ROOT): Graph {
+/** Everything reachable from these entry modules, following relative imports, but not into the modules in stopAt. */
+function graph(entries: string[], root = ROOT, stopAt: readonly string[] = []): Graph {
   const files = new Set<string>()
   const packages = new Map<string, string>()
   const todo = entries.map(e => path.resolve(root, e))
   while (todo.length) {
     const file = todo.pop() as string
     const rel = path.relative(root, file)
-    if (files.has(rel)) continue
+    if (files.has(rel) || stopAt.includes(rel)) continue
     assert.ok(fs.existsSync(file), `${rel} exists`)
     files.add(rel)
     for (const spec of specifiers(fs.readFileSync(file, 'utf8'))) {
@@ -106,10 +107,28 @@ test('only the converter names pdf.js or the native canvas, anywhere in src/', (
   assert.deepEqual(named, [path.join('slides', 'render-child.ts')])
 })
 
+const networkPackages = (g: Graph) =>
+  [...g.packages.keys()].filter(p => /^(node:)?(http|https|http2|net|tls|dgram|dns)$/.test(p) || /^(ws|@anthropic-ai\/sdk|@modelcontextprotocol\/sdk)(\/|$)/.test(p))
+const SERVICES = ['src/recall.ts', 'src/brain/brain.ts', 'src/pipeline/deepgram.ts', 'src/pipeline/tts.ts', 'src/server.ts']
+
 test('npm run slides reaches no network code: no HTTP, sockets, Recall, Claude, Deepgram or ElevenLabs', () => {
-  const g = graph(['src/cli/slides.ts'])
-  const network = [...g.packages.keys()].filter(p => /^(node:)?(http|https|http2|net|tls|dgram|dns)$/.test(p) || /^(ws|@anthropic-ai\/sdk|@modelcontextprotocol\/sdk)(\/|$)/.test(p))
-  assert.deepEqual(network, [])
-  for (const file of ['src/recall.ts', 'src/brain/brain.ts', 'src/pipeline/deepgram.ts', 'src/pipeline/tts.ts', 'src/server.ts']) assert.ok(!g.files.has(file), file)
+  // Its status and control are loaded on their own (below): prepare, check, list and delete never reach them.
+  const g = graph(['src/cli/slides.ts'], ROOT, ['src/cli/slides-control.ts'])
+  assert.deepEqual(networkPackages(g), [])
+  for (const file of SERVICES) assert.ok(!g.files.has(file), file)
+  for (const file of g.files) assert.doesNotMatch(fs.readFileSync(path.join(ROOT, file), 'utf8'), /\bfetch\s*\(/, file)
+  // slides.ts loads it only by a dynamic import, for status and control.
+  assert.match(fs.readFileSync(path.join(ROOT, 'src/cli/slides.ts'), 'utf8'), /await import\('\.\/slides-control\.ts'\)/)
+  assert.doesNotMatch(fs.readFileSync(path.join(ROOT, 'src/cli/slides.ts'), 'utf8'), /^import .*slides-control/m)
+})
+
+test("npm run slides' status and control talk only to the voice service's control socket", () => {
+  const g = graph(['src/cli/slides-control.ts'])
+  // http to the socket, and net to check the socket is one only you can reach before the local token goes to it.
+  assert.deepEqual(networkPackages(g).sort(), ['node:http', 'node:net'])
+  assert.equal(g.packages.get('node:http'), 'src/cli/control-call.ts')
+  assert.equal(g.packages.get('node:net'), 'src/control-socket.ts')
+  assert.match(fs.readFileSync(path.join(ROOT, 'src/cli/control-call.ts'), 'utf8'), /socketPath,/)
+  for (const file of SERVICES) assert.ok(!g.files.has(file), file)
   for (const file of g.files) assert.doesNotMatch(fs.readFileSync(path.join(ROOT, file), 'utf8'), /\bfetch\s*\(/, file)
 })

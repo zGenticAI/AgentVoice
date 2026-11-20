@@ -3,6 +3,7 @@
 
 export const JOIN_USAGE =
   'Usage: npm run join -- "<Zoom, Google Meet or Microsoft Teams meeting link>" [--brief <file>] [--speaker-probe]\n' +
+  '       npm run join -- "<meeting link>" --slides <deck.script.md> [--from <slide>] [--brief <file>]\n' +
   '       npm run join -- "<meeting link>" --share-test [--json <file>] [--keep] [--brief <file>]'
 
 export interface JoinArgs {
@@ -17,10 +18,14 @@ export interface JoinArgs {
   jsonFile?: string
   /** With --share-test: leave the assistant in the meeting when the test ends. */
   keep?: true
+  /** A presentation script (<deck>.script.md): the assistant presents its prepared deck in this meeting (docs/presenting.md). */
+  slidesFile?: string
+  /** With --slides: the slide (PDF page) to start from. */
+  from?: number
 }
 
 /** Options that take a value, as --name <value> or --name=<value>, and the field each one fills. */
-const VALUE_OPTIONS = { '--brief': 'briefFile', '--json': 'jsonFile' } as const satisfies Record<string, keyof JoinArgs>
+const VALUE_OPTIONS = { '--brief': 'briefFile', '--json': 'jsonFile', '--slides': 'slidesFile' } as const satisfies Record<string, keyof JoinArgs>
 /** Options that take none, and the field each one sets. */
 const FLAG_OPTIONS = { '--speaker-probe': 'speakerProbe', '--share-test': 'shareTest', '--keep': 'keep' } as const satisfies Record<string, keyof JoinArgs>
 
@@ -43,6 +48,13 @@ export function joinArgs(argv: readonly string[]): JoinArgs | { problem: string 
       options[flag] = true
       continue
     }
+    if (name === '--from') {
+      const value = eq < 0 ? argv[++i] : arg.slice(eq + 1)
+      if (!value || !/^\d{1,3}$/.test(value) || Number(value) < 1 || Number(value) > 100) return { problem: '--from needs a slide number from 1 to 100 after it.' }
+      if (options.from !== undefined) return { problem: 'Give --from once.' }
+      options.from = Number(value)
+      continue
+    }
     if (!Object.hasOwn(VALUE_OPTIONS, name)) return { problem: `Unknown option ${name}.` }
     const field = VALUE_OPTIONS[name as keyof typeof VALUE_OPTIONS]
     const value = eq < 0 ? argv[++i] : arg.slice(eq + 1)
@@ -56,5 +68,8 @@ export function joinArgs(argv: readonly string[]): JoinArgs | { problem: string 
   for (const [name, field] of [['--json', 'jsonFile'], ['--keep', 'keep']] as const) {
     if (options[field] !== undefined && !options.shareTest) return { problem: `${name} goes with --share-test.` }
   }
+  // The share test shares a page of its own: a meeting presents slides, or runs the test.
+  if (options.slidesFile !== undefined && options.shareTest) return { problem: 'Use --share-test or --slides, not both.' }
+  if (options.from !== undefined && options.slidesFile === undefined) return { problem: '--from goes with --slides.' }
   return { meetingUrl: links[0], ...options }
 }
