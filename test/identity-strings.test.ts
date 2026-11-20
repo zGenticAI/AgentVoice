@@ -100,7 +100,7 @@ test('the prompts and tool texts say the names they are given, and the hand-off 
   const tool = askTool(PRIYA)
   assert.equal(tool.name, 'ask_owner_session')
   assert.equal(ASK_TOOL_NAME, 'ask_owner_session')
-  assert.match(tool.description ?? '', /^Hand a question to Priya's live Claude Code session, which knows Priya's current work/)
+  assert.match(tool.description ?? '', /^Hand a question to Priya's live coding session, which knows Priya's current work/)
   assert.match(tool.description ?? '', /Nova says it is checking\.$/)
   const minutes = minutesSystem(PRIYA)
   assert.match(minutes, /^You write the minutes of a meeting for Priya Example, from the transcript that Nova, Priya's AI meeting assistant, made of it\./)

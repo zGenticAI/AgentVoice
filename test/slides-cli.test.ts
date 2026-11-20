@@ -74,7 +74,7 @@ test('from a PDF to a checked script: prepare, write, check; prepare again after
     'Script: Q4 roadmap.script.md (new): 3 sections to write (TODO).',
     '  page 3 is not 16:9, so it is shown with bars at its sides or above and below.',
     `Contact sheet: data/decks/${id}/sheet.html`,
-    'Next: write the sections (or ask your Claude Code session to draft them), then',
+    'Next: write the sections (or ask your coding session (Claude Code, Codex or OpenCode) to draft them), then',
     "  npm run slides -- check 'Q4 roadmap.script.md'",
   ])
   assert.equal(fs.statSync(scriptFile).mode & 0o777, 0o600)

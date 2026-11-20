@@ -40,7 +40,7 @@ export function ensureLocalToken(dataDir: string): string {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 })
   fs.writeFileSync(file, `${token}\n`, { mode: 0o600 })
   fs.chmodSync(file, 0o600) // mode applies only when the file is created
-  console.log(`[security] made the local token for the join CLI and the Claude Code channel: ${file}`)
+  console.log(`[security] made the local token for the join CLI and the zoom-meeting channel: ${file}`)
   return token
 }
 

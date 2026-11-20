@@ -1,5 +1,5 @@
 // The assistant's fast tier: a short, streamed Claude reply for each question addressed to it.
-// Questions that need the owner's work context are handed to the owner's Claude Code session instead.
+// Questions that need the owner's work context are handed to the owner's coding session instead.
 import Anthropic from '@anthropic-ai/sdk'
 import { config } from '../config.ts'
 import { type Names, identity } from '../identity.ts'
@@ -74,7 +74,7 @@ export function askTool(id: Pick<Names, 'name' | 'owner'>): Anthropic.Tool {
   return {
     name: ASK_TOOL_NAME,
     description:
-      `Hand a question to ${owner}'s live Claude Code session, which knows ${owner}'s current work, repos and decisions. Use it only when neither the brief nor what ${owner}'s session added during this meeting can answer. ` +
+      `Hand a question to ${owner}'s live coding session, which knows ${owner}'s current work, repos and decisions. Use it only when neither the brief nor what ${owner}'s session added during this meeting can answer. ` +
       `Takes several seconds; ${name} says it is checking.`,
     input_schema: {
       type: 'object',

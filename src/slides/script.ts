@@ -588,7 +588,7 @@ export function scriptHelp(name: string, scriptPath: string): string {
   return `<!-- One section per slide, by PDF page number. ${name} says only the paragraphs, word for word. Write
      figures as they are spoken ("twelve dollars", not "$12").
      Comments like this one are for you: they are stripped before the script is sent, so the voice service and the
-     meeting never see them. Your Claude Code session does, if it reads this file.
+     meeting never see them. Your coding session (Claude Code, Codex or OpenCode) does, if it reads this file.
      Keys go directly under a heading, then a blank line before the spoken text:
        hold: 3s          extra seconds on the slide before speaking, for reading (0 to 30)
        pause: 5s         silence after the last sentence (0 to 60); a question there can be answered without the name

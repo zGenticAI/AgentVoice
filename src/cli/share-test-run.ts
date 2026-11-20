@@ -2,7 +2,7 @@
 // the assistant into a test meeting with the share test on, then, step by step, has the voice service share a test page
 // as the bot's screen, speak, change the page, replace the share and stop it, asking the owner what they saw and heard.
 // What it is for: whether the camera page, which carries the assistant's voice and hearing, ever drops or loads again
-// meanwhile. It prints a report to paste back to a Claude Code session.
+// meanwhile. It prints a report to paste back to a coding session.
 //
 // Everything outside (the voice service, the terminal, the clock) comes in through RunDeps, so the tests drive it all
 // against fakes. Every wait has a timeout. Ctrl-C, or any failure once the assistant has joined, stops the share if one

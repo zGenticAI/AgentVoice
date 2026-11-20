@@ -1,5 +1,5 @@
-// The voice service. Serves the agent page, carries its audio over /audio, accepts the Claude Code
-// channel on /bridge, and starts meeting bots through Recall.
+// The voice service. Serves the agent page, carries its audio over /audio, accepts the
+// zoom-meeting channel on /bridge, and starts meeting bots through Recall.
 //
 // Who may do what never depends on forwarding headers, which only some proxies add. Instead there are
 // separate listeners:
@@ -10,7 +10,7 @@
 //   While a meeting with slides is sharing them, also the slides page, its script and its link (src/slides/share.ts),
 //   with the share's id and token; while none is, they are not found, as any other path.
 // - control (a Unix socket in the data folder, CONTROL_SOCKET to put it elsewhere): /api/join for npm run join,
-//   /bridge for the Claude Code channel, the screen-share test's /api/share-test/ for npm run join --share-test, the
+//   /bridge for the zoom-meeting channel, the screen-share test's /api/share-test/ for npm run join --share-test, the
 //   slides' /api/slides for npm run slides -- status and control, and the detailed /health. No pages. Only you can
 //   open it, and no other user can take its place while the service is down, as one could with a port
 //   (src/control-socket.ts).
@@ -1530,7 +1530,7 @@ async function main(): Promise<void> {
   console.log(`  Public address:          ${config.publicUrl || '(not set)'}`)
   const link = [config.agentPageToken ? '' : 'AGENT_PAGE_TOKEN is not set.', publicUrlProblem(config.publicUrl)].filter(Boolean)
   if (link.length) console.warn(`[start] ${link.join(' ')} Until then, a meeting can't be joined.`)
-  console.log(`  This computer only:      ${config.controlSocket} (npm run join, the Claude Code channel)`)
+  console.log(`  This computer only:      ${config.controlSocket} (npm run join, the zoom-meeting channel)`)
   console.log(`  Details:                 curl --unix-socket ${shellPath(config.controlSocket)} http://localhost/health`)
 }
 

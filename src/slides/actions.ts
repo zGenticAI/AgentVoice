@@ -313,7 +313,7 @@ export async function runPrepare(given: PrepareInput): Promise<Outcome> {
   refreshSheet(store, manifest, checked, scriptName)
   lines.push(`Contact sheet: ${shown(path.join(store.folder(manifest.id), 'sheet.html'), input.cwd)}`)
   if (!wrote) return { lines, code: 1 }
-  lines.push('Next: write the sections (or ask your Claude Code session to draft them), then')
+  lines.push('Next: write the sections (or ask your coding session (Claude Code, Codex or OpenCode) to draft them), then')
   lines.push(`  npm run slides -- check ${shellArg(shown(scriptFile, input.cwd))}`)
   return { lines, code: 0 }
 }

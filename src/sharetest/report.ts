@@ -1,10 +1,10 @@
-// The screen-share test's report, made to be pasted back to a Claude Code session: the verdict, the camera page in each
+// The screen-share test's report, made to be pasted back to a coding session: the verdict, the camera page in each
 // step (the decisive result), each step with its timings and answers, and what the test page measured in the bot's
 // browser. Pure: the driver (src/cli/share-test-run.ts) gathers the records, and scrubs everything before it is printed.
 import { PLATFORM_NAMES, type Platform } from '../recall.ts'
 import type { PageHello } from './protocol.ts'
 
-export const REPORT_END = 'Paste this whole report back to your Claude Code session.'
+export const REPORT_END = 'Paste this whole report back to your coding session (Claude Code, Codex or OpenCode).'
 
 export const STEP_IDS = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9'] as const
 export type StepId = (typeof STEP_IDS)[number]
