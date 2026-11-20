@@ -241,7 +241,7 @@ Anyone who says the name may start, pause, carry on, move between the slides you
 | A question by name ("Alex, what does the Business plan cost?") | It stops at that sentence, answers in a few sentences, then says "Back to <title>." and the sentence again. |
 | Talking over it, not to it | It stops at that sentence. Once the room is quiet: "Shall I carry on?"; yes, or silence, carries on with that sentence; "no" or "wait" waits for "carry on". |
 
-Slide commands are never questions: they are not in the minutes' "Asked of Alex", nor sent to your session. "Next slide" without the name, "Next slide, Alex" (the name last), "Alex stopped at slide four" and "Alex, go back to the pricing and tell me the cost" (a question) are not commands. "Go to slide 5" before the presentation has started is not one either: start it first.
+Slide commands are never questions: they are not in the minutes' "Asked of Alex", nor sent to your session. "Next slide" without the name, "Next slide, Alex" (the name last), "Alex stopped at slide four" and "Alex, go back to the pricing and tell me the cost" (a question) are not commands. "Go to slide 5" before the presentation has started is not one either: start it first. Without the name, a command is read only just after one of Alex's own slide questions ("Shall I carry on?", or a slide's `pause:` question), or after someone says just "Alex?": "Go ahead." in reply to an answer that ended on a question is a reply to Alex, and is answered.
 
 ### What you can do
 

@@ -181,6 +181,8 @@ interface Options {
   latency?: number
   /** The same, for one line: it streams live, so it can be talked over while it still goes out. */
   delay?: Record<string, number>
+  /** The meeting's slides, when not the test deck's. */
+  deck?: PresenterSlide[]
 }
 
 function start(opts: Options = {}) {
@@ -197,7 +199,7 @@ function start(opts: Options = {}) {
   const notified: ToSession[] = []
   const events: PresentationEvent[] = []
   const slides: SessionSlides | undefined =
-    opts.slides === false ? undefined : { surface, slides: SLIDES, platform: 'zoom', from: opts.from, title: 'Q4 plan', timing: { ...FAST, ...opts.timing } }
+    opts.slides === false ? undefined : { surface, slides: opts.deck ?? SLIDES, platform: 'zoom', from: opts.from, title: 'Q4 plan', timing: { ...FAST, ...opts.timing } }
   const session = new MeetingSession(ws as any, { meetingKey: `presenter-${process.pid}-${++meetings}`, botId: `bot-${meetings}` }, {
     brain: {
       async *respond(i: { latest: string }) {
@@ -1141,6 +1143,53 @@ test('narration never opens a reply window by itself: a rhetorical "?" without p
   await wait(30)
   s.said('What about the enterprise plan?')
   await wait(100)
+  assert.deepEqual(s.answered, [])
+  done(s)
+})
+
+test("a reply to an answer that ended on a question is answered, never read as a slide command: in questions, and mid-deck", async () => {
+  // In questions after the last slide.
+  const offer = 'Business is twenty-nine dollars a user. Would you like to hear what it includes?'
+  const qa = start({ answers: [[{ kind: 'say', text: offer }], [{ kind: 'say', text: 'It includes single sign-on.' }]] })
+  await narrating(qa)
+  await until(() => qa.presenter.current === 'qa', 'questions', 5000)
+  qa.said('Alex, what does the Business plan cost?')
+  await until(() => qa.spoken.includes(offer))
+  await wait(30)
+  qa.said('Go ahead.')
+  await until(() => qa.spoken.includes('It includes single sign-on.'), 'the second answer')
+  assert.deepEqual(qa.answered, ['Alex, what does the Business plan cost?', 'Go ahead.'])
+  const why = qa.session.whyNotAnswered(5).lines!.find(l => l.line === 'Go ahead.')!
+  assert.deepEqual([why.read, why.did], ['reply', 'answered'])
+  done(qa)
+  // Mid-deck: the reply is answered too, and then "Back to <title>.".
+  const s = start({ voice: LONG, answers: [[{ kind: 'say', text: 'It is per user. Shall I go into the discounts?' }], [{ kind: 'say', text: 'Ten percent off for a year.' }]] })
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  await wait(300)
+  s.flux.turn('StartOfTurn', '')
+  s.flux.turn('EndOfTurn', 'Alex, is that per month?')
+  await until(() => s.spoken.includes('It is per user. Shall I go into the discounts?'))
+  await wait(30)
+  s.said('Go on.')
+  await until(() => s.spoken.includes('Back to Pricing.'), 'back to the slide')
+  assert.deepEqual(s.answered, ['Alex, is that per month?', 'Go on.'])
+  assert.equal(s.next('Ten percent off for a year.'), 'Back to Pricing.')
+  done(s)
+})
+
+test('without the name, a slide command is read in a window the slides opened (a pause: slide), and after a call', async () => {
+  const deck = SLIDES.map(x => (x.page === 2 ? { ...x, pause: 2 } : x))
+  const s = start({ deck })
+  await narrating(s)
+  await until(() => s.spoken.includes('Any questions so far?'))
+  await until(() => (s.session as any).awaitingUntil > Date.now(), 'the pause window, once the question has played')
+  s.said('Next slide.')
+  await until(() => s.spoken.includes('We ship in March.'), 'the next slide at once, not after the pause', 1000)
+  await until(() => s.presenter.current === 'qa', 'questions')
+  s.said('Alex?')
+  s.said('Go to slide 1.')
+  await until(() => s.spoken.includes("Here's slide 1."), 'a command after a call')
   assert.deepEqual(s.answered, [])
   done(s)
 })

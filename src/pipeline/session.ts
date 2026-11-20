@@ -324,6 +324,9 @@ export class MeetingSession {
   // Which window awaitingUntil is for: the reply to a question Alex ended on, or the line after a call. Only for
   // why_not_answered.
   private windowKind: 'reply' | 'called' = 'called'
+  // The window open is one the slides opened (their own questions, a pause: slide): only there, and after a call, is a
+  // slide command read without the name. Never in the reply window of an answer: "Go ahead." there is a reply to Alex.
+  private slidesWindow = false
   // While Alex says the consent line: it is said in full, whoever talks meanwhile, and a question asked
   // during it is answered once it is over. Only leaving, removal or the end of the session stop it. Null
   // once it has all gone out to the page.
@@ -732,6 +735,7 @@ export class MeetingSession {
         this.calledDuringConsent = false
         this.awaitingUntil = Math.max(Date.now(), this.consentPlaysUntil) + (this.deps.calledWindowMs ?? CALLED_WINDOW_MS)
         this.windowKind = 'called'
+        this.slidesWindow = false
       }
     })
     this.greeting = greeting
@@ -863,6 +867,7 @@ export class MeetingSession {
     // The window this line finds, open or not, for why_not_answered: a line that isn't filler closes it, so one that
     // is set and not open has run out.
     const window = this.awaitingUntil ? { kind: this.windowKind, until: this.awaitingUntil } : null
+    const slidesWindow = this.slidesWindow
     // A request to leave, by name; or in an open window, where a line goes to Alex without it, a plain
     // "Please leave the meeting."
     if (isLeaveRequest(text) || (awaiting && isLeaveReply(text))) {
@@ -906,13 +911,17 @@ export class MeetingSession {
     // In a meeting with slides only: a slide command ("Alex, next slide"), or the answer to the presenter's own question.
     // Never a question for Alex, so never in the questions the meeting asked. A filler is never one, and leaves the
     // presenter's window open, as it leaves the session's: "Hmm." then silence after "Shall I carry on?" is still a yes.
-    const command = filler ? null : (this.presenter?.hear(text, { awaiting }) ?? null)
+    // Without the name, only in a window the slides opened or after a call: in an answer's reply window, "Go ahead." is
+    // the reply to Alex's question, as in a meeting without slides.
+    const nameless = awaiting && (slidesWindow || window?.kind === 'called')
+    const command = filler ? null : (this.presenter?.hear(text, { awaiting: nameless }) ?? null)
     if (command) return void verdict('slides', 'slide_command', command)
     const how = attention(text)
     const addressed = how === 'asked' || awaiting
     if (!addressed && how === 'called') {
       this.awaitingUntil = Date.now() + (this.deps.calledWindowMs ?? CALLED_WINDOW_MS)
       this.windowKind = 'called'
+      this.slidesWindow = false
       this.calledDuringConsent = this.greeting !== null
     }
     // Not for Alex: with its verdict.
@@ -947,6 +956,7 @@ export class MeetingSession {
       if (!signal.aborted && endsOnQuestion(this.lastSaid)) {
         this.awaitingUntil = Date.now() + (this.deps.replyWindowMs ?? REPLY_WINDOW_MS)
         this.windowKind = 'reply'
+        this.slidesWindow = false
       }
     })
   }
@@ -1146,6 +1156,7 @@ export class MeetingSession {
       openWindow: ms => {
         this.awaitingUntil = Date.now() + ms
         this.windowKind = 'reply'
+        this.slidesWindow = true
       },
       // Only while no line has closed it: the presenter's own window is then the one open.
       closeWindow: () => void (this.awaitingUntil = 0),
