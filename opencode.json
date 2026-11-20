@@ -94,7 +94,8 @@
     {"action": "tool.use", "resource": "read:*/.codex/auth.json", "effect": "deny"},
     {"action": "tool.use", "resource": "read:*/.local/state/opencode", "effect": "deny"},
     {"action": "tool.use", "resource": "read:*/.local/state/opencode/*", "effect": "deny"},
-    {"action": "tool.use", "resource": "read:*/.local/share/opencode", "effect": "deny"},
-    {"action": "tool.use", "resource": "read:*/.local/share/opencode/*", "effect": "deny"}
+    {"action": "tool.use", "resource": "read:*/.local/share/opencode/opencode*.db*", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.local/share/opencode/auth.json", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.local/share/opencode/mcp-auth.json", "effect": "deny"}
   ]
 }

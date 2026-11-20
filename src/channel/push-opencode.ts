@@ -330,17 +330,28 @@ export interface OpenCodePushSink extends PushSink {
  *   built-in General agent has every tool the session has) is never taken: events go on to the owner's own session.
  * - What always asks: the committed opencode.json makes join_meeting, set_brief, slides_control and npm run slides ask
  *   every time. OpenCode lets "Allow always" lift that for the whole project; while it is lifted, nothing is posted,
- *   so meeting text put into the session can't run one of them with nobody asked.
+ *   so meeting text put into the session can't run one of them with nobody asked. The project's saved approvals are
+ *   read at each owner-only call and before each post: "Allow always" for npm run slides is chosen at a shell call,
+ *   which the channel never sees.
  *
- * A failed post reads the registration again, once, and checks and tries the service it names if that is another.
+ * A failed post reads the registration again, once, and checks and tries the service it names if that is another. If
+ * none answers, the sink still says it can push while the service it ran in is alive, and looks for it again, checked
+ * the same way, before the next post: a service that was busy for a moment is posted to again without waiting for an
+ * owner-only call.
  */
 export function openCodeSink(options: OpenCodeSinkOptions = {}): OpenCodePushSink {
   const file = options.file === undefined ? serviceFile() : options.file
   const timeoutMs = options.timeoutMs ?? POST_TIMEOUT_MS
   const log = options.log ?? ((line: string) => console.error(line))
   const ancestor = options.ancestor ?? isAncestor
+  // The service found and checked, while it answers.
   let known: OpenCodeService | null = null
+  // The service this channel was last found to run in: kept when a post and the check after it get no answer, so the
+  // next post looks for it again. Gone once it has stopped.
+  let ranIn: OpenCodeService | null = null
   let owner: string | null = null
+  // The owner's session's project: OpenCode keeps saved approvals by project.
+  let project: string | null = null
   // What always asks that the project's saved approvals let run without asking (empty while none do).
   let lifted: string[] = []
   // Owner-only calls in the order they came, and the latest whose check has been applied.
@@ -392,6 +403,7 @@ export function openCodeSink(options: OpenCodeSinkOptions = {}): OpenCodePushSin
     }
     lastProblem = ''
     known = service
+    ranIn = service
     return service
   }
 
@@ -401,12 +413,28 @@ export function openCodeSink(options: OpenCodeSinkOptions = {}): OpenCodePushSin
    * service: it is never posted to again.
    */
   const stillOurs = (): OpenCodeService | null => {
-    if (!known) return null
-    if (known.pid !== undefined && ancestor(known.pid) === true) return known
+    if (!ranIn) return null
+    if (ranIn.pid !== undefined && ancestor(ranIn.pid) === true) return known
     known = null
+    ranIn = null
     say("The OpenCode service this channel ran in has stopped: nothing is posted until the service it runs in is found again")
     return null
   }
+
+  /** The approvals saved for the project lift something that always asks: nothing is posted until they are removed. */
+  const liftedBy = (now: { named: string[]; ids: string[] }, where: string) => {
+    lifted = now.named
+    // OpenCode lists saved approvals only by project: the line gives the commands that remove these.
+    const remove = now.ids.length
+      ? now.ids.map(id => `opencode api permission.saved.remove --param id=${id}`).join('; ')
+      : `opencode api permission.saved.list --param projectID=${where} lists them`
+    say(
+      `OpenCode has saved "Allow always" for ${lifted.join(', ')} in this project, which the committed opencode.json makes ask ` +
+        "every time: so that meeting text can't make your session do that with nobody asked, nothing is posted into it until " +
+        `you remove that approval (${remove}), then use join_meeting, set_brief, slides_status, slides_control or why_not_answered again`,
+    )
+  }
+  const savedPath = (where: string) => `/api/permission/saved?projectID=${encodeURIComponent(where)}`
 
   /**
    * Whether the session has no parent (root) or is a subagent's, and its project (OpenCode keeps saved approvals by
@@ -427,7 +455,12 @@ export function openCodeSink(options: OpenCodeSinkOptions = {}): OpenCodePushSin
   }
 
   return {
-    canPush: () => owner !== null && lifted.length === 0 && stillOurs() !== null,
+    canPush: () => {
+      if (owner === null || lifted.length) return false
+      // While the service it ran in is alive, a push can be tried: push() finds and checks it again if it has to.
+      stillOurs()
+      return ranIn !== null
+    },
 
     async ownerCalled(session: string) {
       const turn = ++calls
@@ -442,45 +475,51 @@ export function openCodeSink(options: OpenCodeSinkOptions = {}): OpenCodePushSin
         return
       }
       // What the project's saved approvals lift, checked at every owner-only call: "Allow always" is chosen at one.
-      const saved = await call(service, 'GET', `/api/permission/saved?projectID=${encodeURIComponent(found.project)}`, timeoutMs)
+      const saved = await call(service, 'GET', savedPath(found.project), timeoutMs)
       const now = saved.ok ? savedLifts(record(saved.body)?.data) : null
       // A later call has been settled already: it stands.
       if (turn < applied) return
       applied = turn
       owner = session
+      project = found.project
       if (now === null) {
         lifted = ['(unknown)']
         say(`Could not check OpenCode's saved approvals (${saved.ok ? 'an answer it could not read' : saved.why}): nothing is posted into your session`)
         return
       }
       lifted = now.named
-      if (lifted.length) {
-        // OpenCode lists saved approvals only by project: the line gives the commands that remove these.
-        const remove = now.ids.length
-          ? now.ids.map(id => `opencode api permission.saved.remove --param id=${id}`).join('; ')
-          : `opencode api permission.saved.list --param projectID=${found.project} lists them`
-        say(
-          `OpenCode has saved "Allow always" for ${lifted.join(', ')} in this project, which the committed opencode.json makes ask ` +
-            "every time: so that meeting text can't make your session do that with nobody asked, nothing is posted into it until " +
-            `you remove that approval (${remove}), then use join_meeting, set_brief, slides_status, slides_control or why_not_answered again`,
-        )
-      } else lastProblem = ''
+      if (lifted.length) liftedBy(now, found.project)
+      else lastProblem = ''
     },
 
     async push(event: ChannelEvent) {
       const session = owner
-      if (!session || lifted.length) return false
+      const where = project
+      if (!session || !where || lifted.length) return false
       // Checked again before each post: the password goes only to the service this channel still runs in.
       const service = stillOurs() ?? (await find())
       if (!service) return false
-      const text = plainEvent(event)
-      const steer = { text, delivery: 'steer' }
+      const steer = { text: plainEvent(event), delivery: 'steer' }
       const path = `/api/session/${encodeURIComponent(session)}/synthetic`
-      let outcome = await call(service, 'POST', path, timeoutMs, steer)
-      if (!outcome.ok) {
-        const again = await find()
-        if (again && !sameService(again, service)) outcome = await call(again, 'POST', path, timeoutMs, steer)
+      // The project's saved approvals, read again before the post: one saved since the last owner-only call (at a shell
+      // call, for npm run slides) stops it. null: one is saved, and nothing is posted.
+      const deliver = async (to: OpenCodeService): Promise<Answer | null> => {
+        const saved = await call(to, 'GET', savedPath(where), timeoutMs)
+        if (!saved.ok) return saved
+        const now = savedLifts(record(saved.body)?.data)
+        if (now === null) return { ok: false, why: "its saved approvals could not be read" }
+        if (now.named.length) {
+          liftedBy(now, where)
+          return null
+        }
+        return call(to, 'POST', path, timeoutMs, steer)
       }
+      let outcome = await deliver(service)
+      if (outcome && !outcome.ok) {
+        const again = await find()
+        if (again && !sameService(again, service)) outcome = await deliver(again)
+      }
+      if (!outcome) return false
       // What failed, never what the event said, the password or the URL.
       if (!outcome.ok) log(`[zoom-meeting] Could not post a ${event.kind} event to the OpenCode session: ${outcome.why}.`)
       return outcome.ok

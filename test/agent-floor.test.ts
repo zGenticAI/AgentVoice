@@ -169,3 +169,24 @@ test("Codex's and OpenCode's floors also keep the coding clients' own credential
     assert.ok(!openCodeDenies(p), `OpenCode: ${p}`)
   }
 })
+
+test("OpenCode's floor denies its stored keys, not the output it saves for the session to read back", () => {
+  // OpenCode 2.3.2 keeps its keys in its database (opencode.db, with its -wal and -shm; another name for another
+  // channel, and opencode-next.db) and, from older versions, in auth.json and mcp-auth.json. In the same folder it saves
+  // the whole output of a long tool result (tool-output/) and of every shell command (shell/<project>/), and tells the
+  // model to read that file: "full output saved to ...".
+  for (const name of ['opencode.db', 'opencode.db-wal', 'opencode.db-shm', 'opencode-beta.db', 'opencode-next.db', 'auth.json', 'mcp-auth.json']) {
+    assert.ok(openCodeDenies(`~/.local/share/opencode/${name}`), name)
+  }
+  for (const p of [
+    '~/.local/share/opencode/tool-output/tool_0123abc',
+    '~/.local/share/opencode/shell/prj_0123abc/sh_0123abc.out',
+    '~/.local/share/opencode/shell',
+    '~/.local/share/opencode',
+  ]) {
+    assert.ok(!openCodeDenies(p), p)
+  }
+  // Codex denies the whole folder: its commands never need OpenCode's output, and its profile can't name files there by
+  // pattern.
+  assert.ok(codexDenies('~/.local/share/opencode/tool-output/tool_0123abc'))
+})

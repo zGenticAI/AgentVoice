@@ -22,13 +22,14 @@ const QUESTION: ChannelEvent = {
 
 /**
  * A fake OpenCode service on 127.0.0.1: what it was sent, and how it answers. It says it is process `pid` at /api/info,
- * that a session has a parent if `parents` names one, and lists `saved` as the project's saved approvals. answer: the
- * status for a synthetic post (null: never answers).
+ * that a session has a parent if `parents` names one, and lists `saved` as the project's saved approvals (as they are
+ * when asked: a test may change the list). answer: the status for a synthetic post (null: never answers). While `busy`
+ * says so, it answers nothing at all.
  */
 async function fakeOpenCode(
   t: { after: (fn: () => unknown) => void },
   answer: (req: http.IncomingMessage) => number | null = () => 200,
-  o: { pid?: number; parents?: Record<string, string>; saved?: object[] } = {},
+  o: { pid?: number; parents?: Record<string, string>; saved?: object[]; savedStatus?: () => number; busy?: () => boolean } = {},
 ) {
   const got: { method?: string; url?: string; headers: http.IncomingHttpHeaders; body: string }[] = []
   const server = http.createServer((req, res) => {
@@ -36,6 +37,7 @@ async function fakeOpenCode(
     req.on('data', chunk => (body += chunk))
     req.on('end', () => {
       got.push({ method: req.method, url: req.url, headers: req.headers, body })
+      if (o.busy?.()) return // never answers
       const json = (status: number, value: unknown) => {
         res.writeHead(status, { 'content-type': 'application/json' })
         res.end(JSON.stringify(value))
@@ -43,7 +45,10 @@ async function fakeOpenCode(
       const session = /^\/api\/session\/([^/?]+)$/.exec(req.url ?? '')?.[1]
       if (req.method === 'GET' && req.url === '/api/info') return json(200, { version: '2.3.2', pid: o.pid ?? 1, urls: [], paths: { tmp: '/tmp' } })
       if (req.method === 'GET' && session) return json(200, { data: { id: session, projectID: 'prj_1', ...(o.parents?.[session] ? { parentID: o.parents[session] } : {}) } })
-      if (req.method === 'GET' && req.url === '/api/permission/saved?projectID=prj_1') return json(200, { data: o.saved ?? [] })
+      if (req.method === 'GET' && req.url === '/api/permission/saved?projectID=prj_1') {
+        const status = o.savedStatus?.() ?? 200
+        return json(status, status === 200 ? { data: o.saved ?? [] } : { error: 'x' })
+      }
       const status = answer(req)
       if (status === null) return // never answers
       json(status, status === 200 ? { data: { id: 'msg_1' } } : { error: 'x' })
@@ -389,14 +394,20 @@ test('after a failed post the registration is read again, once, and checked: a r
   const old = await fakeOpenCode(t, () => 200, { pid: 1 })
   register({ id: 'svc-old', url: old.url, pid: 1, password: 'old-password' })
   const logged: string[] = []
-  const sink = openCodeSink({ file, ancestor: ANY_PID, log: line => void logged.push(line) })
+  // Each service started this channel, until it is said to have stopped.
+  const stopped = new Set<number>()
+  const sink = openCodeSink({ file, ancestor: pid => !stopped.has(pid), log: line => void logged.push(line) })
   await sink.ownerCalled('ses_owner1')
   assert.equal(sink.canPush(), true) // found, and kept
   await old.close() // the service restarts on another port, with another password
   const restarted = await fakeOpenCode(t, () => 200, { pid: 2 })
   register({ id: 'svc-new', url: restarted.url, pid: 2, password: PASSWORD })
   assert.equal(await sink.push(QUESTION), true)
-  assert.deepEqual(restarted.got.map(r => `${r.method} ${r.url}`), ['GET /api/info', 'POST /api/session/ses_owner1/synthetic'], 'checked, then posted to')
+  assert.deepEqual(
+    restarted.got.map(r => `${r.method} ${r.url}`),
+    ['GET /api/info', 'GET /api/permission/saved?projectID=prj_1', 'POST /api/session/ses_owner1/synthetic'],
+    'checked, then posted to',
+  )
   assert.equal(restarted.posts()[0].headers.authorization, basic(PASSWORD))
   assert.deepEqual(logged, [])
 
@@ -417,14 +428,105 @@ test('after a failed post the registration is read again, once, and checked: a r
   register({ id: 'svc-4', url: stranger.url, pid: 4, password: 'fourth-password' })
   assert.equal(await picky.push(QUESTION), false, 'the third still refuses, and the fourth is not taken')
   assert.equal(stranger.got.length, 0, 'nothing sent to it')
-  assert.equal(picky.canPush(), false)
+  // The service it runs in is alive: each later push looks for it again, and the fourth is still sent nothing.
+  assert.equal(picky.canPush(), true)
+  assert.equal(await picky.push(QUESTION), false)
+  assert.equal(stranger.got.length, 0, 'nothing sent to it')
 
   // The service is gone and its registration with it: the sink can't push until one is back.
+  stopped.add(3)
   fs.rmSync(file)
   await third.close()
   await stranger.close()
   assert.equal(await sink.push(QUESTION), false)
   assert.equal(sink.canPush(), false)
+})
+
+test('a service that stops answering for a while is posted to again once it answers, with no owner-only call in between', async t => {
+  // A post fails, and the service doesn't say who it is either (it is busy, or restarting): the sink keeps the owner's
+  // session, says it can still try, and looks for the service again before the next post.
+  const { file, register } = stateDir(t)
+  let busy = false
+  const service = await fakeOpenCode(t, () => 200, { busy: () => busy })
+  register({ url: service.url, pid: 1, password: PASSWORD })
+  const logged: string[] = []
+  // The service, process 1, started this channel until it stops.
+  let stopped = false
+  const sink = openCodeSink({ file, ancestor: pid => pid === 1 && !stopped, timeoutMs: 300, log: line => void logged.push(line) })
+  await sink.ownerCalled('ses_owner')
+  assert.equal(await sink.push(QUESTION), true)
+  busy = true
+  assert.equal(await sink.push(QUESTION), false)
+  assert.equal(sink.canPush(), true, 'it tries again at the next question, rather than say no_taker until an owner-only call')
+  assert.equal(await sink.push(QUESTION), false, 'still busy: not posted')
+  busy = false
+  const before = service.got.length
+  assert.equal(sink.canPush(), true)
+  assert.equal(await sink.push(QUESTION), true)
+  assert.deepEqual(
+    service.got.slice(before).map(r => `${r.method} ${r.url}`),
+    ['GET /api/info', 'GET /api/permission/saved?projectID=prj_1', 'POST /api/session/ses_owner/synthetic'],
+    'who it is first, then the post',
+  )
+  assert.equal(sink.canPush(), true)
+  assert.match(logged.join('\n'), /did not say who it is \(no answer within 300 ms\)/)
+
+  // While it is lost, a registration for a service this channel doesn't run in is never sent anything; and once the
+  // service it ran in has stopped, the sink says at once that it can't push.
+  busy = true
+  assert.equal(await sink.push(QUESTION), false)
+  const stranger = await fakeOpenCode(t, () => 200, { pid: 7 })
+  register({ url: stranger.url, pid: 7, password: 'another-password' })
+  assert.equal(sink.canPush(), true)
+  assert.equal(await sink.push(QUESTION), false)
+  assert.equal(stranger.got.length, 0, 'nothing sent to it')
+  stopped = true
+  assert.equal(sink.canPush(), false, 'the voice service is told at once')
+  assert.match(logged.at(-1)!, /The OpenCode service this channel ran in has stopped/)
+  assert.equal(await sink.push(QUESTION), false)
+  assert.equal(stranger.got.length, 0)
+})
+
+test('an "Allow always" saved after the last owner-only call is seen before the next post: nothing is posted while it is saved', async t => {
+  // "Allow always" for npm run slides is chosen at a shell call, which the channel never sees.
+  const { file, register } = stateDir(t)
+  const saved: object[] = []
+  const service = await fakeOpenCode(t, () => 200, { saved })
+  register({ url: service.url, pid: 1, password: PASSWORD })
+  const logged: string[] = []
+  const sink = openCodeSink({ file, ancestor: ANY_PID, log: line => void logged.push(line) })
+  await sink.ownerCalled('ses_owner')
+  assert.equal(await sink.push(QUESTION), true)
+  assert.equal(service.posts().length, 1)
+  saved.push({ id: 'psv_7', projectID: 'prj_1', action: 'shell', resource: 'npm run slides *' })
+  assert.equal(sink.canPush(), true, 'not known yet')
+  assert.equal(await sink.push(QUESTION), false)
+  assert.equal(service.posts().length, 1, 'not posted')
+  assert.equal(service.got.at(-1)?.url, '/api/permission/saved?projectID=prj_1', 'checked before the post')
+  assert.equal(sink.canPush(), false, 'the voice service is told')
+  assert.equal(await sink.push({ kind: 'meeting_ended', meeting: 'k1', content: 'The meeting has ended.' }), false)
+  assert.equal(service.posts().length, 1)
+  assert.match(logged.at(-1)!, /OpenCode has saved "Allow always" for npm run slides in this project, .*opencode api permission\.saved\.remove --param id=psv_7/)
+  // Removed, and an owner-only call: posted again.
+  saved.length = 0
+  await sink.ownerCalled('ses_owner')
+  assert.equal(sink.canPush(), true)
+  assert.equal(await sink.push(QUESTION), true)
+  // Saved approvals that can't be read before a post: that post isn't made, and the next one checks again.
+  let savedStatus = 200
+  const unsure = await fakeOpenCode(t, () => 200, { savedStatus: () => savedStatus })
+  register({ url: unsure.url, pid: 1, password: PASSWORD })
+  const careful: string[] = []
+  const checking = openCodeSink({ file, ancestor: ANY_PID, log: line => void careful.push(line) })
+  await checking.ownerCalled('ses_owner')
+  savedStatus = 500
+  assert.equal(await checking.push(QUESTION), false)
+  assert.equal(unsure.posts().length, 0)
+  assert.deepEqual(careful, ['[zoom-meeting] Could not post a question event to the OpenCode session: HTTP 500.'])
+  savedStatus = 200
+  assert.equal(checking.canPush(), true)
+  assert.equal(await checking.push(QUESTION), true)
+  assert.equal(unsure.posts().length, 1)
 })
 
 test('a service that does not answer is given up on after a short time', async t => {
