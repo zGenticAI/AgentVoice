@@ -117,6 +117,10 @@ const CALLED_WINDOW_MS = 10_000
 // When the owner's session takes longer than this to answer, Alex says it is still checking, so the meeting
 // doesn't think it forgot the question.
 const PROGRESS_AFTER_MS = 15_000
+// A session that can take questions only through its meeting-assistant (Codex; OpenCode before its channel knows the
+// owner's session) says within milliseconds that nobody there is taking them. Alex gives it this long before saying it
+// is checking, so it then says at once that it can't reach the owner's notes, rather than first that it is checking.
+const NO_TAKER_WAIT_MS = 200
 // A question handed to the owner's session carries the meeting so far, not just its last minutes, so the
 // meeting-assistant has the full context for a deep dive: about an hour of speech.
 export const HANDOFF_CONTEXT_CHARS = 60_000
@@ -1040,11 +1044,16 @@ export class MeetingSession {
           signal,
           why => (gaveUp = why),
         )
+        // Only when no linked session can be sent the question (never with Claude Code, which always can): a
+        // session that can't take it says so within milliseconds, and Alex then says only that it can't reach the notes.
+        if (this.deps.bridge.pullOnly?.()) await this.settledWithin(asking, NO_TAKER_WAIT_MS)
         // A checking line that fails to play (ElevenLabs busy, the line not kept yet) must not lose the answer
         // already on its way: Alex goes on waiting for it.
-        await this.say(CHECKING_LINES[this.handoffs++ % CHECKING_LINES.length], signal).catch(err => {
-          if (!signal.aborted) console.error('[turn] could not say the checking line:', (err as Error).message)
-        })
+        if (gaveUp !== 'no_taker') {
+          await this.say(CHECKING_LINES[this.handoffs++ % CHECKING_LINES.length], signal).catch(err => {
+            if (!signal.aborted) console.error('[turn] could not say the checking line:', (err as Error).message)
+          })
+        }
         const answer = await this.waitForAnswer(asking, signal)
         // An answer that came before the turn stopped (it was cut off while saying "still checking", say) is
         // kept here, though it is not said. One that comes after never reaches here: the bridge gave the
@@ -1344,6 +1353,13 @@ export class MeetingSession {
     this.stopSentAt = this.clock()
     this.playback.stop()
     this.alexStopped()
+  }
+
+  /** Waits until the promise settles, or ms have passed, whichever is first. */
+  private async settledWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([promise, new Promise<void>(resolve => (timer = setTimeout(resolve, ms)))])
+    clearTimeout(timer)
   }
 
   /**

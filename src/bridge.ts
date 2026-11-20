@@ -284,6 +284,15 @@ export class SessionBridge {
     return this.links.some(isOpen)
   }
 
+  /**
+   * Whether a question asked now can be taken only by a meeting-assistant: sessions are linked, and none of them can be
+   * sent one (Codex's never can). Such a session says at once when none is taking questions (no_taker).
+   */
+  pullOnly(): boolean {
+    const open = this.links.filter(isOpen)
+    return open.length > 0 && open.every(l => !l.canPush)
+  }
+
   /** The session questions go to, or null when no linked session has claimed them. */
   private get active(): Link | null {
     const now = Date.now()

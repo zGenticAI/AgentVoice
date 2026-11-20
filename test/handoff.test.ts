@@ -279,3 +279,47 @@ for (const [what, moveOn, outcome] of movedOn) {
     s.session.transcript.delete()
   })
 }
+
+// --- A session that can only take questions through its meeting-assistant (Codex; OpenCode before it knows the owner's
+// session) ------------------------------------------------------------------------------------------------------------
+
+/** The real bridge, with one linked channel that can't be sent questions. taking: whether its meeting-assistant is. */
+function pullOnlyBridge(taking: boolean) {
+  const bridge = new SessionBridge({ ...sessionHandlers(new Set()), setBrief: () => {}, joinMeeting: async () => ({ note: '' }) })
+  const channel = new FakeSocket()
+  bridge.attach(channel as any)
+  channel.emit('message', Buffer.from(JSON.stringify({ type: 'hello', can_push: false })))
+  const questions: string[] = []
+  channel.send = (data: Buffer | string) => {
+    const msg = JSON.parse(String(data))
+    if (msg.type !== 'question') return
+    questions.push(msg.id)
+    // As the channel does: no meeting-assistant taking questions, and it can't be sent one, so it says so at once.
+    if (!taking) setImmediate(() => channel.emit('message', Buffer.from(JSON.stringify({ type: 'no_taker', id: msg.id }))))
+  }
+  const reply = (spoken: string) => channel.emit('message', Buffer.from(JSON.stringify({ type: 'reply', id: questions.at(-1), request_id: 'r1', spoken })))
+  return { bridge, questions, reply }
+}
+
+test("when no session can take the question, Alex says at once that he can't reach the notes, and never that he is checking", async () => {
+  const { bridge, questions } = pullOnlyBridge(false)
+  const { flux, spoken, session } = setup({ bridge, progressAfterMs: 60_000 })
+  flux.endTurn('Alex, what is the status of PR 9?')
+  await sleep(400)
+  assert.equal(questions.length, 1, 'the question went to the session first')
+  assert.deepEqual(spoken, [SESSION_OFFLINE_LINE])
+  session.transcript.delete()
+})
+
+test('when its meeting-assistant is taking the questions, Alex still says he is checking, then its answer', async () => {
+  const { bridge, questions, reply } = pullOnlyBridge(true)
+  const { flux, spoken, session } = setup({ bridge, progressAfterMs: 60_000 })
+  flux.endTurn('Alex, what is the status of PR 9?')
+  await sleep(400)
+  assert.equal(questions.length, 1)
+  assert.deepEqual(spoken, [CHECKING_LINE])
+  reply('PR 9 was merged this morning.')
+  await settle()
+  assert.deepEqual(spoken, [CHECKING_LINE, 'PR 9 was merged this morning.'])
+  session.transcript.delete()
+})
