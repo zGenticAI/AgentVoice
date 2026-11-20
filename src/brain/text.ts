@@ -64,8 +64,10 @@ export function isLeaveReply(text: string): boolean {
 // Words that can come first: "Actually Alex, never mind", "OK, stop, Alex".
 const CANCEL_OPENERS =
   '(?:(?:actually|ok|okay|oh|sorry|hey|hi|so|well|no|right|alright|wait|thanks|thank\\s+you|um+|uh+|er+m?|hmm+)[,.!\\s]+)'
-// Between the name and the request: punctuation, and perhaps "no" or "wait" ("Alex, no, never mind").
-const CANCEL_BETWEEN = '[,.?!:;\\s\\-–—]*(?:(?:no|nah|nope|oh|ok|okay|actually|sorry|well|wait|hold\\s+on|hang\\s+on|hold\\s+up)[,.!\\s]+)*'
+// Between the name and the request: punctuation, perhaps "no" or "wait" ("Alex, no, never mind"), and the fillers an
+// opener may be ("Alex, uh, never mind").
+const CANCEL_BETWEEN =
+  '[,.?!:;\\s\\-–—]*(?:(?:no|nah|nope|oh|ok|okay|actually|sorry|well|wait|hold\\s+on|hang\\s+on|hold\\s+up|um+|uh+|er+m?|hmm+)[,.!\\s]+)*'
 const CANCEL_PHRASE =
   '(?:please[,\\s]+)?(?:' +
   [

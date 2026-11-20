@@ -24,15 +24,15 @@ Alex also leaves by itself, through Recall's automatic leave:
 
 Each of these ends the meeting as usual: Alex keeps the transcript, and Claude writes minutes if anyone spoke (see [Minutes](minutes-and-data.md#minutes)).
 
-To stop Alex without making it leave, say "Alex, never mind" (or "Alex, stop", "Alex, cancel that", "Alex, don't worry about it", "Alex, leave it", "Never mind, Alex"). It stops talking at once, even the end of an answer the page is still playing, drops a question it is still checking with your session (the answer is still kept, so asking again gets it at once), and says nothing. A question that only contains such a word, such as "Alex, can you stop the recording?", is answered like any other. It doesn't stop the consent line, which is always said in full.
+To stop Alex without making it leave, say "Alex, never mind" (or "Alex, stop", "Alex, cancel that", "Alex, don't worry about it", "Alex, leave it", "Never mind, Alex"; a filler after the name doesn't matter: "Alex, uh, never mind"). It stops talking at once, even the end of an answer the page is still playing, drops a question it is still checking with your session (the answer is still kept, so asking again gets it at once), and says nothing. A question that only contains such a word, such as "Alex, can you stop the recording?", is answered like any other. It doesn't stop the consent line, which is always said in full.
 
 Removing Alex from the meeting (from the participant list, or from the waiting room) counts the same as "Alex, please leave": once Recall says the host removed the bot, the transcript and any minutes of the meeting are deleted and no minutes are written. See "How it ended" under [Minutes](minutes-and-data.md#minutes).
 
 ## When Alex presents
 
-In a meeting Sam sent it into with slides ([Presenting slides](presenting.md)), Alex's consent line also says it has slides to present, and how to start them. Nothing is shared until someone says "Alex, start the presentation" (or Sam starts it). Then Alex shares its slides as a screen, asks once whether everyone can see them, and says Sam's script, word for word, changing slides between sentences when the room is quiet. Its camera tile is unchanged.
+In a meeting Sam sent it into with slides ([Presenting slides](presenting.md)), Alex's consent line also says it has slides to present, and how to start them. Nothing is shared until someone says "Alex, start the presentation" (or Sam starts it): Alex can't start it by answering, and when asked about it before then, it knows the presentation hasn't started and which words start it. Then Alex shares its slides as a screen, asks once whether everyone can see them, and says Sam's script, word for word, changing slides between sentences when the room is quiet. Its camera tile is unchanged.
 
-Anyone who says the name can steer it, by these phrases only, said to Alex as the whole sentence ("please", "thanks" or "now" may follow):
+Anyone who says the name can steer it, by these phrases only, said to Alex as the whole sentence ("please", "thanks" or "now" may follow; "um", "uh", "er" or "hmm" may come anywhere, so "Alex, um, start the presentation" and "Alex, um. Start the presentation." work too):
 - start: "Alex, start the presentation", "begin the slides", "present your slides", "start presenting";
 - move: "Alex, next slide", "skip this slide", "go back", "previous slide", "go to slide 5" (or "show slide five", "the last slide"), "go through that slide again";
 - pause: "Alex, pause", "wait", "hold on", "hang on", "one moment", "give me a second";

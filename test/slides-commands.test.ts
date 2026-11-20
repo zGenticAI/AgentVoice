@@ -2,7 +2,7 @@
 // name first, the command the whole rest of its sentence. Every phrase of the design's table, and every negative.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { attention } from '../src/brain/attention.ts'
+import { attention, saidAfterName } from '../src/brain/attention.ts'
 import { isCancelRequest, isLeaveRequest } from '../src/brain/text.ts'
 import { SLIDES_LINES } from '../src/consent.ts'
 import type { AgentName } from '../src/identity.ts'
@@ -58,7 +58,49 @@ const POSITIVES: [string, SlideCommand][] = [
   ['Alex, stop sharing the slides.', { kind: 'stop' }],
   ['Alex, stop the presentation.', { kind: 'stop' }],
   ["Alex, that's enough slides.", { kind: 'stop' }],
+  // Fillers are read past, as the leave rule reads them: between the name and the command (below, for every kind),
+  // inside the phrase, at its end, and before a full stop, when the command is read on into the next sentence.
+  ...FILLED(),
+  ['Alex, can you, uh, start the presentation?', { kind: 'start' }],
+  ['Alex, start the, uh, presentation.', { kind: 'start' }],
+  ['Alex, start the presentation, um, please.', { kind: 'start' }],
+  ['Alex, start the presentation, um.', { kind: 'start' }],
+  ['Alex, go to slide, er, five.', { kind: 'goto', slide: 5 }],
+  ['Alex... um... next slide.', { kind: 'next' }],
+  ['Alex — uh — next slide.', { kind: 'next' }],
+  ['Alex, ummm, next slide.', { kind: 'next' }],
+  ['Alex, ah, pause.', { kind: 'pause' }],
+  ['Um, Alex, uh, start the presentation.', { kind: 'start' }],
+  ['Alex, um. Start the presentation.', { kind: 'start' }],
+  ['Alex, okay. Start the presentation.', { kind: 'start' }],
+  ['Alex, so, um. Next slide.', { kind: 'next' }],
+  ['Hello, Alex. Um, start the presentation.', { kind: 'start' }],
+  ['Thanks, Alex. Um. Next slide.', { kind: 'next' }],
+  // "Oh", "well" and "actually" lead, as "so" and "okay" do.
+  ['Alex, oh, next slide.', { kind: 'next' }],
+  ['Alex, well, go back.', { kind: 'back' }],
+  ['Alex, actually, stop presenting.', { kind: 'stop' }],
 ]
+
+/** Every kind, with each filler between the name and the command: with commas, and without, as Flux may write it. */
+function FILLED(): [string, SlideCommand][] {
+  const kinds: [string, SlideCommand][] = [
+    ['start the presentation', { kind: 'start' }],
+    ['next slide', { kind: 'next' }],
+    ['go back', { kind: 'back' }],
+    ['go to slide 3', { kind: 'goto', slide: 3 }],
+    ['go through that slide again', { kind: 'restart' }],
+    ['pause', { kind: 'pause' }],
+    ['carry on', { kind: 'resume' }],
+    ['stop presenting', { kind: 'stop' }],
+  ]
+  return kinds.flatMap(([phrase, command]) =>
+    ['uh', 'um', 'er', 'erm', 'hmm'].flatMap((filler): [string, SlideCommand][] => [
+      [`Alex, ${filler}, ${phrase}.`, command],
+      [`alex ${filler} ${phrase}`, command],
+    ]),
+  )
+}
 
 // Not commands: left to today's rules, and read exactly as before.
 const NEGATIVES = [
@@ -89,6 +131,35 @@ test('none of the negatives is a command: the name must come first, and the comm
   for (const line of NEGATIVES) assert.equal(slideCommand(line), null, line)
 })
 
+test('a filler makes no command of a line that is not one: the command is still the whole sentence', () => {
+  // Each negative said to Alex, with a filler after the name.
+  for (const line of NEGATIVES.filter(l => l.startsWith('Alex, ')).map(l => l.replace('Alex, ', 'Alex, um, '))) {
+    assert.equal(slideCommand(line), null, line)
+  }
+  for (const line of [
+    'Alex, um, next slide, and what does it cost?',
+    'Alex, uh, wait until Sarah joins.',
+    // Read on only past fillers and lead words, and a full stop: not past a question mark, a question or another name.
+    'Alex, okay? Next slide.',
+    'Alex, um. What does it cost?',
+    'Alex, um. Sarah, next slide.',
+    'Alex, um, I think. Next slide.',
+    // A word with a filler in it stays whole.
+    'Alex, uh-huh, next slide.',
+    // Without the name, outside a window.
+    'Uh, next slide.',
+  ]) {
+    assert.equal(slideCommand(line), null, line)
+  }
+})
+
+test('the leave rule reads what follows the name as before: only the slide commands read on past a filler', () => {
+  assert.deepEqual(saidAfterName('Alex, um. Start the presentation.'), [', um. '])
+  assert.deepEqual(saidAfterName('Hello, Alex. Um, start the presentation.'), ['. Um, start the presentation.'])
+  assert.equal(isLeaveRequest('Alex, um. Please leave.'), false)
+  assert.equal(isLeaveRequest('Alex, uh, please leave.'), true)
+})
+
 test('"Alex, stop." stays a cancel and "please leave" a leave: the session checks those first, and neither is a command', () => {
   assert.equal(isCancelRequest('Alex, stop.'), true)
   assert.equal(slideCommand('Alex, stop.'), null)
@@ -113,7 +184,11 @@ test('in a window the assistant opened, a command needs no name; outside one it 
   assert.deepEqual(slideCommand('Go on.', { inWindow: true }), { kind: 'resume' })
   assert.deepEqual(slideCommand('Hold on.', { inWindow: true }), { kind: 'pause' })
   assert.deepEqual(slideCommand('Go to slide 4.', { inWindow: true }), { kind: 'goto', slide: 4 })
+  assert.deepEqual(slideCommand('Uh, next slide.', { inWindow: true }), { kind: 'next' })
+  assert.deepEqual(slideCommand('Um. Go on.', { inWindow: true }), { kind: 'resume' })
+  assert.deepEqual(slideCommand('Okay. Next slide.', { inWindow: true }), { kind: 'next' })
   assert.equal(slideCommand('Hold on.'), null)
+  assert.equal(slideCommand('Uh, next slide.'), null)
   assert.equal(slideCommand('Sure.', { inWindow: true }), null)
   assert.equal(slideCommand('What does it cost?', { inWindow: true }), null)
 })

@@ -113,10 +113,13 @@ export const slidesHeading = (owner: string) =>
 
 /**
  * The cached block of a meeting with slides, after the brief: the outline (each slide's number, title and first
- * sentence, at most SLIDES_OUTLINE_CHARS) and how to answer while presenting. The same all meeting, so it is cached
- * with the rules and the brief. Titles come from a PDF: their block tags are stripped, so they can't close the block.
+ * sentence, at most SLIDES_OUTLINE_CHARS) and how to answer while presenting. Until the presentation first starts, it
+ * also says so, and which words start it: the brain can't start it by answering, as it can't leave. So the block
+ * changes once, at the first start, and is otherwise the same all meeting: it is cached with the rules and the brief.
+ * Titles come from a PDF: their block tags are stripped, so they can't close the block. The service's own lines come
+ * after it.
  */
-export function slidesBlock(slides: Pick<SlidesForBrain, 'outline'>, id: Pick<Names, 'name' | 'owner'>): string {
+export function slidesBlock(slides: Pick<SlidesForBrain, 'outline' | 'notStarted'>, id: Pick<Names, 'name' | 'owner'>): string {
   const lines: string[] = []
   let size = 0
   for (const s of slides.outline) {
@@ -131,7 +134,10 @@ export function slidesBlock(slides: Pick<SlidesForBrain, 'outline'>, id: Pick<Na
   return (
     `${slidesHeading(id.owner)}\n<slides>\n${lines.join('\n')}\n</slides>\n` +
     'While you present, answer in at most three short sentences; the presentation resumes after your answer. ' +
-    `You can't change slides yourself: people say "${id.name}, next slide" or "${id.name}, go to slide N".`
+    `You can't change slides yourself: people say "${id.name}, next slide" or "${id.name}, go to slide N".` +
+    (slides.notStarted
+      ? ` The presentation has not started yet, so no slide is on screen. You can't start it by answering: people say "${id.name}, start the presentation" to start it.`
+      : '')
   )
 }
 

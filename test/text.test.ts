@@ -262,6 +262,26 @@ test('telling Alex never mind, or to stop, is a cancel request', () => {
   assert.equal(isCancelRequest('Alex, is it fine to share this?'), false)
 })
 
+test('a filler between the name and the cancel is skipped, as one before the name is', () => {
+  for (const said of [
+    'Alex, uh, never mind.',
+    'alex uh never mind',
+    'Alex, um, stop.',
+    'Alex, erm, forget it.',
+    'Alex, hmm, never mind.',
+    'Alex, ummm, no, never mind.',
+    'Alex, uh. Never mind.',
+    // In an open window the session reads a line without the name as if said with it: "Uh, never mind."
+    'Alex, Uh, never mind.',
+  ]) {
+    assert.equal(isCancelRequest(said), true, said)
+  }
+  // Still only the whole request: a filler doesn't make one of a question or a request that has a cancel word in it.
+  for (const said of ['Alex, um, can you stop the recording?', 'Alex, uh, never mind, what time is it?', "Alex, uh, don't stop", 'Alex, um, stop the recording.']) {
+    assert.equal(isCancelRequest(said), false, said)
+  }
+})
+
 test('a request that only contains a cancel word is not a cancel request', () => {
   for (const said of [
     'Alex, can you stop the recording?',

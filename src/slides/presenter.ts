@@ -171,6 +171,8 @@ export interface PresentationSummary {
 export interface SlidesForBrain {
   /** Each slide presented in order or on request: its page, title and first sentence. */
   outline: readonly { page: number; title: string; first: string; onRequest: boolean }[]
+  /** The presentation has not started in this meeting (the presenter is ready): the brain is told how it starts. */
+  notStarted: boolean
   /** The slide on screen, or null when none is (not started, stopped). */
   current: {
     /** The PDF page number: "slide N" means it. */
@@ -405,8 +407,9 @@ export class Presenter {
   /** What the brain answers from (SlidesForBrain): the outline, and the slide on screen now. */
   forBrain(): SlidesForBrain {
     const outline = this.slides.map(s => ({ page: s.page, title: s.title, first: s.sentences[0] ?? '', onRequest: s.onRequest }))
+    const notStarted = this.state === 'ready'
     const i = this.onScreen()
-    if (i === null) return { outline, current: null }
+    if (i === null) return { outline, notStarted, current: null }
     const slide = this.slides[i]
     // The sentence narration was at on this slide: the one it carries on from (the one the question cut, its first
     // included), or the last one heard. Nothing while the slide is up but none of it has been said yet.
@@ -415,6 +418,7 @@ export class Presenter {
     const saying = this.resume.i === i && begun && k >= 0 ? slide.sentences[k] : ''
     return {
       outline,
+      notStarted,
       current: {
         page: slide.page,
         position: i + 1,

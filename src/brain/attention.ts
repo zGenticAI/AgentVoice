@@ -1042,8 +1042,11 @@ function spokenTo(sentence: Word[], at: number): boolean {
  * said to it, up to the end of the sentence, or through the next sentence when the name ends its own ("Thanks,
  * Alex. Please leave."). Leaving deletes the meeting record, so only the exact name and the mishearings that count
  * for leaving ("Ionics", as the first word) do, not the spellings Alec, Alexa or Aleks, which are also real names.
+ *
+ * readOn, for the slide commands (src/slides/commands.ts) only: while it is true of what was said so far, the next
+ * sentence is read too ("Alex, um. Start the presentation."). The leave rule passes none, so it reads as it always did.
  */
-function saidAfterNameOf(text: string, sets: NameSets): string[] {
+function saidAfterNameOf(text: string, sets: NameSets, readOn?: (said: string) => boolean): string[] {
   const sentences = sentencesOf(wordsOf(text, sets))
   const said: string[] = []
   const words = (sentence: Word[] = []) => sentence.map(w => w.raw + w.after).join('')
@@ -1052,7 +1055,10 @@ function saidAfterNameOf(text: string, sets: NameSets): string[] {
       if (!sets.leave.has(foldWord(word.text))) return
       if (!word.name || !spokenTo(sentence, i)) return
       const last = i === sentence.length - 1
-      said.push(word.after + words(sentence.slice(i + 1)) + (last ? words(sentences[s + 1]) : ''))
+      let next = last ? s + 2 : s + 1
+      let after = word.after + words(sentence.slice(i + 1)) + (last ? words(sentences[s + 1]) : '')
+      while (readOn && next < sentences.length && readOn(after)) after += words(sentences[next++])
+      said.push(after)
     })
   })
   return said
@@ -1101,8 +1107,11 @@ function wordsThatCountOf(text: string, sets: NameSets, partial: boolean): numbe
 export interface AttentionRules {
   /** Whether a line is for the assistant, and if not, why not. */
   attention(text: string): Attention
-  /** For the leave rule (text.ts): what was said to the assistant right after its name, each time it was said to it. */
-  saidAfterName(text: string): string[]
+  /**
+   * For the leave rule (text.ts): what was said to the assistant right after its name, each time it was said to it.
+   * readOn: for the slide commands, read on into the next sentence while it is true (see saidAfterNameOf()).
+   */
+  saidAfterName(text: string, readOn?: (said: string) => boolean): string[]
   /** For talking over the assistant (session.ts): how many words count as taking the floor (see wordsThatCountOf()). */
   wordsThatCount(text: string, partial?: boolean): number
 }
@@ -1112,7 +1121,7 @@ export function makeAttention(agent: AgentName): AttentionRules {
   const sets = nameSets(agent)
   return {
     attention: text => attentionOf(text, sets),
-    saidAfterName: text => saidAfterNameOf(text, sets),
+    saidAfterName: (text, readOn) => saidAfterNameOf(text, sets, readOn),
     wordsThatCount: (text, partial = false) => wordsThatCountOf(text, sets, partial),
   }
 }

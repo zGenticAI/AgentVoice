@@ -381,6 +381,37 @@ test('a share Recall refused, or that never loaded: the line, back to ready, and
   }
 })
 
+test('a filler after the name keeps the start: the slide command verdict, the share, and no answer', async () => {
+  for (const line of ['Alex, uh, start the presentation.', 'Alex, um. Start the presentation.', 'Hello, Alex. Um, start the presentation.']) {
+    const s = start()
+    await until(() => s.session.consentDone, 'the consent line')
+    assert.equal(s.presenter.current, 'ready')
+    s.said(line)
+    await until(() => s.presenter.current === 'checking', `${line}: checking`)
+    assert.deepEqual(s.surface.calls, ['start 0'], line)
+    const why = s.session.whyNotAnswered(5).lines!
+    assert.deepEqual(why.map(l => [l.line, l.read, l.did]), [[line, 'slides', 'slide_command']], line)
+    assert.equal(s.answered.length, 0, `${line}: no brain call`)
+    done(s)
+  }
+})
+
+test('before the presentation starts, the brain is told it has not; once it has, not', async () => {
+  const s = start({ answers: [[{ kind: 'say', text: 'It is the Q4 plan.' }], [{ kind: 'say', text: 'It is per user.' }]] })
+  await until(() => s.session.consentDone, 'the consent line')
+  s.said('Alex, what is this meeting about?')
+  await until(() => s.inputs.length === 1)
+  assert.equal(s.inputs[0].slides.notStarted, true)
+  assert.equal(s.inputs[0].slides.current, null)
+  await until(() => s.alex().includes('It is the Q4 plan.'))
+  s.said('Alex, start the presentation.')
+  await until(() => s.presenter.current === 'narrating', 'narration')
+  s.said('Alex, is that per month?')
+  await until(() => s.inputs.length === 2)
+  assert.equal(s.inputs[1].slides.notStarted, false)
+  done(s)
+})
+
 /** The consent line said, then the room's start: until the share is up and the presentation is checking. */
 async function checking(s: ReturnType<typeof start>) {
   await until(() => s.session.consentDone, 'the consent line')
@@ -1537,6 +1568,7 @@ test('a question mid-deck: the brain gets the outline and the slide on screen, a
   s.flux.turn('EndOfTurn', 'Alex, is that per month?')
   await until(() => s.inputs.length === 1)
   const { slides, transcript } = s.inputs[0]
+  assert.equal(slides.notStarted, false)
   assert.deepEqual(
     slides.outline.map((o: any) => [o.page, o.title, o.first, o.onRequest]),
     [[1, 'Welcome', 'Hello everyone.', false], [2, 'Pricing', 'Team is twelve dollars.', false], [4, 'Security', 'Here are the security details.', true], [5, 'Next steps', 'We ship in March.', false]],
