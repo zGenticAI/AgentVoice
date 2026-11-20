@@ -1146,6 +1146,8 @@ export class MeetingSession {
         this.awaitingUntil = Date.now() + ms
         this.windowKind = 'reply'
       },
+      // Only while no line has closed it: the presenter's own window is then the one open.
+      closeWindow: () => void (this.awaitingUntil = 0),
       windowOpen: () => Date.now() < this.awaitingUntil,
       // As the assistant's line, so a talk to a silent room still gets no minutes.
       marker: (text, page) => void this.transcript.add(SLIDES_LABEL, text, 'agent', { kind: 'marker', ...(page === undefined ? {} : { slide: page }) }),

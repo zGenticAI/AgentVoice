@@ -219,7 +219,7 @@ Nothing is shared until the presentation starts. Alex's camera tile is as it alw
 When someone says "Alex, start the presentation" (or you start it), Alex:
 1. says "I'm sharing my slides now. They can take a few seconds to appear.", and asks Recall to share its slides page as its screen;
 2. waits up to 20 seconds for the page to show the first slide;
-3. the first time in a meeting only, asks "Can everyone see my slides?". A "no" ("no", "we can't", "nothing", "not yet", "I can't see it") gets the setting the host needs to change, and the share stops; anything else, or a few seconds of quiet, carries on;
+3. the first time in a meeting, and again on the next start after a "no", asks "Can everyone see my slides?". A "no" ("no", "we can't", "nothing", "not yet", "I can't see it") gets the setting the host needs to change, and the share stops; anything else, or a few seconds of quiet after the question has played, carries on. A "no" said just as the script begins still stops it. Anything that holds the slides before the question (a pause, a question, the camera page reconnecting) asks it once that is over;
 4. says your script, one sentence at a time, and changes slides only after the last sentence of a slide has played and the room is quiet for a moment. It talks about a slide only once the page has shown it.
 
 The slides fill the shared screen, exactly as on the contact sheet, with no badge or overlay. The page's own frames ("about to present", "Slides paused", ended) say that Alex is an AI. After the last slide it takes questions, with that slide still up; two minutes with nothing said to it, and the share stops quietly. "Alex, start the presentation" puts it back.

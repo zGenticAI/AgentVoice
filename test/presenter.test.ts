@@ -179,6 +179,8 @@ interface Options {
   from?: number
   /** ms before a line's voice comes back from ElevenLabs: none unless given. */
   latency?: number
+  /** The same, for one line: it streams live, so it can be talked over while it still goes out. */
+  delay?: Record<string, number>
 }
 
 function start(opts: Options = {}) {
@@ -217,6 +219,7 @@ function start(opts: Options = {}) {
       spoken.push(text)
       if (opts.failing?.has(text)) throw new Error('voice failed')
       if (opts.latency) await wait(opts.latency)
+      if (opts.delay?.[text]) await wait(opts.delay[text])
       yield Buffer.alloc((opts.voice?.[text] ?? 20) * 32)
     },
     recall: {
@@ -333,10 +336,15 @@ test('a "no" to "Can everyone see my slides?" gives the platform hint, stops the
   assert.deepEqual(s.surface.calls, ['start 0', 'stop'])
   assert.equal(s.presenter.current, 'ready')
   assert.equal(s.answered.length, 0, 'the answer to its own question is not a question')
-  // Started again: no second check question.
+  // Started again (the host changed a setting): the question again, since the last answer was no. It is the only sign
+  // of a share the platform still refuses.
   s.said('Alex, start the presentation.')
+  await until(() => s.spoken.filter(l => l === SLIDES_LINES.canSee).length === 2, 'the check question again')
+  assert.equal(s.presenter.current, 'checking')
+  await wait(30)
+  s.said('Yes.')
   await until(() => s.presenter.current === 'narrating')
-  assert.equal(s.spoken.filter(l => l === SLIDES_LINES.canSee).length, 1)
+  assert.deepEqual(s.events.map(e => e.event), ['not_seen', 'started'])
   done(s)
 })
 
@@ -356,6 +364,118 @@ test('a share Recall refused, or that never loaded: the line, back to ready, and
     assert.ok(!s.spoken.includes(SLIDES_LINES.canSee))
     done(s)
   }
+})
+
+/** The consent line said, then the room's start: until the share is up and the presentation is checking. */
+async function checking(s: ReturnType<typeof start>) {
+  await until(() => s.session.consentDone, 'the consent line')
+  s.said('Alex, start the presentation.')
+  await until(() => s.presenter.current === 'checking', 'checking')
+}
+
+test('talked over as it still goes out, "Can everyone see my slides?" still takes its answer: a no stops the share, anything else starts the deck', async () => {
+  // The question streams live: it is still going out 100 ms in, when someone talks over it.
+  const no = start({ delay: { [SLIDES_LINES.canSee]: 300 } })
+  await checking(no)
+  await until(() => no.spoken.includes(SLIDES_LINES.canSee), 'the check question')
+  await wait(100)
+  no.said("No, we can't see anything.")
+  await until(() => no.events.some(e => e.event === 'not_seen'), 'not_seen')
+  await until(() => no.spoken.includes(SLIDES_LINES.hints.zoom), 'the hint')
+  assert.deepEqual(no.surface.calls, ['start 0', 'stop'])
+  assert.equal(no.answered.length, 0)
+  done(no)
+
+  const s = start({ delay: { [SLIDES_LINES.canSee]: 300 } })
+  await checking(s)
+  await until(() => s.spoken.includes(SLIDES_LINES.canSee), 'the check question')
+  await wait(100)
+  s.said('Oh nice, there it is.')
+  await until(() => s.spoken.includes('Hello everyone.'), 'narration, never stuck checking')
+  assert.equal(s.events[0]?.event, 'started')
+  assert.ok(!s.spoken.some(l => l.startsWith('Back to')))
+  done(s)
+})
+
+test('a check that lasts is told to the owner, who can start the slides', async () => {
+  const s = start({ timing: { canSeeDelayMs: 60_000, heldLongMs: 200 } })
+  await checking(s)
+  await until(() => s.events.some(e => e.event === 'held_long'), 'held_long')
+  assert.equal(s.presenter.current, 'checking')
+  assert.match(s.events.find(e => e.event === 'held_long')!.note, /asking whether everyone can see them/)
+  assert.equal(s.presenter.owner('resume').ok, true)
+  await until(() => s.spoken.includes('Hello everyone.'))
+  done(s)
+})
+
+test('a hold before the check question (pause, the owner\'s pause, the page away, a question, hearing lost): then the question, then the deck, started', async () => {
+  type S = ReturnType<typeof start>
+  // How each hold comes, and how it ends (a question's ends with its answer).
+  const cases: [string, (s: S) => unknown, ((s: S) => unknown) | null][] = [
+    ['"Alex, pause"', s => s.said('Alex, pause.'), s => s.said('Alex, carry on.')],
+    ["the owner's pause", s => s.presenter.owner('pause'), s => s.presenter.owner('resume')],
+    ['the page away', s => s.ws.drop(), s => s.session.attach(new FakeSocket() as any, {})],
+    ['a question', s => s.said('Alex, how long is this?'), null],
+    ['hearing lost', s => s.flux.emit('lost', 'test'), s => s.flux.emit('open')],
+  ]
+  for (const [what, hold, release] of cases) {
+    const s = start({ timing: { canSeeDelayMs: 300 }, answers: [[{ kind: 'say', text: 'About ten minutes.' }]] })
+    await checking(s)
+    hold(s)
+    await until(() => s.presenter.current === 'held', `${what}: held`)
+    if (release) {
+      await wait(400)
+      assert.ok(!s.spoken.includes(SLIDES_LINES.canSee), `${what}: not asked while held`)
+      release(s)
+    } else await until(() => s.spoken.includes('About ten minutes.'), `${what}: the answer`)
+    await until(() => s.presenter.current === 'qa', `${what}: the deck to its end`, 5000)
+    assert.equal(s.spoken.filter(l => l === SLIDES_LINES.canSee).length, 1, `${what}: the check question, once`)
+    assert.deepEqual(s.after(SLIDES_LINES.canSee).filter(l => NARRATION.includes(l)), NARRATION.filter(l => !l.startsWith('Here are')), what)
+    assert.ok(!s.spoken.some(l => l.startsWith('Back to')), `${what}: nothing to go back to`)
+    assert.deepEqual(s.events.filter(e => e.event === 'started' || e.event === 'finished').map(e => e.event), ['started', 'finished'], what)
+    assert.deepEqual(s.presenter.summary(), { reached: 5, of: 4, finished: true }, what)
+    if (what === '"Alex, pause"') {
+      s.session.end()
+      await until(() => s.minutes.length === 1)
+      assert.deepEqual(s.minutes[0].presented, { title: 'Q4 plan', slides: 4 }, 'the minutes know the script was presented')
+      s.session.transcript.delete()
+    } else done(s)
+  }
+})
+
+test('"Can everyone see my slides?": the quiet that moves on counts from when the room has heard it, and a "no" as the slides begin still stops them', async () => {
+  const s = start({ voice: { [SLIDES_LINES.canSee]: 600 }, timing: { canSeeQuietMs: 300, canSeeWindowMs: 2000 } })
+  await checking(s)
+  await until(() => s.spoken.includes(SLIDES_LINES.canSee), 'the check question')
+  // The line plays for 600 ms: 750 ms after it went out, the room has had about 100 ms of quiet after it.
+  await wait(750)
+  assert.equal(s.presenter.current, 'checking', 'still waiting for an answer')
+  await until(() => s.presenter.current === 'narrating', 'the quiet after it moves on')
+  // Narration began while its window was open: a "no" now is still the answer, never a question for the brain.
+  s.said("No, we can't see it.")
+  await until(() => s.events.some(e => e.event === 'not_seen'), 'not_seen')
+  await until(() => s.spoken.includes(SLIDES_LINES.hints.zoom), 'the hint')
+  assert.equal(s.answered.length, 0)
+  assert.equal(s.surface.calls.at(-1), 'stop')
+  assert.equal(s.presenter.current, 'stopped')
+  // Started again: the question again, and the slide from its start.
+  s.said('Alex, start the presentation.')
+  await until(() => s.spoken.filter(l => l === SLIDES_LINES.canSee).length === 2, 'the check question again')
+  assert.equal(s.surface.calls.filter(c => c.startsWith('start')).at(-1), 'start 0')
+  await until(() => s.spoken.filter(l => l === 'Hello everyone.').length >= 1 && s.presenter.current === 'narrating')
+  done(s)
+})
+
+test('a question before the deck\'s first sentence is answered, then the deck starts with no "Back to"', async () => {
+  const s = start({ answers: [[{ kind: 'say', text: 'About ten minutes.' }]], timing: { leadMs: 400 } })
+  await checking(s)
+  await until(() => s.presenter.current === 'narrating', 'narration')
+  s.said('Alex, how long is this?')
+  await until(() => s.spoken.includes('Hello everyone.'))
+  assert.deepEqual(s.answered, ['Alex, how long is this?'])
+  assert.equal(s.next('About ten minutes.'), 'Hello everyone.')
+  assert.ok(!s.spoken.some(l => l.startsWith('Back to')))
+  done(s)
 })
 
 // --- Holds -------------------------------------------------------------------------------------------------------

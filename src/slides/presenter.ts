@@ -4,7 +4,8 @@
 // it, an answer, "never mind", "please leave" or the page going stop it as they stop an answer. It keeps its place
 // outside the turn: the bookmark, the furthest point reached in order, where narration carries on.
 //
-//   ready ─start─▶ starting ─slide shown─▶ checking ─yes or quiet─▶ narrating(i, k)
+//   ready ─start─▶ starting ─slide shown─▶ checking ─yes or quiet─▶ narrating(i, k)      checking ─"no"─▶ ready
+//   checking ─question, pause, page away, deaf─▶ held(cause) ─its resume rule─▶ checking (the question, if unheard)
 //   narrating ─talk, question, command, page away, deaf, voice─▶ held(cause) ─its resume rule─▶ narrating
 //   narrating|held ─"go back", "go to slide M" (behind, or on request)─▶ a detour ─"carry on"─▶ narrating(bookmark)
 //   narrating(last) ─done─▶ qa ─2 min quiet, "stop presenting"─▶ stopped ─"start the presentation"─▶ starting
@@ -180,6 +181,8 @@ export interface PresenterHost {
   free(): boolean
   /** Opens the session's reply window: the next line is taken without the name. */
   openWindow(ms: number): void
+  /** Closes the window the presenter opened: narration took over from its question. */
+  closeWindow(): void
   windowOpen(): boolean
   /**
    * Adds a marker to the transcript ("showing slide 6: Pricing"), as the assistant's, never a participant's. page: the
@@ -257,6 +260,8 @@ interface Hold {
   asked: boolean
   /** The owner was told it is long (held_long). */
   told: boolean
+  /** It began in 'checking': nothing of the deck was said yet, so its end goes back to the check question. */
+  fromCheck: boolean
 }
 
 export class Presenter {
@@ -274,13 +279,30 @@ export class Presenter {
   private run = 0
   /** Counts the starts: one overtaken by a stop or another start does nothing more. */
   private attempt = 0
-  /** "Can everyone see my slides?" has been asked in this meeting: only after the first successful start. */
+  /**
+   * "Can everyone see my slides?" passed: a yes, the quiet after it, or narration begun from it. A "no" clears it, so the
+   * next start asks again: the question is the only sign of a share the platform refused.
+   */
   private checked = false
+  /** When it is due (0: not due), and the run of the turn that says it (0: none). */
   private canSeeAt = 0
+  private asking = 0
+  /** It went out, or was talked over as it went: the next line is its answer. */
+  private canSeeSaid = false
+  /** When its line had played to the end: the quiet that moves on counts from then. 0 until then. */
   private canSeeAsked = 0
+  /** Narration took over while its window was open: until then, a "no" is still the answer to it. */
+  private canSeeLate = 0
+  /** When 'checking' began, and whether the owner was told it lasts. */
+  private checkingSince = 0
+  private checkingTold = false
   /** A window the presenter opened with a question of its own, and until when. */
   private window: { kind: 'carry_on' | 'can_see'; until: number } | null = null
   private everStarted = false
+  /** Narration has begun since the last start: 'started' is told once per start, whatever began it. */
+  private begun = false
+  /** The slide narration last began a sentence of: null until the deck's first sentence. */
+  private spoke: number | null = null
   private finished = false
   /** The owner's own pause stands (Decision 2a): only narration the owner starts lifts it, and a stop keeps it. */
   private ownerPaused = false
@@ -420,6 +442,14 @@ export class Presenter {
     try {
       if (this.state === 'disposed') return null
       const mine = this.window && Date.now() < this.window.until ? this.window.kind : null
+      // Narration took over from "Can everyone see my slides?" while its window was open: the first line after it is
+      // still its answer, and a "no" stops the slides.
+      const late = this.canSeeLate > Date.now() && (this.state === 'narrating' || this.state === 'held')
+      this.canSeeLate = 0
+      if (late && !mine && windowReply(text) === 'no') {
+        this.notSeen()
+        return 'no to "can everyone see my slides", as the slides began'
+      }
       if (mine) {
         // Any line closes the window, as the session's does.
         this.window = null
@@ -454,14 +484,14 @@ export class Presenter {
       this.lastActivity = Date.now()
       return
     }
-    // Talking over the presenter's own question is the answer to it: its window decides.
-    if (cause === 'talk' && (this.state === 'checking' || (this.window && Date.now() < this.window.until))) return
-    if (this.state === 'checking' && cause === 'question') {
-      // A question in the check window: answered, then narration starts.
-      this.window = null
-      this.everStarted = true
-      this.emit('started', 'The presentation started.', this.resume.i)
+    // Talking over the presenter's own question is the answer to it: its window decides. Talked over as it goes out, the
+    // question counts as asked, and its window opens now, so the line that cut it is read as the answer.
+    if (cause === 'talk' && this.state === 'checking') {
+      if (this.asking && this.asking === this.run && !this.canSeeSaid) this.openCanSee()
+      return
     }
+    if (cause === 'talk' && this.window && Date.now() < this.window.until) return
+    // A question in 'checking' is answered, and held: the check question comes after it (carryOn).
     if (this.state !== 'narrating' && this.state !== 'held' && this.state !== 'checking') return
     this.holdAs(cause)
   }
@@ -711,6 +741,8 @@ export class Presenter {
     this.state = 'starting'
     this.holding = null
     this.window = null
+    this.canSeeLate = 0
+    this.begun = false
     void (async () => {
       // The consent line always comes first, and nothing is said over an answer.
       while (!this.opts.host.free() || this.deafNow) {
@@ -728,10 +760,7 @@ export class Presenter {
         this.view = this.resume.i
         this.markShown(this.resume.i, true)
         if (this.checked) return this.beginNarration()
-        this.state = 'checking'
-        this.canSeeAt = Date.now() + this.timing.canSeeDelayMs
-        this.canSeeAsked = 0
-        return
+        return this.toCheck()
       }
       this.state = this.everStarted ? 'stopped' : 'ready'
       const failure: Record<Exclude<StartOutcome, 'loaded'>, [PresentationEventKind, string, string]> = {
@@ -746,12 +775,43 @@ export class Presenter {
     })().catch(err => this.fault('starting', err))
   }
 
-  /** The room said no to "Can everyone see my slides?": the platform's hint, the share stopped, the bookmark kept. */
+  /** "Can everyone see my slides?" is due in a moment: after the first slide is shown, or after a hold that came first. */
+  private toCheck(): void {
+    // Only the owner gets here while the owner's pause stands (carryOn): the room's carry on is refused.
+    this.ownerPaused = false
+    this.state = 'checking'
+    this.holding = null
+    this.window = null
+    this.canSeeAt = Date.now() + this.timing.canSeeDelayMs
+    this.asking = 0
+    this.canSeeSaid = false
+    this.canSeeAsked = 0
+    this.checkingSince = Date.now()
+    this.checkingTold = false
+  }
+
+  /**
+   * The room said no to "Can everyone see my slides?", maybe as narration began: the platform's hint, the share
+   * stopped, the bookmark kept at the start of its slide (nobody saw it). The next start asks again.
+   */
   private notSeen(): void {
+    const was = this.state
     this.attempt++
+    this.run++
     this.state = this.everStarted ? 'stopped' : 'ready'
+    this.holding = null
+    this.window = null
     this.view = null
-    this.say(this.lines.hints[this.opts.platform])
+    this.checked = false
+    this.canSeeLate = 0
+    this.resume = { i: this.resume.i, k: 0 }
+    const hint = this.lines.hints[this.opts.platform]
+    if (was === 'checking') this.say(hint)
+    else {
+      // Narration had begun: what it is saying stops, and the hint takes its place.
+      this.opts.host.interrupt()
+      this.sayNow(hint)
+    }
     void this.shared(() => this.opts.surface.stop(), undefined).then(() => {
       this.opts.host.marker('stopped sharing the slides')
       this.emit('not_seen', 'Someone said they could not see the slides: the host may need to allow screen sharing.')
@@ -766,6 +826,7 @@ export class Presenter {
     this.state = opts.end ? 'ended' : 'stopped'
     this.holding = null
     this.window = null
+    this.canSeeLate = 0
     this.deafPending = false
     const shared = was !== 'ready' && was !== 'stopped' && was !== 'ended'
     // At once: what is still playing of the narration stops, and the bookmark stays where the meeting stopped hearing.
@@ -799,17 +860,26 @@ export class Presenter {
 
   // --- Narration ----------------------------------------------------------------------------------------------------
 
-  /** Narration starts after the check: the presentation's clock, and started for the owner. */
+  /** Narration starts after the check: a yes, the quiet after it, or the room going on. The check has passed. */
   private beginNarration(): void {
-    this.window = null
-    this.everStarted = true
-    this.emit('started', 'The presentation started.', this.resume.i)
+    // Taken over while the question's window was open: the session's window closes, so a remark in the first seconds
+    // of narration is not taken as a reply, but a "no" is still the answer until the window would have ended (hear).
+    const late = this.window?.kind === 'can_see' && Date.now() < this.window.until ? this.window.until : 0
+    if (late) this.opts.host.closeWindow()
+    this.checked = true
     this.narrateFrom({})
+    this.canSeeLate = late
   }
 
   /** Carries on from the bookmark, with the line its hold calls for. silent: no line (a detour that reached it). */
   private carryOn(opts: { silent?: boolean } = {}): void {
     const hold = this.holding
+    if (hold?.fromCheck) {
+      // Nothing of the deck was said yet: the check question first, unless the room has heard it.
+      if (this.canSeeSaid) return this.beginNarration()
+      if (this.view !== this.resume.i) void this.showSlide(this.resume.i).catch(err => this.fault('showing a slide', err))
+      return this.toCheck()
+    }
     const long = hold !== null && Date.now() - hold.since > this.timing.longHoldMs
     const back = this.backTo()
     let prefix: string | undefined
@@ -822,11 +892,14 @@ export class Presenter {
     this.narrateFrom({ prefix })
   }
 
-  /** "Back to <title>." for the slide narration carries on from, or nothing when it starts a slide afresh. */
+  /**
+   * "Back to <title>." for the slide narration carries on from, or nothing when it starts a slide afresh, or when no
+   * sentence of the deck has been said yet: there is nothing to go back to.
+   */
   private backTo(): string | undefined {
     const at = this.resume
     const slide = this.slides[at.i]
-    if (!slide || at.k >= slide.sentences.length) return undefined
+    if (!slide || at.k >= slide.sentences.length || this.spoke === null) return undefined
     return slide.title ? `Back to ${slide.title}.` : `Back to slide ${slide.page}.`
   }
 
@@ -839,6 +912,13 @@ export class Presenter {
     this.holding = null
     this.window = null
     this.detourRun = opts.detour !== undefined
+    // The first narration since the start, whatever began it (the check, or a move or carry on out of a hold that came
+    // first): the presentation has started, for the owner, the summary and the minutes.
+    if (!this.begun) {
+      this.begun = true
+      this.everStarted = true
+      this.emit('started', 'The presentation started.', this.resume.i)
+    }
     this.turn(signal => (opts.detour !== undefined ? this.narrateDetour(opts.detour, run, signal, opts.prefix) : this.narrate(run, signal, opts.prefix)))
   }
 
@@ -878,6 +958,7 @@ export class Presenter {
       }
       for (let k = this.resume.k; k < slide.sentences.length; k++) {
         if (await this.stopMuted(signal)) return
+        this.spoke = i
         const said = await this.sayNarration(slide.sentences[k], signal, { i, k }, run)
         if (!this.live(run, signal) || !said) return
         this.resume = { i, k: k + 1 }
@@ -1039,9 +1120,10 @@ export class Presenter {
 
   private holdAs(cause: HoldCause): void {
     if (this.state === 'checking' || this.state === 'narrating') {
+      const fromCheck = this.state === 'checking'
       this.run++
       this.state = 'held'
-      this.holding = { cause, since: Date.now(), asked: false, told: false }
+      this.holding = { cause, since: Date.now(), asked: false, told: false, fromCheck }
       this.window = null
       return
     }
@@ -1049,7 +1131,7 @@ export class Presenter {
     // The same cause again changes nothing: "Shall I carry on?" is still asked only once.
     if (!this.holding || PRIORITY[cause] > PRIORITY[this.holding.cause]) {
       const since = this.holding?.since ?? Date.now()
-      this.holding = { cause, since, asked: false, told: this.holding?.told ?? false }
+      this.holding = { cause, since, asked: false, told: this.holding?.told ?? false, fromCheck: this.holding?.fromCheck ?? false }
     }
   }
 
@@ -1104,8 +1186,9 @@ export class Presenter {
       const host = this.opts.host
       if (this.queued.length && host.free() && this.state !== 'narrating') return this.sayNow(this.queued.shift()!)
       if (this.window && now >= this.window.until) {
-        // Silence is a yes, once the room is quiet: someone mid-sentence may still be answering.
-        if (host.quietMs() === 0) return
+        // Silence is a yes, once the room is quiet: someone mid-sentence may still be answering. Nor while the page still
+        // plays the question: the window runs from its end.
+        if (host.quietMs() === 0 || host.playing()) return
         const kind = this.window.kind
         this.window = null
         if (kind === 'can_see' && this.state === 'checking') return this.beginNarration()
@@ -1127,6 +1210,11 @@ export class Presenter {
         this.emit('held_long', `The slides have been held for over ${Math.round(this.timing.heldLongMs / 60_000)} minutes (${hold.cause}).`)
       }
       if (!host.free() || this.window) return
+      // Hearing is back before anything of the deck was said: on to the check question, with nothing to carry on from.
+      if (hold.fromCheck && hold.cause === 'deaf') {
+        if (!this.deafNow) this.carryOn()
+        return
+      }
       if (hold.cause === 'question') {
         if (!host.windowOpen() && !host.playing() && host.quietMs() >= this.timing.questionQuietMs) this.carryOn()
       } else if (hold.cause === 'page_away') {
@@ -1141,23 +1229,51 @@ export class Presenter {
 
   private checkTick(now: number): void {
     const host = this.opts.host
+    // Whatever keeps it here (the session never free, or the room saying "wait" again and again), the owner hears of
+    // it, and can resume or stop the slides.
+    if (!this.checkingTold && now - this.checkingSince >= this.timing.heldLongMs) {
+      this.checkingTold = true
+      this.emit(
+        'held_long',
+        `The slides have waited over ${Math.round(this.timing.heldLongMs / 60_000)} minutes to start (asking whether everyone can see them): resume them to start, or stop them.`,
+      )
+    }
     if (this.canSeeAt && now >= this.canSeeAt && host.free()) {
       this.canSeeAt = 0
-      this.checked = true
       const asking = ++this.run
+      this.asking = asking
       this.turn(async signal => {
         await this.sayLine(this.lines.canSee, signal)
-        if (signal.aborted || asking !== this.run || this.state !== 'checking') return
-        this.canSeeAsked = Date.now()
-        this.window = { kind: 'can_see', until: Date.now() + this.timing.canSeeWindowMs }
-        host.openWindow(this.timing.canSeeWindowMs)
+        if (this.asking === asking) this.asking = 0
+        // A hold or a stop overtook it: a hold asks it again once it is over (carryOn).
+        if (asking !== this.run || this.state !== 'checking') return
+        // Said, or talked over as it went out (hold may have opened the window already): the next line is its answer.
+        if (!this.canSeeSaid) this.openCanSee()
       })
       return
     }
+    if (!this.canSeeSaid) return
+    if (!this.canSeeAsked) {
+      // The quiet that moves on, and the window, count from when the room has heard the whole question.
+      if (host.playing()) return
+      this.canSeeAsked = now
+      if (this.window?.kind === 'can_see' && this.window.until < now + this.timing.canSeeWindowMs) {
+        this.window.until = now + this.timing.canSeeWindowMs
+        host.openWindow(this.timing.canSeeWindowMs)
+      }
+    }
     // Quiet for a while after the line has played: they can see it.
-    if (this.canSeeAsked && !host.playing() && host.free() && host.quietMs() >= this.timing.canSeeQuietMs && now - this.canSeeAsked >= this.timing.canSeeQuietMs) {
+    if (!host.playing() && host.free() && host.quietMs() >= this.timing.canSeeQuietMs && now - this.canSeeAsked >= this.timing.canSeeQuietMs) {
       this.beginNarration()
     }
+  }
+
+  /** The check question went out (or was talked over): its window opens, to the end of its line and a while after. */
+  private openCanSee(): void {
+    this.canSeeSaid = true
+    const ms = this.opts.host.lineLeftMs() + this.timing.canSeeWindowMs
+    this.window = { kind: 'can_see', until: Date.now() + ms }
+    this.opts.host.openWindow(ms)
   }
 
   /** "Shall I carry on?", once per hold, with a window in which yes, no or silence decides. */
