@@ -166,16 +166,35 @@ const phrase = (list: readonly string[]) => list.map(p => p.replace(/'/g, "['’
 // The answer to "Can everyone see my slides?", read in this order: what they can't see (or see instead), what they
 // can see, a moment asked for, then a line that starts with a no or a yes. Over the line without the name and fillers
 // in front, in lower case, with plain apostrophes.
+//
+// What they can't see ends its clause, with at most a word like "yet" after it. "I can't see anything wrong with it"
+// and "I don't see why not" go on, so they are no answer.
+const UNTIL = String.raw`(?:\s+(?:yet|at\s+all|now|right\s+now|either|here|for\s+(?:me|us)|on\s+(?:my|our)\s+(?:end|side|screen)))*(?=\s*(?:[.!,;]|$))`
+const CANT_SEE = String.raw`(?:can'?t|cannot|can\s+not|don'?t|do\s+not|doesn'?t|does\s+not|didn'?t|did\s+not|couldn'?t|could\s+not|not\s+able\s+to)\s+(?:\w+\s+){0,2}?see(?:\s+(?:it|them|anything|a\s+thing|(?:the|your|any)\s+(?:slides?|screen|presentation|deck)))?`
+const NOT_UP = String.raw`(?:not|isn'?t|aren'?t|nothing'?s?)\s+(?:showing(?:\s+up)?|coming\s+(?:up|through)|loading|loaded|there|visible|appearing|shared)`
+const CAMERA = String.raw`(?:just|only)\s+(?:see\s+)?(?:your|the|a)\s+(?:camera|video|face|tile)`
+// "I can see your camera but not the slides.": the one no a line with "but" can be.
+const SEE_NOT_SLIDES = /\bnot\s+(?:the|your)\s+(?:slides?|screen|presentation)\b/
+// Anywhere in a short line that is no question and has no "but".
 const SEE_NO = new RegExp(
   [
-    String.raw`\b(?:can'?t|cannot|can\s+not|don'?t|do\s+not|doesn'?t|does\s+not|didn'?t|did\s+not|couldn'?t|could\s+not|not\s+able\s+to)\s+(?:\w+\s+){0,2}?see\b`,
-    String.raw`\bsee\s+nothing\b`,
-    String.raw`\b(?:black|blank)\b`,
-    String.raw`\b(?:just|only)\s+(?:see\s+)?(?:your|the|a)\s+(?:camera|video|face|tile)\b`,
-    String.raw`\b(?:not|isn'?t|aren'?t|nothing'?s?)\s+(?:showing|coming\s+(?:up|through)|loading|loaded|there|visible|appearing|shared)\b`,
-    String.raw`\bnot\s+(?:the|your)\s+(?:slides?|screen|presentation)\b`,
-    String.raw`\bnothing\s+(?:yet|there|on\s+(?:the\s+)?screen)\b`,
+    String.raw`\b${CANT_SEE}${UNTIL}`,
+    String.raw`\bsee\s+nothing${UNTIL}`,
+    String.raw`\b(?:black|blank)\s+(?:screen|box|square|page|window|rectangle)${UNTIL}`,
+    String.raw`\b${CAMERA}${UNTIL}`,
+    String.raw`\b${NOT_UP}${UNTIL}`,
+    String.raw`\bnothing\s+(?:yet|there|on\s+(?:the\s+)?screen)${UNTIL}`,
+    SEE_NOT_SLIDES.source,
   ].join('|'),
+)
+// A line that is only one of those, with who or what it is about in front: "We don't see anything.", "It's just
+// black.", "The screen is blank." Black and blank are a no only so, as the whole of what is seen: "the chart is blank"
+// and "the black bar at the top" are about a slide. And as narration begins, only such a line is a no (lateNo).
+const SEE_NO_LINE = new RegExp(
+  String.raw`^(?:(?:we|i|you|everyone|everybody|it|it'?s|it\s+is|that'?s|they'?re|they\s+are|there'?s|there\s+is|(?:the|your)\s+(?:slides?|screen|presentation)(?:\s+(?:is|are)|'s)?|all\s+(?:i|we)\s+(?:see|get|have)\s+is)\s+)?` +
+    String.raw`(?:(?:just|only|still|all|completely)\s+)?` +
+    String.raw`(?:${CANT_SEE}|${NOT_UP}|see\s+nothing|${CAMERA}|(?:(?:see|get|have)\s+)?(?:(?:just|only)\s+)?(?:a\s+)?(?:black|blank)(?:\s+(?:screen|box|square|page|window|rectangle))?)` +
+    String.raw`${UNTIL}[.!\s]*$`,
 )
 const SEE_YES = new RegExp(
   [
@@ -189,8 +208,12 @@ const SEE_YES = new RegExp(
 )
 const SEE_WAIT =
   /^(?:wait|hold\s+on|hang\s+on|(?:one|just\s+a)\s+(?:moment|sec(?:ond)?|minute|min)|give\s+(?:it|me|us)\s+a\s+(?:moment|sec(?:ond)?|minute|min)|(?:it'?s\s+)?still\s+loading|it'?s\s+loading|loading)\b/
-const SEE_NO_START = /^(?:no(?!\s+(?:problem|worries|idea)\b)|nope|nah|nothing|not\s+(?:yet|really|at\s+all)|nobody|no\s+one|(?:we|i)\s+(?:can'?t|cannot|can\s+not))\b/
-const SEE_YES_START = /^(?:yes|yeah|yep|yup|ya|yah|sure|ok|okay|all\s+good|perfect|great|absolutely|definitely|mm-?\s*hmm?|mhm|uh-?\s*huh|we\s+can|i\s+can|got\s+it)\b/
+// "We can't" is a no when it ends there or says what they can't see ("I can't hear you" is no answer).
+const SEE_NO_START = new RegExp(
+  String.raw`^(?:no(?!\s+(?:problem|worries|idea)\b)|nope|nah|nothing(?!'?s?\s+wrong\b)|not\s+(?:yet|really|at\s+all)|nobody|no\s+one|(?:we|i)\s+(?:${CANT_SEE}|can'?t|cannot|can\s+not)${UNTIL})\b`,
+)
+// "We can", not "we can't" or "I cannot".
+const SEE_YES_START = /^(?:yes|yeah|yep|yup|ya|yah|sure|ok|okay|all\s+good|perfect|great|absolutely|definitely|mm-?\s*hmm?|mhm|uh-?\s*huh|(?:we|i)\s+can(?!'|not\b|\s+not\b)|got\s+it)\b/
 
 export interface SlideCommands {
   /**
@@ -204,6 +227,11 @@ export interface SlideCommands {
    * "wait" is a no.
    */
   windowReply(text: string, kind?: WindowKind): WindowAnswer
+  /**
+   * The first line after narration took over from "Can everyone see my slides?" while its window was open: true when it
+   * is still a no to it. Only a line without the name and with no question, that starts with a no or is one whole.
+   */
+  lateNo(text: string): boolean
 }
 
 export type WindowKind = 'carry_on' | 'can_see'
@@ -212,7 +240,7 @@ export type WindowAnswer = 'yes' | 'no' | 'wait' | null
 /** The rules for these names. Pure: the tests and src/name-check.ts make them for any name. */
 export function makeSlideCommands(agent: AgentName): SlideCommands {
   const { saidAfterName } = makeAttention(agent)
-  const names = [agent.name, ...agent.variants].map(n => n.toLowerCase().normalize('NFD').replace(/\p{M}/gu, ''))
+  const names = [agent.name, ...agent.variants].map(fold)
   const filler = `(?:${phrase(AROUND)}|${names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`
   const answer = (list: readonly string[]) =>
     new RegExp(`^(?:[,.!?:;\\s\\-–—]|${filler}\\b)*(?:${phrase(list)})\\b(?:(?:[,.!?:;\\s\\-–—]|${filler}\\b|(?:${phrase(list)})\\b))*$`, 'i')
@@ -220,6 +248,13 @@ export function makeSlideCommands(agent: AgentName): SlideCommands {
   const no = answer(NO)
   // What may come before an answer: punctuation, fillers, "so", "oh" and the name. Not the "uh" of "uh-huh".
   const lead = new RegExp(`^(?:[,.!?:;\\s\\-–—]|(?:${filler}|so|oh|ah|hey|and|well)\\b(?!-))*`, 'i')
+  // Any of its names, spellings or mishearings: the line was said to it.
+  const anyName = new RegExp(
+    `(?<![\\p{L}\\p{N}])(?:${[...names, ...agent.misheard.map(fold)].map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\p{L}\\p{N}])`,
+    'u',
+  )
+  const plainOf = (text: string) => fold(text).trim()
+  const seeLine = (plain: string) => plain.replace(/[‘’]/g, "'").replace(lead, '')
   return {
     command(text, opts = {}) {
       for (const said of saidAfterName(text)) {
@@ -231,13 +266,26 @@ export function makeSlideCommands(agent: AgentName): SlideCommands {
     windowReply(text, kind = 'carry_on') {
       const plain = text.normalize('NFD').replace(/\p{M}/gu, '').trim()
       if (!plain) return null
-      if (kind === 'can_see') return seeReply(plain.toLowerCase().replace(/[‘’]/g, "'").replace(lead, ''))
+      if (kind === 'can_see') return seeReply(seeLine(plainOf(text)))
       // Only one or the other: "No, not yet." is a no, and "Yes, but wait." neither (it is answered as a line).
       if (no.test(plain)) return 'no'
       if (yes.test(plain)) return 'yes'
       return null
     },
+    lateNo(text) {
+      const plain = plainOf(text)
+      // Said to it, or a question ("Alex, why can't I see the prices?"): narration has begun, so the attention rules
+      // answer it, and the slides go on.
+      if (!plain || plain.includes('?') || anyName.test(plain)) return false
+      const line = seeLine(plain)
+      return seeReply(line) === 'no' && (SEE_NO_START.test(line) || SEE_NO_LINE.test(line))
+    },
   }
+}
+
+/** Lower case, without accents. */
+function fold(text: string): string {
+  return text.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
 }
 
 // The rules for the assistant this process is (src/identity.ts).
@@ -249,20 +297,31 @@ export function slideCommand(text: string, opts: { inWindow?: boolean } = {}): S
 }
 
 /**
- * The answer to "Can everyone see my slides?" (see SEE_NO and the rest). A yes word with "but", or ending on a question,
- * is not a plain yes: it is answered as a line ("Yes, but can you make it bigger?").
+ * The answer to "Can everyone see my slides?" (see SEE_NO and the rest). A line with "but", or with a question, is no
+ * plain yes or no: it is answered as a line ("Yes, but can you make it bigger?", "Looks good, but the chart is blank.",
+ * "Yes. Alex, what's the black bar at the top?"). Only a line that starts with a no, or says the slides are missing
+ * after its "but", is a no all the same. Nor is a long line a no for a phrase in it: it is a remark.
  */
 function seeReply(line: string): WindowAnswer {
   if (!line) return null
-  if (SEE_NO.test(line)) return 'no'
-  if (SEE_YES.test(line)) return 'yes'
+  const asks = line.includes('?')
+  const remark = /\b(?:but|though|although|except)\b/.test(line)
+  const short = line.split(/\s+/).length <= 12
+  if (!asks && !remark && short && (SEE_NO.test(line) || SEE_NO_LINE.test(line))) return 'no'
+  if (!asks && remark && SEE_NOT_SLIDES.test(line)) return 'no'
+  if (!asks && !remark && SEE_YES.test(line)) return 'yes'
   if (SEE_WAIT.test(line)) return 'wait'
   if (SEE_NO_START.test(line)) return 'no'
-  if (SEE_YES_START.test(line) && !/\b(?:but|though|although|except)\b/.test(line) && !/\?\s*$/.test(line)) return 'yes'
+  if (!asks && !remark && SEE_YES_START.test(line)) return 'yes'
   return null
 }
 
 /** A yes or a no to the assistant's own question in its window (see SlideCommands.windowReply), or null. */
 export function windowReply(text: string, kind?: WindowKind): WindowAnswer {
   return COMMANDS.windowReply(text, kind)
+}
+
+/** Whether the first line after narration took over from "Can everyone see my slides?" still says no to it. */
+export function lateNo(text: string): boolean {
+  return COMMANDS.lateNo(text)
 }

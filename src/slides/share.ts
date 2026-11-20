@@ -501,8 +501,9 @@ export class ShareControl implements SlideSurface {
   async start(at: number, also?: readonly number[]): Promise<StartOutcome> {
     try {
       // Recall may still hold the share a stop asked it to drop: no POST goes over it. Not for long, though: a start
-      // always has an answer. (A restart under way keeps the share up: then this is only a show, below.)
-      if (this.deleting && !this.restarting && !(await this.unshared()) && !this.over) {
+      // always has an answer. A restart's own stop is waited for too: a stop since the restart began gave it up, and
+      // one still under way asks for its new share once Recall takes it, so this is only a show then (below).
+      if ((this.deleting || this.state === 'stopping') && !(await this.unshared()) && !this.over) {
         this.log(`a share was not asked for: Recall did not take the last stop in ${Math.round(this.timing.deleteWaitMs / 1000)} s`)
         return 'failed'
       }
@@ -511,8 +512,8 @@ export class ShareControl implements SlideSurface {
         this.log(refused === 'disabled' ? 'a share was not asked for: sharing is off for this meeting' : 'a share was not asked for: too many in a short time')
         return refused
       }
-      if (this.state !== 'off') {
-        // Already up: only a show.
+      if (this.state === 'loaded' || this.state === 'requested') {
+        // Already up, or being asked for: only a show.
         const shown = await this.show(at, also)
         return shown === 'shown' ? 'loaded' : 'not_loading'
       }
@@ -632,7 +633,8 @@ export class ShareControl implements SlideSurface {
       if (old) this.retire(old)
       this.unshare()
       const taken = await this.unshared()
-      if (this.over || generation !== this.generation) return
+      // A stop gave it up, or a start asked for a share meanwhile: never a second POST.
+      if (this.over || generation !== this.generation || this.state !== 'stopping') return
       if (!taken) {
         this.log(`share ${old?.epoch ?? 0} was not restarted: Recall did not take its stop in ${Math.round(this.timing.deleteWaitMs / 1000)} s`)
         this.generation++
@@ -834,9 +836,12 @@ export class ShareControl implements SlideSurface {
     }
   }
 
-  /** Someone other than the bot holds the share's address: stopped, and no more shares for this meeting. */
+  /**
+   * Someone other than the bot holds the share's address: stopped, and no more shares for this meeting. Two copies of
+   * the bot's own page that each take the link back look the same from here (Gate 0's G17 checks Recall never runs two).
+   */
   private contested(): void {
-    this.log('the share was contested: its link was taken over again and again, so it was stopped')
+    this.log('the share was contested: its link was taken over again and again, so it was stopped (someone else holds its address, or the bot runs a second copy of the slides page)')
     this.disabled = true
     void this.stop()
     this.emit('contested')

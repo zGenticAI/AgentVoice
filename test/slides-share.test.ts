@@ -463,7 +463,7 @@ test("someone else who takes the link once is cut off: the bot's page links agai
 })
 
 test("someone else who takes the link again each time it is cut off ends the share as contested: stopped, no more shares", async t => {
-  captureLogs(t)
+  const logs = captureLogs(t)
   const s = await service(t, { slidesTiming: { ...FAST, upgradeGapMs: 300 } })
   const recall = fakeRecall()
   const control = s.svc.slides.create({ botId: 'bot-1', images: IMAGES, start: recall.start, stop: recall.stop })
@@ -490,6 +490,8 @@ test("someone else who takes the link again each time it is cut off ends the sha
   assert.equal(control.state, 'off')
   assert.deepEqual(recall.calls.map(c => c.call), ['start', 'stop'])
   assert.equal(await control.start(0), 'disabled')
+  // The log says the other cause that looks the same: two copies of the bot's own page.
+  assert.ok(logs.some(l => /contested.*second copy of the slides page/.test(l)), logs.join('\n'))
   // The DELETE takes the bot's page out of the meeting; without its link the page blanks on its own timers.
 })
 
@@ -584,6 +586,58 @@ test('stuck and contested are said at once while Recall keeps refusing the DELET
   assert.deepEqual(contested, ['contested'])
   assert.equal(b.control.state, 'stopping')
   b.control.close()
+})
+
+test("a stop while a restart's DELETE is on its way, then a start: it waits for Recall to take it, then one POST, and loads", async t => {
+  captureLogs(t)
+  const s = await service(t)
+  let release: ((status: number) => void) | null = null
+  const recall = fakeRecall({ stop: () => new Promise<number>(resolve => (release = resolve)) })
+  const { control, page, started } = await live(s, 0, { recall })
+  t.after(() => control.close())
+  assert.equal(await started, 'loaded')
+  // The page misses an ack: the restart's DELETE goes to Recall, which has not answered yet.
+  page.ws.removeAllListeners('message')
+  assert.equal(await control.show(1), 'timeout')
+  await until(() => release !== null)
+  assert.equal(control.state, 'stopping')
+  // "Alex, stop presenting", then "Alex, start the presentation", before Recall answers.
+  void control.stop()
+  let outcome: string | null = null
+  void control.start(0).then(o => void (outcome = o))
+  await wait(FAST.ackMs! + 200)
+  assert.equal(outcome, null, 'no answer while Recall still holds the share: not "my slides didn\'t load"')
+  assert.deepEqual(recall.calls.map(c => c.call), ['start', 'stop'], 'no POST over it')
+  release!(204)
+  await until(() => recall.calls.filter(c => c.call === 'start').length === 2)
+  const second = await link(s.port, shareQuery(recall, 1))
+  assert.equal(second.outcome, 'open')
+  actAsPage(second)
+  await until(() => outcome !== null)
+  assert.equal(outcome, 'loaded')
+  await wait(100)
+  assert.deepEqual(recall.calls.map(c => c.call), ['start', 'stop', 'start'], 'one POST: the restart the stop gave up asks for none')
+  // With no stop, a start while the restart's DELETE is on its way waits for it too, and the two ask for one share.
+  const r2 = { release: null as ((status: number) => void) | null }
+  const again = fakeRecall({ stop: () => new Promise<number>(resolve => (r2.release = resolve)) })
+  const b = await live(s, 0, { recall: again })
+  t.after(() => b.control.close())
+  assert.equal(await b.started, 'loaded')
+  b.page.ws.removeAllListeners('message')
+  assert.equal(await b.control.show(1), 'timeout')
+  await until(() => r2.release !== null)
+  let next: string | null = null
+  void b.control.start(0).then(o => void (next = o))
+  await wait(FAST.ackMs! + 200)
+  assert.equal(next, null)
+  r2.release!(204)
+  await until(() => again.calls.filter(c => c.call === 'start').length === 2)
+  const third = await link(s.port, shareQuery(again, 1))
+  actAsPage(third)
+  await until(() => next !== null)
+  assert.equal(next, 'loaded')
+  await wait(100)
+  assert.deepEqual(again.calls.map(c => c.call), ['start', 'stop', 'start'])
 })
 
 test("a camera drop while a restart's DELETE is on its way: no POST after it, and the share fails", async t => {

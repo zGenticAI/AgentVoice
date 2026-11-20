@@ -6,7 +6,7 @@ import { attention } from '../src/brain/attention.ts'
 import { isCancelRequest, isLeaveRequest } from '../src/brain/text.ts'
 import { SLIDES_LINES } from '../src/consent.ts'
 import type { AgentName } from '../src/identity.ts'
-import { type SlideCommand, makeSlideCommands, slideCommand, windowReply } from '../src/slides/commands.ts'
+import { type SlideCommand, lateNo, makeSlideCommands, slideCommand, windowReply } from '../src/slides/commands.ts'
 
 const POSITIVES: [string, SlideCommand][] = [
   ['Alex, start the presentation.', { kind: 'start' }],
@@ -147,8 +147,26 @@ test('"Can everyone see my slides?" is answered in sentences: read more loosely,
     // Neither: answered as any line in a window.
     ['Yes, but it\'s a bit small.', null], ["Yes, what's the agenda?", null], ["I don't know.", null], ['No problem.', null],
     ['No idea, ask Sam.', null], ['Thanks.', null], ['Next slide.', null], ['', null],
+    // A yes with a remark, a question, or a line that says "can't see" or "black" about something else: never a no, and
+    // answered as a line.
+    ['Looks good, but the chart is blank.', null], ["Yes. Alex, what's the black bar at the top?", null],
+    ["I can't see anything wrong with it.", null], ["I don't see why not.", null], ["I can't hear you.", null],
+    ["Alex, can you go back? I couldn't see the numbers.", null], ["Alex, why can't I see the prices?", null],
+    // Black or blank as the whole of what they see is still a no.
+    ['The screen is blank.', 'no'], ['I see a black screen.', 'no'], ["We can't see it yet.", 'no'],
   ]
   for (const [line, reading] of table) assert.equal(windowReply(line, 'can_see'), reading, line)
+  // The first line after narration took over: a plain no without the name, never a question or a line said to it.
+  for (const line of ["No, we can't see it.", "It's just black.", "We don't see anything.", 'Nope.', "Nothing's showing."]) {
+    assert.equal(lateNo(line), true, line)
+  }
+  for (const line of [
+    "Alex, can you go back? I couldn't see the numbers.", "Alex, why can't I see the prices?", "Alex, we can't see it.",
+    'Looks good, but the chart is blank.', "Yes. Alex, what's the black bar at the top?", "I can't see anything wrong with it.",
+    "I don't see why not.", "No, no, it's fine, we can see it.", "Can't see it?", 'The chart is blank.',
+  ]) {
+    assert.equal(lateNo(line), false, line)
+  }
   // "Shall I carry on?" keeps its closed list: "wait" and "hold on" are a no there, and "mm-hm" a yes.
   for (const [line, reading] of [['Wait.', 'no'], ['Hold on.', 'no'], ['Mm-hm.', 'yes'], ['Uh-huh.', 'yes'], ['Yes, we can see them.', null]] as const) {
     assert.equal(windowReply(line), reading, line)

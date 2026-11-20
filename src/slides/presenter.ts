@@ -20,7 +20,7 @@
 import { endsOnQuestion } from '../brain/attention.ts'
 import { type HintPlatform, SLIDES_LINES, type SlidesLines } from '../consent.ts'
 import { stripBlockTags } from '../untrusted.ts'
-import { type SlideCommand, slideCommand, windowReply } from './commands.ts'
+import { type SlideCommand, lateNo, slideCommand, windowReply } from './commands.ts'
 import { MAX_PAGE_TEXT, MAX_TITLE, type Manifest } from './manifest.ts'
 import type { Script } from './script.ts'
 import type { SlideSurface, StartOutcome } from './surface.ts'
@@ -488,11 +488,12 @@ export class Presenter {
     try {
       if (this.state === 'disposed') return null
       const mine = this.window && Date.now() < this.window.until ? this.window.kind : null
-      // Narration took over from "Can everyone see my slides?" while its window was open: the first line after it is
-      // still its answer, and a "no" stops the slides.
+      // Narration took over from "Can everyone see my slides?" while its window was open: the first line after it may
+      // still be its answer, and a plain "no" stops the slides. A question, or a line said to it, goes on to the
+      // attention rules: "Alex, why can't I see the prices?" is about a slide.
       const late = this.canSeeLate > Date.now() && (this.state === 'narrating' || this.state === 'held')
       this.canSeeLate = 0
-      if (late && !mine && windowReply(text, 'can_see') === 'no') {
+      if (late && !mine && lateNo(text)) {
         this.notSeen()
         return 'no to "can everyone see my slides", as the slides began'
       }
@@ -604,7 +605,9 @@ export class Presenter {
       if (action === 'end') {
         const was = this.state
         if (was === 'ended') return { ok: true, note: 'The presentation had ended already.' }
-        void this.stopFlow({ end: true, owner: true, quiet: was === 'ready' || was === 'stopped' }).catch(err => this.fault('ending', err))
+        // It never talks while it can't hear "please leave": the share just stops.
+        const quiet = was === 'ready' || was === 'stopped' || this.mute() === 'deaf'
+        void this.stopFlow({ end: true, owner: true, quiet }).catch(err => this.fault('ending', err))
         return { ok: true, note: 'The presentation is over for this meeting: the room can no longer restart it.' }
       }
       if (action === 'wrap_up') {
@@ -627,7 +630,9 @@ export class Presenter {
       const view = this.view
       const done = this.command(command, 'owner')
       if (!done) return { ok: false, note: `Not now: the presentation is ${this.state === 'narrating' ? 'under way' : STATE_WORDS[this.state]}.` }
-      return this.mutedNote(action === 'resume', view) ?? { ok: true, note: `Done: ${done}.` }
+      // Only a resume or a move waits for it to talk again: a start or a stop is done as it is.
+      const moves = action === 'resume' || action === 'next' || action === 'back' || action === 'goto' || action === 'restart'
+      return (moves ? this.mutedNote(action === 'resume', view) : null) ?? { ok: true, note: `Done: ${done}.` }
     } catch (err) {
       this.fault('an owner action', err)
       return { ok: false, note: 'It failed: see the service log.' }
@@ -667,7 +672,8 @@ export class Presenter {
       }
       case 'stop': {
         if (this.state === 'ready' || this.state === 'stopped' || this.state === 'ended') return owner ? null : 'stop (nothing shared)'
-        void this.stopFlow({ owner }).catch(err => this.fault('stopping', err))
+        // The owner's stop while it can't hear "please leave": the share just stops, with nothing said.
+        void this.stopFlow({ owner, quiet: owner && this.mute() === 'deaf' }).catch(err => this.fault('stopping', err))
         return 'stop'
       }
       case 'pause': {
@@ -1087,10 +1093,13 @@ export class Presenter {
   }
 
   /**
-   * For an owner's action while it may not talk: what was done, and when it carries on. Null when it may talk, or the
-   * action changed nothing. resume: it was asked to resume. view: the slide on screen before the action.
+   * For an owner's resume or move while it may not talk: what was done, and when it carries on. Null when it may talk,
+   * the action changed nothing, or nothing is on screen. resume: it was asked to resume. view: the slide on screen
+   * before the action.
    */
   private mutedNote(resume: boolean, view: number | null = null): { ok: boolean; note: string } | null {
+    // Nothing is on screen, or nothing yet: there is no slide to speak of.
+    if (this.state === 'stopped' || this.state === 'ended' || this.state === 'starting') return null
     const why = this.mute()
     // Narration was started: it holds at its first step. A detour, or a move in questions, shows a slide and waits.
     const carries = this.state === 'narrating'

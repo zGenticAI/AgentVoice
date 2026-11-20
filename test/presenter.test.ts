@@ -429,6 +429,21 @@ test('answers to "Can everyone see my slides?" as people say them: a no stops th
     assert.match(why.why, /wait, to "can everyone see my slides"/, moment)
     done(s)
   }
+  // A yes with a remark, a question, or "can't see" about something else: no hint, the share stays, and it is answered.
+  const lines = ['Looks good, but the chart is blank.', "Yes. Alex, what's the black bar at the top?", "I can't see anything wrong with it.", "I don't see why not."]
+  for (const line of lines) {
+    const s = start({ answers: [[{ kind: 'say', text: 'It is the header.' }]], timing: { canSeeQuietMs: 300, canSeeWindowMs: 5000 } })
+    await checking(s)
+    await until(() => s.spoken.includes(SLIDES_LINES.canSee))
+    await wait(30)
+    s.said(line)
+    await until(() => s.spoken.includes('Hello everyone.'), `${line}: narration goes on`)
+    assert.deepEqual(s.answered, [line], `${line}: answered as a line`)
+    assert.ok(!s.events.some(e => e.event === 'not_seen'), line)
+    assert.ok(!s.spoken.includes(SLIDES_LINES.hints.zoom), line)
+    assert.deepEqual(s.surface.calls.filter(c => c === 'stop'), [], line)
+    done(s)
+  }
 })
 
 test('"Mm-hm" to "Shall I carry on?" is a yes; "Hmm" (a filler) leaves its window open, so silence still carries on', async () => {
@@ -540,6 +555,27 @@ test('"Can everyone see my slides?": the quiet that moves on counts from when th
   assert.equal(s.surface.calls.filter(c => c.startsWith('start')).at(-1), 'start 0')
   await until(() => s.spoken.filter(l => l === 'Hello everyone.').length >= 1 && s.presenter.current === 'narrating')
   done(s)
+  // A question for it, or a line that says "can't see" about something else, as the slides begin: not a no. The share
+  // stays, and a line said to it is answered, or carried out when it is a command.
+  const late: [string, 'answered' | 'back' | null][] = [
+    ["Alex, why can't I see the prices?", 'answered'], ["Alex, can you go back? I couldn't see the numbers.", 'back'],
+    ["I can't see anything wrong with it.", null], ["I don't see why not.", null],
+  ]
+  for (const [line, then] of late) {
+    const t = start({ answers: [[{ kind: 'say', text: 'They are on the next slide.' }]], voice: { [SLIDES_LINES.canSee]: 200 }, timing: { canSeeQuietMs: 300, canSeeWindowMs: 3000 } })
+    await checking(t)
+    await until(() => t.presenter.current === 'narrating', 'the quiet after it moves on')
+    await wait(50)
+    t.said(line)
+    await wait(400)
+    assert.ok(!t.events.some(e => e.event === 'not_seen'), line)
+    assert.ok(!t.spoken.includes(SLIDES_LINES.hints.zoom), line)
+    assert.deepEqual(t.surface.calls.filter(c => c === 'stop'), [], line)
+    assert.notEqual(t.presenter.current, 'stopped', line)
+    if (then === 'answered') await until(() => t.answered.includes(line), `${line}: answered`)
+    if (then === 'back') assert.match(t.session.whyNotAnswered(5).lines!.find(l => l.line === line)!.why, /back/, line)
+    done(t)
+  }
 })
 
 test('a question before the deck\'s first sentence is answered, then the deck starts with no "Back to"', async () => {
@@ -923,6 +959,28 @@ test('speech recognition lost: the page stops at the end of the sentence it play
   await until(() => s.next(SLIDES_LINES.carryOn) !== undefined, 'carried on once it hears again')
   assert.equal(s.next(SLIDES_LINES.carryOn), 'Business is twenty-nine.')
   done(s)
+})
+
+test("the owner's stop or end while it can't hear, or has no camera page: \"Done\", the share stops, and nothing is said while it can't hear", async () => {
+  for (const [action, why] of [['stop', 'deaf'], ['end', 'deaf'], ['stop', 'page_away']] as const) {
+    const s = start({ from: 2, latency: 30 })
+    await narrating(s)
+    if (why === 'deaf') {
+      s.flux.emit('lost', 'test')
+      await until(() => s.spoken.includes(SLIDES_LINES.deaf), 'the fixed line')
+    } else s.ws.drop()
+    await until(() => s.presenter.status().held === why, why)
+    await wait(50)
+    const count = s.spoken.length
+    const note = s.presenter.owner(action)
+    if (action === 'stop') assert.deepEqual(note, { ok: true, note: 'Done: stop.' }, `${action}, ${why}: no slide is on screen`)
+    else assert.deepEqual(note, { ok: true, note: 'The presentation is over for this meeting: the room can no longer restart it.' })
+    await until(() => s.surface.calls.includes('stop'), `${action}, ${why}: the share stops`)
+    assert.equal(s.presenter.current, action === 'stop' ? 'stopped' : 'ended')
+    await wait(200)
+    if (why === 'deaf') assert.deepEqual(s.spoken.slice(count), [], `${action}: nothing said while it can't hear`)
+    done(s)
+  }
 })
 
 test("while it can't hear, the owner's resume and moves say nothing: the slide is shown, and it carries on once it hears again", async () => {
