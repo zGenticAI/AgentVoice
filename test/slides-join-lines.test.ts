@@ -101,6 +101,7 @@ test('the fixed lines of a meeting with slides: as written, named for another as
       shallCarryOn: 'Shall I carry on?',
       carryOn: "I'll carry on.",
       stopped: "Sure, I'll stop sharing my slides.",
+      stoppedForOwner: "I'll stop sharing my slides now.",
       shareFailed: "I couldn't share my slides.",
       notLoading: "My slides didn't load, so I've stopped sharing them.",
       stuck: "My slides seem stuck, so I've stopped sharing them.",
@@ -120,7 +121,7 @@ test('the fixed lines of a meeting with slides: as written, named for another as
     microsoft_teams:
       'It looks like I can\'t share my screen here. The organizer can make me a presenter from the participant list; then say "Alex, start the presentation" again.',
   })
-  assert.equal(SLIDES_FIXED_LINES.length, 18)
+  assert.equal(SLIDES_FIXED_LINES.length, 19)
   assert.equal(new Set(SLIDES_FIXED_LINES).size, SLIDES_FIXED_LINES.length)
   for (const line of SLIDES_FIXED_LINES) {
     assert.doesNotMatch(line, /Back to|Here's slide|Moving to slide|don't have slide/, 'said live: they would put deck content on disk')

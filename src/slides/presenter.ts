@@ -85,6 +85,29 @@ export type PresenterState = 'ready' | 'starting' | 'checking' | 'narrating' | '
  */
 export type HoldCause = 'question' | 'talk' | 'asked' | 'owner' | 'page_away' | 'deaf' | 'voice' | 'detour'
 
+/** The states and the causes of a hold in words, for the owner: notes, events and the status line. */
+export const STATE_WORDS: Record<PresenterState, string> = {
+  ready: 'ready to start',
+  starting: 'starting to share',
+  checking: 'asking whether everyone can see the slides',
+  narrating: 'presenting',
+  held: 'held',
+  qa: 'taking questions on the last slide',
+  stopped: 'stopped (it can be started again)',
+  ended: 'ended for this meeting',
+  disposed: 'over: the meeting has ended',
+}
+export const HOLD_WORDS: Record<HoldCause, string> = {
+  question: 'answering a question',
+  talk: 'someone talked over it',
+  asked: 'someone said pause, or never mind',
+  owner: 'you paused it: only you can resume it',
+  page_away: 'its camera page is reconnecting',
+  deaf: "it can't hear the meeting",
+  voice: 'its voice failed',
+  detour: 'showing a slide out of order',
+}
+
 // A new cause replaces the one held only when it says more: an owner's pause is never lifted by a question.
 const PRIORITY: Record<HoldCause, number> = { talk: 0, question: 1, voice: 2, page_away: 3, deaf: 4, detour: 5, asked: 6, owner: 7 }
 
@@ -575,11 +598,11 @@ export class Presenter {
       if (action === 'end') {
         const was = this.state
         if (was === 'ended') return { ok: true, note: 'The presentation had ended already.' }
-        void this.stopFlow({ end: true, quiet: was === 'ready' || was === 'stopped' }).catch(err => this.fault('ending', err))
+        void this.stopFlow({ end: true, owner: true, quiet: was === 'ready' || was === 'stopped' }).catch(err => this.fault('ending', err))
         return { ok: true, note: 'The presentation is over for this meeting: the room can no longer restart it.' }
       }
       if (action === 'wrap_up') {
-        if (!this.presenting()) return { ok: false, note: `Nothing is being presented (${this.state}).` }
+        if (!this.presenting()) return { ok: false, note: this.nothingNote() }
         const last = this.lastNarrated()
         this.opts.host.interrupt()
         this.resume = { i: last, k: 0 }
@@ -588,7 +611,7 @@ export class Presenter {
       }
       if (action === 'pause') {
         if (this.state === 'qa') return { ok: true, note: 'The last slide is up, for questions: there is nothing to pause.' }
-        if (!this.presenting() && this.state !== 'checking') return { ok: false, note: `Nothing is being presented (${this.state}).` }
+        if (!this.presenting() && this.state !== 'checking') return { ok: false, note: this.nothingNote() }
         if (this.state === 'narrating') this.opts.host.interrupt()
         this.holdAs('owner')
         this.ownerPaused = true
@@ -597,12 +620,17 @@ export class Presenter {
       const command: SlideCommand = action === 'goto' ? { kind: 'goto', slide: slide! } : { kind: action }
       const view = this.view
       const done = this.command(command, 'owner')
-      if (!done) return { ok: false, note: `Not now: the presentation is ${this.state}.` }
+      if (!done) return { ok: false, note: `Not now: the presentation is ${this.state === 'narrating' ? 'under way' : STATE_WORDS[this.state]}.` }
       return this.mutedNote(action === 'resume', view) ?? { ok: true, note: `Done: ${done}.` }
     } catch (err) {
       this.fault('an owner action', err)
       return { ok: false, note: 'It failed: see the service log.' }
     }
+  }
+
+  /** Why an owner's action that needs a presentation under way was refused. */
+  private nothingNote(): string {
+    return `Nothing is being presented: it is ${STATE_WORDS[this.state]}.`
   }
 
   // --- Commands ---------------------------------------------------------------------------------------------------
@@ -633,7 +661,7 @@ export class Presenter {
       }
       case 'stop': {
         if (this.state === 'ready' || this.state === 'stopped' || this.state === 'ended') return owner ? null : 'stop (nothing shared)'
-        void this.stopFlow({}).catch(err => this.fault('stopping', err))
+        void this.stopFlow({ owner }).catch(err => this.fault('stopping', err))
         return 'stop'
       }
       case 'pause': {
@@ -748,7 +776,8 @@ export class Presenter {
     this.opts.host.interrupt()
     if (i === this.resume.i) {
       this.resume = { i, k: 0 }
-      this.narrateFrom({ prefix: owner ? `Moving to slide ${this.slides[i].page}.` : undefined })
+      // The slide is on screen already: the room hears that it starts again, not that it moves.
+      this.narrateFrom({ prefix: owner ? `Going through slide ${this.slides[i].page} again.` : undefined })
       return
     }
     this.narrateFrom({ detour: i })
@@ -841,8 +870,11 @@ export class Presenter {
     })
   }
 
-  /** Stops the share: said (unless quiet), then the share stopped. end: for good, by the owner. */
-  private async stopFlow(opts: { end?: boolean; quiet?: boolean }): Promise<void> {
+  /**
+   * Stops the share: said (unless quiet), then the share stopped. end: for good, by the owner. owner: the owner's stop,
+   * which nobody in the room asked for, so its line is not an answer to anyone.
+   */
+  private async stopFlow(opts: { end?: boolean; quiet?: boolean; owner?: boolean }): Promise<void> {
     const was = this.state
     this.attempt++
     this.run++
@@ -854,7 +886,7 @@ export class Presenter {
     const shared = was !== 'ready' && was !== 'stopped' && was !== 'ended'
     // At once: what is still playing of the narration stops, and the bookmark stays where the meeting stopped hearing.
     if (was === 'narrating') this.opts.host.interrupt()
-    if (!opts.quiet && shared) this.sayNow(this.lines.stopped)
+    if (!opts.quiet && shared) this.sayNow(opts.owner ? this.lines.stoppedForOwner : this.lines.stopped)
     if (!shared) return
     this.view = null
     await this.shared(() => this.opts.surface.stop(), undefined)
@@ -1232,7 +1264,7 @@ export class Presenter {
       const hold = this.holding
       if (!hold.told && now - hold.since >= this.timing.heldLongMs) {
         hold.told = true
-        this.emit('held_long', `The slides have been held for over ${Math.round(this.timing.heldLongMs / 60_000)} minutes (${hold.cause}).`)
+        this.emit('held_long', `The slides have been held for over ${Math.round(this.timing.heldLongMs / 60_000)} minutes (${HOLD_WORDS[hold.cause]}).`)
       }
       if (!host.free() || this.window) return
       // Hearing is back before anything of the deck was said: on to the check question, with nothing to carry on from.

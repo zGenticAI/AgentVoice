@@ -108,6 +108,8 @@ export interface SlidesLines {
   deaf: string
   /** ElevenLabs failed twice: played from the kept audio, which needs no ElevenLabs. */
   voice: string
+  /** The owner's stop or end: nobody in the room asked, so it answers no one. */
+  stoppedForOwner: string
   /** A room "carry on" while the owner has paused the deck. */
   waitForOwner: string
   /** The owner's wrap_up. */
@@ -131,6 +133,7 @@ export function slidesLines(id: Pick<Names, 'name' | 'owner'>): SlidesLines {
     shallCarryOn: 'Shall I carry on?',
     carryOn: "I'll carry on.",
     stopped: "Sure, I'll stop sharing my slides.",
+    stoppedForOwner: "I'll stop sharing my slides now.",
     shareFailed: "I couldn't share my slides.",
     notLoading: "My slides didn't load, so I've stopped sharing them.",
     stuck: "My slides seem stuck, so I've stopped sharing them.",

@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events'
 import { type BrainEvent, slideSection } from '../src/brain/brain.ts'
 import type { ToSession } from '../src/bridge.ts'
 import { JOIN_LINE, LEAVE_LINE, SLIDES_LINES } from '../src/consent.ts'
-import { statusLine } from '../src/cli/slides-status.ts'
+import { presentationLines, statusLine } from '../src/cli/slides-status.ts'
 import { SLIDES_LABEL } from '../src/identity.ts'
 import { MeetingSession, type SessionSlides } from '../src/pipeline/session.ts'
 import type { OwnerAction, PresentationEvent, PresenterSlide, PresenterTiming } from '../src/slides/presenter.ts'
@@ -732,7 +732,7 @@ test('a stop keeps the owner\'s pause: the room\'s start then gets "I\'ll wait f
   assert.deepEqual(s.spoken.slice(count).filter(l => NARRATION.includes(l)), [], 'no narration')
   const why = s.session.whyNotAnswered(5).lines!
   assert.ok(why.some(l => l.line === 'Alex, start the presentation.' && /start \(refused: paused by the owner\)/.test(l.why)))
-  assert.deepEqual(s.presenter.owner('resume'), { ok: false, note: 'Not now: the presentation is stopped.' })
+  assert.deepEqual(s.presenter.owner('resume'), { ok: false, note: 'Not now: the presentation is stopped (it can be started again).' })
   assert.equal(s.presenter.owner('start').ok, true)
   await until(() => s.spoken.slice(count).some(l => NARRATION.includes(l)), 'narration again')
   done(s)
@@ -1170,6 +1170,41 @@ test('owner moves are said aloud; wrap_up jumps to the last slide', async () => 
   assert.equal(s.presenter.owner('wrap_up').ok, true)
   await until(() => s.spoken.includes(SLIDES_LINES.wrapUp))
   done(s)
+})
+
+test("the owner's notes and lines read plainly: no doubled refusal or full stop, states and holds in words, no move said for a restart", async () => {
+  // What npm run slides -- control prints for the owner's action.
+  const printed = (s: ReturnType<typeof start>, action: OwnerAction, slide?: number) =>
+    presentationLines({ status: 200, body: JSON.stringify(s.presenter.owner(action, slide)) }, 'Alex').lines
+  const s = start()
+  await until(() => s.session.consentDone)
+  assert.deepEqual(printed(s, 'goto', 2), ['Not now: the presentation is ready to start.'])
+  assert.deepEqual(printed(s, 'goto', 3), ['Not done: Slide 3 is not in this meeting: it is excluded, or not in the script.'])
+  assert.deepEqual(printed(s, 'wrap_up'), ['Not done: Nothing is being presented: it is ready to start.'])
+  s.said('Alex, start the presentation.')
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  // The owner's restart of the slide on screen: it starts again, it does not move.
+  assert.equal(s.presenter.owner('restart').ok, true)
+  await until(() => s.next('Going through slide 2 again.') === 'Team is twelve dollars.', 'the slide from its start')
+  assert.ok(!s.spoken.includes('Moving to slide 2.'))
+  // A hold that lasts is told in words.
+  s.said('Alex, go back.')
+  await until(() => s.events.some(e => e.event === 'held_long'), 'held_long')
+  assert.match(s.events.find(e => e.event === 'held_long')!.note, /\(showing a slide out of order\)\.$/)
+  // The owner's stop: nobody in the room asked for it, so it is not "Sure".
+  assert.equal(s.presenter.owner('stop').ok, true)
+  await until(() => s.spoken.includes(SLIDES_LINES.stoppedForOwner), "the owner's stop line")
+  assert.ok(!s.spoken.includes(SLIDES_LINES.stopped))
+  done(s)
+  // In questions after the last slide: the state in words.
+  const qa = start()
+  await narrating(qa)
+  await until(() => qa.presenter.current === 'qa', 'questions', 5000)
+  assert.deepEqual(printed(qa, 'restart'), ['Not now: the presentation is taking questions on the last slide.'])
+  assert.equal(qa.presenter.owner('end').ok, true)
+  await until(() => qa.spoken.includes(SLIDES_LINES.stoppedForOwner), "the owner's end line")
+  assert.ok(!qa.spoken.includes(SLIDES_LINES.stopped))
+  done(qa)
 })
 
 test('after the last slide, questions; two quiet minutes (short here) stop the share quietly, with a marker', async () => {
