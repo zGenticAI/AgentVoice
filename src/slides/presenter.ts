@@ -185,9 +185,9 @@ export interface SlidesForBrain {
     text: string
     /** The sentence narration was at, or ''. */
     saying: string
-    /** The titles of the slides before and after it, or ''. */
-    before: string
-    after: string
+    /** The slides before and after it among the meeting's (their page and title), or null at either end. */
+    before: { page: number; title: string } | null
+    after: { page: number; title: string } | null
   } | null
 }
 
@@ -423,16 +423,16 @@ export class Presenter {
         script: slide.sentences.join(' '),
         text: slide.text,
         saying,
-        before: i > 0 ? this.titled(i - 1) : '',
-        after: i + 1 < this.slides.length ? this.titled(i + 1) : '',
+        before: i > 0 ? this.near(i - 1) : null,
+        after: i + 1 < this.slides.length ? this.near(i + 1) : null,
       },
     }
   }
 
-  /** "slide 5, Adoption" */
-  private titled(i: number): string {
+  /** A slide's page and title, for the brain. */
+  private near(i: number): { page: number; title: string } {
     const slide = this.slides[i]
-    return `slide ${slide.page}${slide.title ? `, ${slide.title}` : ''}`
+    return { page: slide.page, title: slide.title }
   }
 
   /** The slide on screen (its index), while the slides are shared; null otherwise. */

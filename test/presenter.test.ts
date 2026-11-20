@@ -1491,8 +1491,8 @@ test('a question mid-deck: the brain gets the outline and the slide on screen, a
     script: 'Team is twelve dollars. Business is twenty-nine. Any questions so far?',
     text: '',
     saying: 'Team is twelve dollars.',
-    before: 'slide 1, Welcome',
-    after: 'slide 4, Security',
+    before: { page: 1, title: 'Welcome' },
+    after: { page: 4, title: 'Security' },
   })
   // Slide 1's narration is one line; the slide on screen is as it was.
   assert.match(transcript, /^\(Alex presented slide 1 from the script: Welcome\)$/m)
@@ -1523,7 +1523,7 @@ test('slide numbers are page numbers: with a page left out of the meeting, nothi
   assert.equal(s.presenter.onScreenLine(), 'On screen: slide 5 (4th of 4 in this presentation), Next steps.')
   const current = s.presenter.forBrain().current!
   assert.deepEqual([current.page, current.position, current.of], [5, 4, 4])
-  assert.match(slideSection(current, 'Sam'), /^On screen now: slide 5 \(4th of 4 in this presentation\), Next steps\.$/m)
+  assert.match(slideSection(current, 'Sam'), /^On screen now: slide 5 \(4th of 4 in this presentation\)\.\nAround it: slide 4 before it\.$/m)
   assert.equal(
     statusLine(s.presenter.status()),
     'presenting, slide 5 on screen ("Next steps"); it carries on from slide 5; 4 slides are in this meeting. The share is loaded.',
