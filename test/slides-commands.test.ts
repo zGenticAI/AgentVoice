@@ -130,6 +130,31 @@ test('the yes and no reader: a closed list, one or the other; anything else is a
   }
 })
 
+test('"Can everyone see my slides?" is answered in sentences: read more loosely, and "hold on" there asks for a moment', () => {
+  const table: [string, 'yes' | 'no' | 'wait' | null][] = [
+    // Yes, as people say it.
+    ['Yes.', 'yes'], ['Yes we can.', 'yes'], ['Yes, we can see them.', 'yes'], ['Yes, I can see it.', 'yes'], ['We can see it.', 'yes'],
+    ['Yep, I can see them.', 'yes'], ['I can see it.', 'yes'], ['We see it.', 'yes'], ['Mm-hm.', 'yes'], ['Uh-huh.', 'yes'],
+    ['Yes, looks great.', 'yes'], ['Looks good.', 'yes'], ['Oh nice, there it is.', 'yes'], ['Um, yes.', 'yes'], ['Perfect.', 'yes'],
+    ["No, no, it's fine, we can see it.", 'yes'],
+    // No, as people say it: what they can't see, or what they see instead.
+    ['No.', 'no'], ['Nope.', 'no'], ['Not yet.', 'no'], ['Nothing.', 'no'], ["No, we can't see anything.", 'no'], ["I can't.", 'no'],
+    ["I don't see anything.", 'no'], ["We don't see them.", 'no'], ["We can't see your slides.", 'no'], ["No, it's not showing.", 'no'],
+    ['No, we just see your camera.', 'no'], ["It's just black.", 'no'], ['Only a black screen.', 'no'], ['Nobody can see it.', 'no'],
+    ['I can see your camera but not the slides.', 'no'], ["Alex, we can't see it.", 'no'],
+    // A moment: the slides may still be loading for them.
+    ['Hold on.', 'wait'], ['Wait.', 'wait'], ['Hang on.', 'wait'], ['One moment.', 'wait'], ['Give it a second.', 'wait'], ["It's still loading.", 'wait'],
+    // Neither: answered as any line in a window.
+    ['Yes, but it\'s a bit small.', null], ["Yes, what's the agenda?", null], ["I don't know.", null], ['No problem.', null],
+    ['No idea, ask Sam.', null], ['Thanks.', null], ['Next slide.', null], ['', null],
+  ]
+  for (const [line, reading] of table) assert.equal(windowReply(line, 'can_see'), reading, line)
+  // "Shall I carry on?" keeps its closed list: "wait" and "hold on" are a no there, and "mm-hm" a yes.
+  for (const [line, reading] of [['Wait.', 'no'], ['Hold on.', 'no'], ['Mm-hm.', 'yes'], ['Uh-huh.', 'yes'], ['Yes, we can see them.', null]] as const) {
+    assert.equal(windowReply(line), reading, line)
+  }
+})
+
 test("the phrases the slides lines teach work for any name, and a spelling counts as the name does for leaving: it doesn't", () => {
   const nova: AgentName = { name: 'Nova', variants: ['novah'], misheard: ['novel'], leaveMisheard: ['novel'] }
   const rules = makeSlideCommands(nova)

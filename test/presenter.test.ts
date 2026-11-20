@@ -373,6 +373,67 @@ async function checking(s: ReturnType<typeof start>) {
   await until(() => s.presenter.current === 'checking', 'checking')
 }
 
+test('answers to "Can everyone see my slides?" as people say them: a no stops the share, a yes starts at once, "hold on" waits, and none is a question', async () => {
+  const slow = { canSeeQuietMs: 3000, canSeeWindowMs: 5000 }
+  for (const no of ["I don't see anything.", "We can't see your slides.", "It's just black.", 'No, we just see your camera.']) {
+    const s = start({ timing: slow })
+    await checking(s)
+    await until(() => s.spoken.includes(SLIDES_LINES.canSee))
+    await wait(30)
+    s.said(no)
+    await until(() => s.events.some(e => e.event === 'not_seen'), no)
+    assert.deepEqual(s.surface.calls, ['start 0', 'stop'], no)
+    assert.equal(s.answered.length, 0, no)
+    done(s)
+  }
+  for (const yes of ['Yes, we can see them.', 'We can see it.', 'Mm-hm.']) {
+    const s = start({ timing: slow })
+    await checking(s)
+    await until(() => s.spoken.includes(SLIDES_LINES.canSee))
+    await wait(30)
+    s.said(yes)
+    await until(() => s.spoken.includes('Hello everyone.'), yes, 1000)
+    assert.equal(s.answered.length, 0, `${yes}: no answer, no wait for the quiet`)
+    assert.ok(!s.spoken.some(l => l.startsWith('Back to')), yes)
+    done(s)
+  }
+  // "Hold on" (the slides may still be loading for them): not a no, nor a pause. The quiet starts again.
+  for (const moment of ['Hold on.', 'Hang on.', 'Wait.']) {
+    const s = start({ timing: { canSeeQuietMs: 300, canSeeWindowMs: 5000 } })
+    await checking(s)
+    await until(() => s.spoken.includes(SLIDES_LINES.canSee))
+    await wait(200)
+    s.said(moment)
+    await wait(200)
+    assert.equal(s.presenter.current, 'checking', `${moment}: still asking`)
+    await until(() => s.spoken.includes('Hello everyone.'), `${moment}: then the quiet moves on`)
+    assert.ok(!s.events.some(e => e.event === 'not_seen'), moment)
+    assert.deepEqual(s.surface.calls.filter(c => c === 'stop'), [], moment)
+    assert.equal(s.answered.length, 0, moment)
+    const why = s.session.whyNotAnswered(5).lines!.find(l => l.line === moment)!
+    assert.match(why.why, /wait, to "can everyone see my slides"/, moment)
+    done(s)
+  }
+})
+
+test('"Mm-hm" to "Shall I carry on?" is a yes; "Hmm" (a filler) leaves its window open, so silence still carries on', async () => {
+  for (const reply of ['Mm-hm.', 'Hmm.']) {
+    const s = start({ voice: LONG })
+    await narrating(s)
+    await until(() => s.spoken.includes('Team is twelve dollars.'))
+    await wait(300)
+    s.flux.turn('StartOfTurn', '')
+    s.flux.turn('EndOfTurn', "That's interesting.")
+    await until(() => s.spoken.includes(SLIDES_LINES.shallCarryOn), 'the question')
+    await wait(30)
+    s.said(reply)
+    await until(() => s.next(SLIDES_LINES.shallCarryOn) === SLIDES_LINES.carryOn, `${reply}: carried on`)
+    await until(() => s.next(SLIDES_LINES.carryOn) === 'Team is twelve dollars.', `${reply}: the sentence again`)
+    assert.deepEqual(s.answered, [], reply)
+    done(s)
+  }
+})
+
 test('talked over as it still goes out, "Can everyone see my slides?" still takes its answer: a no stops the share, anything else starts the deck', async () => {
   // The question streams live: it is still going out 100 ms in, when someone talks over it.
   const no = start({ delay: { [SLIDES_LINES.canSee]: 300 } })

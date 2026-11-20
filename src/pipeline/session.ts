@@ -904,8 +904,9 @@ export class MeetingSession {
     // the answer, and the meeting may have moved on by the time the page is back. With its verdict.
     if (!this.ws) return void verdict('page_away')
     // In a meeting with slides only: a slide command ("Alex, next slide"), or the answer to the presenter's own question.
-    // Never a question for Alex, so never in the questions the meeting asked.
-    const command = this.presenter?.hear(text, { awaiting }) ?? null
+    // Never a question for Alex, so never in the questions the meeting asked. A filler is never one, and leaves the
+    // presenter's window open, as it leaves the session's: "Hmm." then silence after "Shall I carry on?" is still a yes.
+    const command = filler ? null : (this.presenter?.hear(text, { awaiting }) ?? null)
     if (command) return void verdict('slides', 'slide_command', command)
     const how = attention(text)
     const addressed = how === 'asked' || awaiting

@@ -446,20 +446,25 @@ export class Presenter {
       // still its answer, and a "no" stops the slides.
       const late = this.canSeeLate > Date.now() && (this.state === 'narrating' || this.state === 'held')
       this.canSeeLate = 0
-      if (late && !mine && windowReply(text) === 'no') {
+      if (late && !mine && windowReply(text, 'can_see') === 'no') {
         this.notSeen()
         return 'no to "can everyone see my slides", as the slides began'
       }
       if (mine) {
         // Any line closes the window, as the session's does.
         this.window = null
-        const reply = windowReply(text)
-        if (mine === 'can_see' && this.state === 'checking' && reply) {
-          if (reply === 'no') this.notSeen()
-          else this.beginNarration()
-          return `${reply} to "can everyone see my slides"`
+        const seen = mine === 'can_see' && this.state === 'checking' ? windowReply(text, 'can_see') : null
+        if (seen === 'wait') {
+          this.waitToSee()
+          return 'wait, to "can everyone see my slides"'
         }
-        if (mine === 'carry_on' && this.state === 'held' && reply) {
+        if (seen) {
+          if (seen === 'no') this.notSeen()
+          else this.beginNarration()
+          return `${seen} to "can everyone see my slides"`
+        }
+        const reply = mine === 'carry_on' && this.state === 'held' ? windowReply(text) : null
+        if (reply) {
           if (reply === 'yes' && this.ownerPaused) this.say(this.lines.waitForOwner)
           else if (reply === 'yes') this.carryOn()
           else this.holdAs('asked')
@@ -1266,6 +1271,13 @@ export class Presenter {
     if (!host.playing() && host.free() && host.quietMs() >= this.timing.canSeeQuietMs && now - this.canSeeAsked >= this.timing.canSeeQuietMs) {
       this.beginNarration()
     }
+  }
+
+  /** "Hold on" to the check question: the slides may still be loading for them. The quiet and the window start again. */
+  private waitToSee(): void {
+    this.canSeeAsked = Date.now()
+    this.window = { kind: 'can_see', until: Date.now() + this.timing.canSeeWindowMs }
+    this.opts.host.openWindow(this.timing.canSeeWindowMs)
   }
 
   /** The check question went out (or was talked over): its window opens, to the end of its line and a while after. */

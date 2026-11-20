@@ -6,8 +6,11 @@
 // go to the attention rules as any other line. In a window the assistant opened ("Shall I carry on?"), a line is also
 // read without the name. "Alex, stop." stays today's cancel, which the session checks first.
 //
-// windowReply reads the answer to the assistant's own questions in a window: a closed list of yes and no. Anything
-// else is not an answer, and is handled as any line in a window: it is answered.
+// windowReply reads the answer to the assistant's own questions in a window. "Shall I carry on?" takes a closed list of
+// yes and no. "Can everyone see my slides?" is answered in sentences ("Yes, we can see them.", "I don't see anything.",
+// "It's just black."), so it is read more loosely, and "hold on" or "wait" there asks for a moment (the slides may
+// still be loading for them), never a no. Anything else is not an answer, and is handled as any line in a window: it
+// is answered.
 //
 // Only in a meeting with slides: the session runs the commands after the leave and cancel checks and before attention,
 // so "please leave" always wins, and a meeting without slides reads every line exactly as before.
@@ -150,7 +153,7 @@ function readCommand(said: string): SlideCommand | null {
 // or together, with "please", "thanks", fillers and the name allowed around them.
 const YES = [
   'yes', 'yeah', 'yep', 'yup', 'sure', 'go ahead', 'please do', 'carry on', 'go on', 'we can', 'i can', 'looks good', 'all good',
-  'ok', 'okay',
+  'ok', 'okay', 'mm-hm', 'mm-hmm', 'mm hm', 'mhm', 'uh-huh', 'uh huh',
 ]
 const NO = [
   'no', 'nope', 'not yet', 'wait', 'hold on', "we can't", "we cannot", "i can't", 'i cannot', "i can't see it", "we can't see it",
@@ -160,15 +163,51 @@ const AROUND = ['please', 'thanks', 'thank you', 'um', 'uh', 'er', 'erm', 'hmm',
 
 const phrase = (list: readonly string[]) => list.map(p => p.replace(/'/g, "['’]").replace(/\s+/g, '\\s+')).join('|')
 
+// The answer to "Can everyone see my slides?", read in this order: what they can't see (or see instead), what they
+// can see, a moment asked for, then a line that starts with a no or a yes. Over the line without the name and fillers
+// in front, in lower case, with plain apostrophes.
+const SEE_NO = new RegExp(
+  [
+    String.raw`\b(?:can'?t|cannot|can\s+not|don'?t|do\s+not|doesn'?t|does\s+not|didn'?t|did\s+not|couldn'?t|could\s+not|not\s+able\s+to)\s+(?:\w+\s+){0,2}?see\b`,
+    String.raw`\bsee\s+nothing\b`,
+    String.raw`\b(?:black|blank)\b`,
+    String.raw`\b(?:just|only)\s+(?:see\s+)?(?:your|the|a)\s+(?:camera|video|face|tile)\b`,
+    String.raw`\b(?:not|isn'?t|aren'?t|nothing'?s?)\s+(?:showing|coming\s+(?:up|through)|loading|loaded|there|visible|appearing|shared)\b`,
+    String.raw`\bnot\s+(?:the|your)\s+(?:slides?|screen|presentation)\b`,
+    String.raw`\bnothing\s+(?:yet|there|on\s+(?:the\s+)?screen)\b`,
+  ].join('|'),
+)
+const SEE_YES = new RegExp(
+  [
+    String.raw`\b(?:we|i|everyone|everybody|all\s+of\s+us)\s+can\s+(?:\w+\s+)?see\b`,
+    String.raw`^can\s+see\b`,
+    String.raw`\b(?:i|we)\s+(?:see|got)\s+(?:it|them|the\s+slides?|your\s+(?:slides?|screen))\b`,
+    String.raw`\bthere\s+it\s+is\b`,
+    String.raw`\b(?:looks|looking)\s+(?:good|great|fine|clear|ok|okay|perfect)\b`,
+    String.raw`\b(?:it'?s|they'?re)\s+(?:up|showing|there|visible)\b`,
+  ].join('|'),
+)
+const SEE_WAIT =
+  /^(?:wait|hold\s+on|hang\s+on|(?:one|just\s+a)\s+(?:moment|sec(?:ond)?|minute|min)|give\s+(?:it|me|us)\s+a\s+(?:moment|sec(?:ond)?|minute|min)|(?:it'?s\s+)?still\s+loading|it'?s\s+loading|loading)\b/
+const SEE_NO_START = /^(?:no(?!\s+(?:problem|worries|idea)\b)|nope|nah|nothing|not\s+(?:yet|really|at\s+all)|nobody|no\s+one|(?:we|i)\s+(?:can'?t|cannot|can\s+not))\b/
+const SEE_YES_START = /^(?:yes|yeah|yep|yup|ya|yah|sure|ok|okay|all\s+good|perfect|great|absolutely|definitely|mm-?\s*hmm?|mhm|uh-?\s*huh|we\s+can|i\s+can|got\s+it)\b/
+
 export interface SlideCommands {
   /**
    * The command in a line said to the assistant by name, or, in a window it opened (inWindow), said without it. Null
    * for anything else, which is left to the attention rules.
    */
   command(text: string, opts?: { inWindow?: boolean }): SlideCommand | null
-  /** A yes or a no to the assistant's own question, or null when the line is neither. */
-  windowReply(text: string): 'yes' | 'no' | null
+  /**
+   * A yes or a no to the assistant's own question, or null when the line is neither. can_see: the answer to "Can
+   * everyone see my slides?", where "wait" asks for a moment; carry_on (the default): to "Shall I carry on?", where
+   * "wait" is a no.
+   */
+  windowReply(text: string, kind?: WindowKind): WindowAnswer
 }
+
+export type WindowKind = 'carry_on' | 'can_see'
+export type WindowAnswer = 'yes' | 'no' | 'wait' | null
 
 /** The rules for these names. Pure: the tests and src/name-check.ts make them for any name. */
 export function makeSlideCommands(agent: AgentName): SlideCommands {
@@ -179,6 +218,8 @@ export function makeSlideCommands(agent: AgentName): SlideCommands {
     new RegExp(`^(?:[,.!?:;\\s\\-–—]|${filler}\\b)*(?:${phrase(list)})\\b(?:(?:[,.!?:;\\s\\-–—]|${filler}\\b|(?:${phrase(list)})\\b))*$`, 'i')
   const yes = answer(YES)
   const no = answer(NO)
+  // What may come before an answer: punctuation, fillers, "so", "oh" and the name. Not the "uh" of "uh-huh".
+  const lead = new RegExp(`^(?:[,.!?:;\\s\\-–—]|(?:${filler}|so|oh|ah|hey|and|well)\\b(?!-))*`, 'i')
   return {
     command(text, opts = {}) {
       for (const said of saidAfterName(text)) {
@@ -187,9 +228,10 @@ export function makeSlideCommands(agent: AgentName): SlideCommands {
       }
       return opts.inWindow ? readCommand(text) : null
     },
-    windowReply(text) {
+    windowReply(text, kind = 'carry_on') {
       const plain = text.normalize('NFD').replace(/\p{M}/gu, '').trim()
       if (!plain) return null
+      if (kind === 'can_see') return seeReply(plain.toLowerCase().replace(/[‘’]/g, "'").replace(lead, ''))
       // Only one or the other: "No, not yet." is a no, and "Yes, but wait." neither (it is answered as a line).
       if (no.test(plain)) return 'no'
       if (yes.test(plain)) return 'yes'
@@ -206,7 +248,21 @@ export function slideCommand(text: string, opts: { inWindow?: boolean } = {}): S
   return COMMANDS.command(text, opts)
 }
 
-/** A yes or a no to the assistant's own question in its window, or null. */
-export function windowReply(text: string): 'yes' | 'no' | null {
-  return COMMANDS.windowReply(text)
+/**
+ * The answer to "Can everyone see my slides?" (see SEE_NO and the rest). A yes word with "but", or ending on a question,
+ * is not a plain yes: it is answered as a line ("Yes, but can you make it bigger?").
+ */
+function seeReply(line: string): WindowAnswer {
+  if (!line) return null
+  if (SEE_NO.test(line)) return 'no'
+  if (SEE_YES.test(line)) return 'yes'
+  if (SEE_WAIT.test(line)) return 'wait'
+  if (SEE_NO_START.test(line)) return 'no'
+  if (SEE_YES_START.test(line) && !/\b(?:but|though|although|except)\b/.test(line) && !/\?\s*$/.test(line)) return 'yes'
+  return null
+}
+
+/** A yes or a no to the assistant's own question in its window (see SlideCommands.windowReply), or null. */
+export function windowReply(text: string, kind?: WindowKind): WindowAnswer {
+  return COMMANDS.windowReply(text, kind)
 }
