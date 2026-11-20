@@ -1,12 +1,22 @@
 # Presenting slides
 
-How to prepare a slide deck for Alex to present: exporting it as a PDF, `npm run slides -- prepare`, writing the script Alex reads from, and `npm run slides -- check`. These pages call the assistant Alex, its default name, and you, its owner, Sam.
+How Alex presents a slide deck you prepared: exporting it as a PDF, `npm run slides -- prepare`, writing the script Alex reads from, `npm run slides -- check`, and then, in a meeting, sharing the slides as its screen and saying your script over them, word for word. These pages call the assistant Alex, its default name, and you, its owner, Sam.
 
-This version prepares and checks a deck on your computer. It needs no key and no network, and touches no meeting. Presenting it in a meeting (sharing the slides and narrating them) comes in a later version, and this page will cover it then.
+Preparing and checking a deck happen on your computer, need no key and no network, and touch no meeting. [Presenting in a meeting](#presenting-in-a-meeting) covers the rest.
 
 ## Before your first presentation
 
-A meeting bot shares its screen only where the host allows it, and the setting differs on Zoom, Google Meet and Microsoft Teams. Run [the screen-share test](share-test.md) once on each platform you will present on.
+**Presenting is off on every platform until you turn it on.** Alex shares its slides as a second page beside its camera page, which carries its voice and its hearing. Whether a share started mid-call leaves that camera page running is known only from a real meeting, so:
+1. Run [the screen-share test](share-test.md) in a meeting you host on the platform: `npm run join -- "<link>" --share-test`.
+2. Once its verdict says slides look safe there, add the platform to `SLIDES_PLATFORMS` in `.env` (comma-separated: `zoom`, `google_meet`, `microsoft_teams`), and restart the service: `SLIDES_PLATFORMS=zoom`.
+
+Until then, a join with slides on that platform is refused before any bot is created, with a message that names the platform, the test and the setting:
+
+```
+Presenting slides is off on Zoom. Run the screen-share test in a Zoom meeting you host first (docs/share-test.md). Once it passes, add zoom to SLIDES_PLATFORMS in .env (it lists none yet) and restart the service.
+```
+
+A meeting bot also shares its screen only where the host allows it, and the setting differs on each platform: see [The platform settings](#the-platform-settings).
 
 ## The steps
 
@@ -176,6 +186,132 @@ Only the script prepare wrote for the deck (the one beside its PDF) is compared 
 ### The contact sheet
 
 `data/decks/<id>/sheet.html`: open it in a browser. It shows every slide at half size, exactly as the meeting will see it, with its title, what prepare noticed, and, once check has run, what the script does with it (narrated, on request, excluded, or no section), the estimate, the narration, and the script's errors and warnings for that slide. It is a static page, with no script, that loads nothing from outside its folder. Prepare writes it. Check refreshes it only for the deck's own script, once that script's structure is clear: for any other file, or while the structure is unclear, the sheet is left as it was, so it can show an older version of the script. Its count of warnings is the one check prints.
+
+## Presenting in a meeting
+
+### Joining with slides
+
+```bash
+npm run join -- "<meeting link>" --slides decks/q4-roadmap.script.md
+npm run join -- "<meeting link>" --slides decks/q4-roadmap.script.md --from 6     # start at slide 6
+npm run join -- "<meeting link>" --slides decks/q4-roadmap.script.md --brief decks/acme.md
+```
+
+Or ask your Claude Code session: "send Alex into this meeting with the Q4 slides: <link>". It reads the script with its own Read tool and passes its text to `join_meeting` as `slides` (and `slides_from` for `--from`): never a path.
+
+Before anything is sent, `npm run join` (or the channel) checks the script as `check` does, against its prepared deck: any error refuses the join, `check: changed` included, so narration written for an old slide is never presented over a new one. Then it sends only the script's canonical text: the front matter, the headings, the keys and the paragraphs, with every comment taken out. Your comments, Marp notes and "On the slide" text never reach the voice service or the meeting; the service refuses a script that still has a comment in it. It checks the script again, reads the slides the script shows (and only those: an excluded slide's image never leaves `data/decks`), and refuses the join before any bot is created when the platform is not in `SLIDES_PLATFORMS`, the deck is gone or can't be used, or the script has an error. A service older than the command says it can't present slides: restart it.
+
+What it prints:
+
+```
+Alex is joining (bot 1f2e...).
+It has "Q4 roadmap": 9 slides to present, about 9 min of your 15 min. It starts when someone says "Alex, start the presentation", or when you start it (npm run slides -- control start, or slides_control in Claude Code). Before then, make sure Alex may share its screen. Zoom: "Who can share?" set to "All participants" (in the meeting, the arrow beside Share, then Advanced sharing options). (npm run slides -- status and control take --meeting 1f2e... while it is in more than one meeting with slides.)
+```
+
+The meeting gets a chat notice that says Alex will present slides when asked, and how to pause them, and a consent line that says how to start them:
+
+> Hello, I'm Alex, Sam's AI assistant. I'm transcribing this meeting so I can answer questions when you say my name. I also have slides to present for Sam: say "Alex, start the presentation" when you're ready. Otherwise I'll only speak when asked, and I can't agree to anything for Sam. If you'd like me to leave, say "Alex, please leave", or remove me from the participant list.
+
+Nothing is shared until the presentation starts. Alex's camera tile is as it always is. A meeting joined without slides is exactly as it was.
+
+### What the meeting sees and hears
+
+When someone says "Alex, start the presentation" (or you start it), Alex:
+1. says "I'm sharing my slides now. They can take a few seconds to appear.", and asks Recall to share its slides page as its screen;
+2. waits up to 20 seconds for the page to show the first slide;
+3. the first time in a meeting only, asks "Can everyone see my slides?". A "no" ("no", "we can't", "nothing", "not yet", "I can't see it") gets the setting the host needs to change, and the share stops; anything else, or a few seconds of quiet, carries on;
+4. says your script, one sentence at a time, and changes slides only after the last sentence of a slide has played and the room is quiet for a moment. It talks about a slide only once the page has shown it.
+
+The slides fill the shared screen, exactly as on the contact sheet, with no badge or overlay. The page's own frames ("about to present", "Slides paused", ended) say that Alex is an AI. After the last slide it takes questions, with that slide still up; two minutes with nothing said to it, and the share stops quietly. "Alex, start the presentation" puts it back.
+
+### What the room can say
+
+Anyone who says the name may start, pause, carry on, move between the slides you chose and stop sharing. "Alex, please leave" always wins, at any moment.
+
+| Say | What happens |
+| --- | --- |
+| "Alex, start the presentation" (or "begin the slides", "present your slides", "start presenting") | It starts, from where it stopped if it had started before. |
+| "Alex, next slide" | The next slide in order. |
+| "Alex, go back" | The slide before, out of order: "Here's slide 4.", and it waits there. |
+| "Alex, go to slide 9" (or "show slide 9", "the last slide") | A slide behind, or a backup slide (`on-request: yes`), is shown out of order; one ahead is moved to, skipping the ones between. An excluded slide gets "I don't have slide 9 to show." |
+| "Alex, go through that slide again" | The slide on screen, from its start. |
+| "Alex, pause" (or "wait", "hold on", "one moment") | It stops at that sentence, and waits. |
+| "Alex, carry on" (or "continue", "go on", "back to the slides") | It carries on from where it stopped: back on the slide it was presenting if it had shown another, with "Back to <title>." |
+| "Alex, stop presenting" (or "stop sharing", "that's enough slides") | "Sure, I'll stop sharing my slides.", and the share stops. It keeps its place. |
+| A question by name ("Alex, what does the Business plan cost?") | It stops at that sentence, answers in a few sentences, then says "Back to <title>." and the sentence again. |
+| Talking over it, not to it | It stops at that sentence. Once the room is quiet: "Shall I carry on?"; yes, or silence, carries on with that sentence; "no" or "wait" waits for "carry on". |
+
+Slide commands are never questions: they are not in the minutes' "Asked of Alex", nor sent to your session. "Next slide" without the name, "Next slide, Alex" (the name last), "Alex stopped at slide four" and "Alex, go back to the pricing and tell me the cost" (a question) are not commands. "Go to slide 5" before the presentation has started is not one either: start it first.
+
+### What you can do
+
+From your Claude Code session (`slides_status` and `slides_control`), or the terminal:
+
+```bash
+npm run slides -- status
+npm run slides -- control pause
+npm run slides -- control goto 6
+npm run slides -- control end --meeting <bot id>
+```
+
+| Action | What happens |
+| --- | --- |
+| `start` | As "Alex, start the presentation". |
+| `pause`, `resume` | Your pause is yours: only you can resume it. Someone saying "Alex, carry on" gets "I'll wait for Sam on that." |
+| `next`, `back`, `goto N`, `restart` | As the room's, at once, and said aloud ("Moving to slide 6."), since the meeting didn't hear you ask. |
+| `wrap_up` | "Let me jump to the last slide.", and the last slide in order. Yours only. |
+| `stop` | As "Alex, stop presenting". |
+| `end` | Stops it for good in this meeting: the room can't start it again. Yours only. |
+
+Without `--meeting` (or `meeting`), they act on the only meeting with slides, and are refused while there are several. `status` says where it stands: the state, the slide on screen, the slide it carries on from, and the share.
+
+Your session also gets a `presentation` event when the presentation starts, finishes or stops, and when something goes wrong (below), never one per slide. When the meeting ends, `meeting_ended` says how far it got (`presentation: {reached, of, finished}`), so you can join again with `--from`.
+
+### When something goes wrong
+
+| What happens | Alex says | Your session hears | What to do |
+| --- | --- | --- | --- |
+| Recall refused the share | "I couldn't share my slides." | `share_failed` | Try again; the log has Recall's status. |
+| The page never showed the first slide | "My slides didn't load, so I've stopped sharing them." | `not_loading` | Check the tunnel; the log says how far it got. |
+| Someone said they can't see the slides | The host setting to change | `not_seen` | The host changes it ([The platform settings](#the-platform-settings)); then "Alex, start the presentation". |
+| The page stopped showing slides | "My slides seem stuck, so I've stopped sharing them." | `stuck` | Start it again. |
+| Someone else took the page's link | "My slides had a problem, so I've stopped sharing them." | `contested` | No more shares in that meeting. |
+| The camera page dropped just after a share started or stopped | Nothing more is shared in that meeting | `camera_suspect` | Take the platform out of `SLIDES_PLATFORMS` and run the share test again. |
+| Shares asked for too often | "I'll leave the slides off for now." | `rate_limited` | Wait: at most one every 10 s, and 12 an hour. |
+| Speech recognition lost | At the end of the sentence: "I can't hear the meeting right now, so I'll pause my slides." Once it hears again: "Shall I carry on?" | `deaf` | Nothing: Alex never talks on when it can't hear "please leave". |
+| ElevenLabs failed twice | "I'm having trouble with my voice; one moment." | `voice_failed` | "Alex, carry on", or `resume`. |
+| Held for more than two minutes | Nothing | `held_long` | Resume it, or stop it. |
+
+When Alex's camera page reconnects, the slides wait, and carry on two seconds after it is back with "Back to <title>." and the sentence. The slides page blanks itself to "Slides paused" about 12 seconds after it loses its link (the service stopped, or your computer slept), and to its ended frame after 75 seconds, so a slide never stays up without the service.
+
+### The platform settings
+
+| Platform | The setting |
+| --- | --- |
+| Zoom | "Who can share?" set to "All participants": in the meeting, the arrow beside Share, then Advanced sharing options. |
+| Google Meet | Host controls: "Share their screen" on, or Host management off. If Alex still can't share, make it a co-host. |
+| Microsoft Teams | Meeting options: "Who can present" includes everyone. Or make Alex a presenter: in People, the "..." beside its name, then Make a presenter. |
+
+`SLIDES_PLATFORMS` lists where presenting is on at all: none unless set, and a platform only once [the share test](share-test.md) has passed there. A meeting with slides is left after a longer silence than other meetings, since Alex's own voice doesn't count as sound: your script's `minutes` plus 15, from 15 to 60 minutes (60 without `minutes`).
+
+### What it doesn't do yet
+
+- It doesn't notice when someone else starts sharing their screen: it narrates on until someone says "Alex, pause" or "Alex, stop presenting".
+- It doesn't notice the host stopping its share either: say "Alex, stop presenting", then "Alex, start the presentation".
+- It doesn't read PowerPoint's speaker notes, rehearse aloud, go to a slide by its title, or keep to a time budget.
+- While it checks a question with your session, the slides wait.
+
+### Where your slides go
+
+- **Recall** shows the slides in the bot's browser while they are shared, and anyone with access to your Recall dashboard can watch them there through Remote DevTools. The bot's record keeps the page's address, with a token that dies when the share stops. Zero data retention covers the share: no recording of it is kept.
+- **Your tunnel provider** carries the slide images in transit: only the slide on screen and its neighbours, never the whole deck.
+- **The voice service** gets your script without its comments, and the slides it shows, in memory only, until the bot is out of the call.
+- **Anthropic**, with each answer during the meeting: the outline (each slide's title and first sentence) and the slide on screen (your script for it and its text); with the minutes request, the presentation's title.
+- **ElevenLabs** speaks your script.
+- **Your Claude Code session** sees the script, comments included, when it reads it to send Alex in, and slide titles in its events, `slides_status` and the questions it is handed ("On screen: slide 6 of 9, Pricing.").
+- **The meeting**: anyone in it can screenshot or record what Alex shares.
+- **The transcript** has your script as Alex said it, and `Slides:` lines saying which slide was on screen, as Alex's own lines: a talk to a room where nobody spoke gets no minutes. The minutes mention the presentation in one sentence, and never take your script for decisions or actions.
+- "Alex, please leave" deletes the transcript as always, and blanks the slides before the goodbye. It doesn't delete the prepared deck: that is yours, on your computer before the meeting. `npm run slides -- delete` does.
 
 ## After you change the deck
 

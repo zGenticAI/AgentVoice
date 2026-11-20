@@ -7,13 +7,14 @@ import { type TestContext, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import http from 'node:http'
-import net, { type AddressInfo } from 'node:net'
+import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import { WebSocket } from 'ws'
 import { SessionBridge, type ToSession } from '../src/bridge.ts'
 import { joinArgs } from '../src/cli/join-args.ts'
 import { slidesArgs } from '../src/cli/slides-args.ts'
 import { presentationLines, statusLine } from '../src/cli/slides-status.ts'
+import { ROOT } from '../src/config.ts'
 import { ensureLocalToken } from '../src/local-token.ts'
 import type { SessionOptions, SessionSlides } from '../src/pipeline/session.ts'
 import type { BotPlan } from '../src/recall.ts'
@@ -436,4 +437,12 @@ test('npm run slides -- status and control: the arguments, and what they print',
     code: 1,
   })
   assert.deepEqual(presentationLines({ status: 401, body: 'The local token is missing' }, 'Alex').code, 1)
+})
+
+test("the meeting-assistant agent gets none of the slide controls: starting, steering or ending a share is the owner's", () => {
+  const agent = fs.readFileSync(path.join(ROOT, '.claude/agents/meeting-assistant.md'), 'utf8')
+  const tools = /^tools: (.*)$/m.exec(agent)?.[1] ?? ''
+  assert.ok(tools.includes('mcp__zoom-meeting__next_question'), tools)
+  assert.doesNotMatch(tools, /slides/)
+  assert.doesNotMatch(tools, /join_meeting/)
 })

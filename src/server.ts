@@ -11,8 +11,9 @@
 //   with the share's id and token; while none is, they are not found, as any other path.
 // - control (a Unix socket in the data folder, CONTROL_SOCKET to put it elsewhere): /api/join for npm run join,
 //   /bridge for the Claude Code channel, the screen-share test's /api/share-test/ for npm run join --share-test, the
-//   slides' /api/slides for npm run slides -- status and control, and the detailed /health. No pages. Only you can open it, and no other user can take its place while the service is
-//   down, as one could with a port (src/control-socket.ts).
+//   slides' /api/slides for npm run slides -- status and control, and the detailed /health. No pages. Only you can
+//   open it, and no other user can take its place while the service is down, as one could with a port
+//   (src/control-socket.ts).
 //
 // The service owns getting every bot it sent into a meeting out of the call again: it keeps asking Recall until
 // the bot is out, keeps the bots it has not seen out in the data folder in case it crashes, and stops in order
