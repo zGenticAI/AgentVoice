@@ -1374,7 +1374,7 @@ test('a question mid-deck: the brain gets the outline and the slide on screen, a
     title: 'Pricing',
     script: 'Team is twelve dollars. Business is twenty-nine. Any questions so far?',
     text: '',
-    saying: '',
+    saying: 'Team is twelve dollars.',
     before: 'slide 1, Welcome',
     after: 'slide 4, Security',
   })
@@ -1385,6 +1385,18 @@ test('a question mid-deck: the brain gets the outline and the slide on screen, a
   assert.match(transcript, /^Speaker: Alex, is that per month\?$/m)
   // The transcript itself keeps every line.
   assert.ok(s.alex().includes('Hello everyone.'))
+  done(s)
+})
+
+test('a question asked as a slide appears, before any of it is said: the brain is told nothing was being said', async () => {
+  const s = start({ timing: { leadMs: 400 } })
+  await narrating(s)
+  await until(() => s.markers().includes('showing slide 2: Pricing'))
+  s.said('Alex, what is on this slide?')
+  await until(() => s.inputs.length === 1)
+  assert.equal(s.inputs[0].slides.current.page, 2)
+  assert.equal(s.inputs[0].slides.current.saying, '')
+  assert.ok(!s.spoken.includes('Team is twelve dollars.'))
   done(s)
 })
 

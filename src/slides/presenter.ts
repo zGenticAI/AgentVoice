@@ -365,9 +365,11 @@ export class Presenter {
     const i = this.onScreen()
     if (i === null) return { outline, current: null }
     const slide = this.slides[i]
-    // The sentence narration was at on this slide: the one it carries on from, or the last one heard.
+    // The sentence narration was at on this slide: the one it carries on from (the one the question cut, its first
+    // included), or the last one heard. Nothing while the slide is up but none of it has been said yet.
     const k = Math.min(this.resume.k, slide.sentences.length - 1)
-    const saying = this.resume.i === i && this.resume.k > 0 && k >= 0 ? slide.sentences[k] : ''
+    const begun = this.resume.k > 0 || this.spoke === i
+    const saying = this.resume.i === i && begun && k >= 0 ? slide.sentences[k] : ''
     return {
       outline,
       current: {
