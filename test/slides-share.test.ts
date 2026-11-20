@@ -11,7 +11,7 @@ import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import { WebSocket } from 'ws'
 import { ensureLocalToken } from '../src/local-token.ts'
-import { STOP_SCREENSHARE } from '../src/recall.ts'
+import { RecallError, STOP_SCREENSHARE } from '../src/recall.ts'
 import { type ServiceConfig, type ServiceSession, createServers } from '../src/server.ts'
 import { loadSlidesPage, slidesPageProblem } from '../src/slides/page.ts'
 import {
@@ -364,6 +364,8 @@ test('a show resolves on its ack, or times out; the first miss restarts the shar
   assert.equal(await control.show(2), 'timeout')
   await until(() => stuck.length > 0)
   assert.deepEqual(stuck, ['stuck'])
+  // Said at once; the share is off once Recall has taken the stop.
+  await until(() => control.state === 'off')
   assert.equal(control.state, 'off')
   assert.equal(recall.calls.at(-1)!.call, 'stop')
   assert.deepEqual(recall.calls.at(-1)!.body, { screenshare: true })
@@ -512,8 +514,199 @@ test('a DELETE Recall does not take is tried again until it does; 404 counts as 
   const recall = fakeRecall({ stop: n => (n < 2 ? 503 : 404) })
   const { control, started } = await live(s, 0, { recall })
   assert.equal(await started, 'loaded')
+  // The share is stopped for the meeting at once; Recall's stop is tried again in the background until it takes it.
   await control.stop()
+  assert.equal(control.state, 'stopping')
+  await until(() => control.state === 'off')
   assert.deepEqual(recall.calls.map(c => c.call), ['start', 'stop', 'stop', 'stop'])
+})
+
+// --- Recall slow or refusing to stop: nothing that answers the meeting waits for it, and no POST goes over it -------
+
+test('a restart whose DELETE Recall keeps refusing is given up after deleteWaitMs: stuck, and the DELETE goes on', async t => {
+  captureLogs(t)
+  const s = await service(t, { slidesTiming: { ...FAST, deleteWaitMs: 400 } })
+  const recall = fakeRecall({
+    stop: () => {
+      throw new RecallError(500, 'server error')
+    },
+  })
+  const { control, page, started } = await live(s, 0, { recall })
+  assert.equal(await started, 'loaded')
+  const events: string[] = []
+  for (const e of ['stuck', 'failed', 'contested'] as const) control.on(e, () => void events.push(e))
+  // The page stops acknowledging: the first miss restarts the share, and Recall refuses its DELETE.
+  page.ws.removeAllListeners('message')
+  const t0 = Date.now()
+  for (const i of [1, 2, 3, 4]) assert.equal(await control.show(i), 'timeout')
+  await until(() => events.length > 0)
+  const ms = Date.now() - t0
+  assert.deepEqual(events, ['stuck'], 'the presenter stops narrating, and the owner hears')
+  assert.ok(ms < 300 + 400 + 1000, `${ms} ms`)
+  assert.equal(await page.closed, LINK_CLOSE.over)
+  assert.equal(control.state, 'stopping')
+  const deletes = recall.calls.filter(c => c.call === 'stop').length
+  await wait(200)
+  assert.ok(recall.calls.filter(c => c.call === 'stop').length > deletes, 'the DELETE goes on in the background')
+  // No POST over a share Recall may still hold: a start waits for the DELETE, for deleteWaitMs at most.
+  assert.equal(await control.start(0), 'failed')
+  assert.equal(recall.calls.filter(c => c.call === 'start').length, 1)
+  control.close()
+})
+
+test('stuck and contested are said at once while Recall keeps refusing the DELETE', async t => {
+  captureLogs(t)
+  const refusing = () => fakeRecall({
+    stop: () => {
+      throw new RecallError(503, 'busy')
+    },
+  })
+  const s = await service(t)
+  // Stuck: the link is down, so the misses count up to stuckAfter.
+  const a = await live(s, 0, { recall: refusing() })
+  assert.equal(await a.started, 'loaded')
+  const stuck: string[] = []
+  a.control.on('stuck', () => void stuck.push('stuck'))
+  a.page.ws.terminate()
+  await wait(50)
+  for (const i of [1, 2, 3]) assert.equal(await a.control.show(i), 'timeout')
+  assert.deepEqual(stuck, ['stuck'])
+  assert.equal(a.control.state, 'stopping')
+  a.control.close()
+  // Contested: the third take-over.
+  const b = await live(s, 0, { recall: refusing() })
+  assert.equal(await b.started, 'loaded')
+  const contested: string[] = []
+  b.control.on('contested', () => void contested.push('contested'))
+  const query = shareQuery(b.recall, 0)
+  for (let n = 0; n < 3; n++) assert.equal((await link(s.port, query)).outcome, 'open')
+  await until(() => contested.length > 0, 50)
+  assert.deepEqual(contested, ['contested'])
+  assert.equal(b.control.state, 'stopping')
+  b.control.close()
+})
+
+test("a camera drop while a restart's DELETE is on its way: no POST after it, and the share fails", async t => {
+  captureLogs(t)
+  const s = await service(t, { slidesTiming: { ...FAST, cameraSuspectMs: 15_000 } })
+  let release: ((status: number) => void) | null = null
+  const recall = fakeRecall({ stop: () => new Promise<number>(resolve => (release = resolve)) })
+  const { control, page, started } = await live(s, 0, { recall })
+  assert.equal(await started, 'loaded')
+  const events: string[] = []
+  for (const e of ['stuck', 'failed', 'camera_suspect'] as const) control.on(e, () => void events.push(e))
+  page.ws.removeAllListeners('message')
+  assert.equal(await control.show(1), 'timeout')
+  await until(() => release !== null)
+  control.cameraDropped()
+  assert.deepEqual(events, ['camera_suspect'])
+  release!(204)
+  await until(() => events.length > 1)
+  await wait(50)
+  assert.deepEqual(recall.calls.map(c => c.call), ['start', 'stop'], 'no more POSTs for this meeting')
+  assert.deepEqual(events, ['camera_suspect', 'failed'], 'the presenter stops narrating, and the owner hears')
+  assert.equal(control.state, 'off')
+})
+
+test('a page that never links, with Recall refusing the DELETE: not_loading at once, and the next POST waits for the DELETE', async t => {
+  captureLogs(t)
+  const s = await service(t, { slidesTiming: { ...FAST, loadMs: 300, deleteWaitMs: 600 } })
+  let take = false
+  const calls: string[] = []
+  const control = s.svc.slides.create({
+    botId: 'bot-1',
+    images: IMAGES,
+    start: async () => (calls.push('start'), 200),
+    stop: async () => {
+      if (!take) {
+        calls.push('stop refused')
+        throw new RecallError(503, 'busy')
+      }
+      calls.push('stop taken')
+      return 204
+    },
+  })
+  t.after(() => control.close())
+  const t0 = Date.now()
+  const first = await Promise.race([control.start(0), wait(2000).then(() => 'no answer')])
+  assert.equal(first, 'not_loading')
+  assert.ok(Date.now() - t0 < 300 + 500, `${Date.now() - t0} ms`)
+  assert.equal(control.state, 'stopping')
+  // A start now waits for Recall to take the stop: no POST over a share it may still hold.
+  let second: string | null = null
+  void control.start(0).then(o => void (second = o))
+  await wait(200)
+  assert.deepEqual(calls.filter(c => c === 'start'), ['start'])
+  assert.equal(second, null)
+  take = true
+  await until(() => second !== null)
+  assert.equal(second, 'not_loading')
+  assert.ok(calls.indexOf('stop taken') < calls.lastIndexOf('start'), calls.join())
+  // And while Recall never takes it, a start gives up after deleteWaitMs, with no POST.
+  await until(() => control.state === 'off')
+  take = false
+  assert.equal(await control.start(0), 'not_loading')
+  assert.equal(control.state, 'stopping')
+  const posts = calls.filter(c => c === 'start').length
+  const t1 = Date.now()
+  assert.equal(await control.start(0), 'failed')
+  assert.ok(Date.now() - t1 < 600 + 400, `${Date.now() - t1} ms`)
+  assert.equal(calls.filter(c => c === 'start').length, posts)
+})
+
+test('a POST Recall may have taken (no answer, or a 5xx) is followed by one DELETE, and the next POST waits for it', async t => {
+  captureLogs(t)
+  for (const fail of [() => new RecallError(502, 'bad gateway'), () => new Error('Recall could not be reached')]) {
+    const s = await service(t)
+    let failing = true
+    let release: ((status: number) => void) | null = null
+    const calls: string[] = []
+    const control = s.svc.slides.create({
+      botId: 'bot-1',
+      images: IMAGES,
+      start: async () => {
+        calls.push('start')
+        if (failing) throw fail()
+        return 200
+      },
+      stop: () => {
+        calls.push('stop')
+        return new Promise<number>(resolve => (release = resolve))
+      },
+    })
+    assert.equal(await control.start(0), 'failed')
+    assert.deepEqual(calls, ['start', 'start', 'stop'], fail().name)
+    failing = false
+    const next = control.start(0)
+    await wait(100)
+    assert.deepEqual(calls, ['start', 'start', 'stop'], 'the next POST waits for the DELETE')
+    release!(204)
+    await until(() => calls.length === 4)
+    assert.deepEqual(calls, ['start', 'start', 'stop', 'start'])
+    control.close()
+    assert.equal(await next, 'failed')
+  }
+  // A restart's POST the same way: the share fails, and one DELETE follows it.
+  const s = await service(t)
+  let posts = 0
+  const recall = fakeRecall({
+    start: () => {
+      if (posts++ === 0) return 200
+      throw new RecallError(503, 'busy')
+    },
+  })
+  const { control, page, started } = await live(s, 0, { recall })
+  assert.equal(await started, 'loaded')
+  const events: string[] = []
+  control.on('failed', () => void events.push('failed'))
+  page.ws.removeAllListeners('message')
+  assert.equal(await control.show(1), 'timeout')
+  await until(() => events.length > 0)
+  await until(() => recall.calls.length === 5)
+  assert.deepEqual(recall.calls.map(c => c.call), ['start', 'stop', 'start', 'start', 'stop'])
+  assert.deepEqual(events, ['failed'])
+  await until(() => control.state === 'off')
+  assert.equal(control.state, 'off')
 })
 
 test('close(): the page is blanked and its link closed, with no call to Recall (the bot is leaving)', async t => {

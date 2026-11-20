@@ -12,6 +12,10 @@
 // about 2 Mbit/s, since the images share the tunnel and the owner's upload with the assistant's voice. The page
 // acknowledges each slide once it is on screen. The page blanks itself when its link is gone (public/slides.js).
 //
+// A stop is local and at once: the page is blanked and its token dies. Recall's DELETE is then tried until Recall
+// takes it, in the background, so nothing that answers the meeting (a start's outcome, stuck, contested) waits on
+// Recall; but every later POST waits for it, for a while, so there is never a POST over a share Recall may still hold.
+//
 // Nothing here may take the service down (an uncaught error stops every meeting): every socket handler, timer, the
 // sender and the DELETE retry loop catch their own errors, and a fault degrades the share instead: before it is shown,
 // to failed; after, to stopped, with the page blanked, the token revoked and one DELETE. The log has the bot's id, the
@@ -55,6 +59,7 @@ export interface ShareTiming {
   sendKbps: number
   bufferedMax: number
   deleteBackoffMs: readonly number[]
+  deleteWaitMs: number
   refusalsLogMs: number
 }
 
@@ -83,6 +88,8 @@ export const TIMING: Readonly<ShareTiming> = Object.freeze({
   bufferedMax: 256 * 1024,
   /** The waits between tries of a DELETE Recall did not take, the last one again until it does or the meeting is gone. */
   deleteBackoffMs: [1000, 2000, 5000, 10_000, 30_000],
+  /** How long a POST waits for Recall to take the DELETE before it (a start's, or a restart's), then gives up (ms). */
+  deleteWaitMs: 20_000,
   /** Refusals of the link are logged as counts, at most this often (ms). */
   refusalsLogMs: 60_000,
 })
@@ -194,7 +201,8 @@ export class ShareControl implements SlideSurface {
   private disabled = false
   /** The meeting is over for the share: closed, never to start again. */
   private over = false
-  private stopping: Promise<void> | null = null
+  /** The DELETEs Recall has not taken yet, tried again in the background: true once it took them, false if the bot left. */
+  private deleting: Promise<boolean> | null = null
   private startWaiter: ((outcome: StartOutcome) => void) | null = null
   /** Counts the stops: a start or a restart that a stop overtook gives up, and takes back a share Recall took meanwhile. */
   private generation = 0
@@ -453,8 +461,11 @@ export class ShareControl implements SlideSurface {
     return ''
   }
 
-  /** POSTs a new share, with a new id and token: one retry, the same request, when Recall may take it then. */
-  private async post(): Promise<{ share: Share; status: number }> {
+  /**
+   * POSTs a new share, with a new id and token: one retry, the same request, when Recall may take it then. ambiguous: a
+   * try had no answer (a network error or a timeout) or a 5xx, so Recall may have taken it even if the POST failed.
+   */
+  private async post(): Promise<{ share: Share; status: number; ambiguous: boolean }> {
     const share: Share = {
       epoch: ++this.epoch,
       id: randomBytes(16).toString('base64url'),
@@ -471,22 +482,30 @@ export class ShareControl implements SlideSurface {
     this.changedAt = this.now()
     const url = this.deps.pageUrl(share.id, share.token)
     let status = 0
+    let ambiguous = false
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         status = await this.deps.start(url)
+        if (status >= 500) ambiguous = true
         break
       } catch (err) {
         status = statusOf(err)
+        if (status === 0 || status >= 500) ambiguous = true
         if (attempt === 2 || !worthRetrying(err) || this.over) break
       }
     }
     this.changedAt = this.now()
-    return { share, status }
+    return { share, status, ambiguous }
   }
 
   async start(at: number, also?: readonly number[]): Promise<StartOutcome> {
     try {
-      if (this.stopping) await this.stopping
+      // Recall may still hold the share a stop asked it to drop: no POST goes over it. Not for long, though: a start
+      // always has an answer. (A restart under way keeps the share up: then this is only a show, below.)
+      if (this.deleting && !this.restarting && !(await this.unshared()) && !this.over) {
+        this.log(`a share was not asked for: Recall did not take the last stop in ${Math.round(this.timing.deleteWaitMs / 1000)} s`)
+        return 'failed'
+      }
       const refused = this.postRefusal()
       if (refused) {
         this.log(refused === 'disabled' ? 'a share was not asked for: sharing is off for this meeting' : 'a share was not asked for: too many in a short time')
@@ -501,17 +520,19 @@ export class ShareControl implements SlideSurface {
       this.misses = 0
       this.setView(at, also)
       const generation = this.generation
-      const { share, status } = await this.post()
+      const { share, status, ambiguous } = await this.post()
       const ok = status >= 200 && status < 300
       if (this.over || generation !== this.generation || share !== this.share) {
         // Stopped while Recall was asked: a share it took meanwhile is stopped too, unless the bot is leaving.
-        if (ok && !this.over) await this.deleteShare()
+        if ((ok || ambiguous) && !this.over) this.unshare()
         return 'failed'
       }
       if (!ok) {
         this.log(`share ${share.epoch}: ${status ? `Recall answered ${status}` : 'Recall did not answer'}`)
         this.retire(share)
         this.state = 'off'
+        // Recall may have taken it all the same: it is asked to stop it, and the next POST waits for that.
+        if (ambiguous) this.unshare()
         return 'failed'
       }
       this.log(`share ${share.epoch}: Recall answered ${status}`)
@@ -519,7 +540,8 @@ export class ShareControl implements SlideSurface {
       if (outcome === 'loaded') return 'loaded'
       if (this.over || generation !== this.generation) return 'failed'
       this.log(`share ${share.epoch}: the page did not show its first slide in ${Math.round(this.timing.loadMs / 1000)} s (it reached ${share.stage})`)
-      await this.stop()
+      // Blanked and revoked at once; Recall's stop goes on in the background.
+      void this.stop()
       return 'not_loading'
     } catch (err) {
       this.fault('a start failed', err)
@@ -586,7 +608,9 @@ export class ShareControl implements SlideSurface {
       this.misses++
       this.log(`slide ${pending.i + 1} of ${this.count} was not shown in time (${this.misses} in a row)`)
       if (this.misses >= this.timing.stuckAfter) {
-        void this.stop().then(() => this.emit('stuck'))
+        // Stopped, and said, at once: Recall's stop goes on in the background.
+        void this.stop()
+        this.emit('stuck')
         return
       }
       if (this.misses === 1 && this.share?.link && !this.restarting && !this.postRefusal()) void this.restart()
@@ -595,28 +619,48 @@ export class ShareControl implements SlideSurface {
     }
   }
 
-  /** DELETE, wait for Recall, then a fresh POST with a fresh id and token. Never a second POST over a live share. */
+  /**
+   * DELETE, wait for Recall, then a fresh POST with a fresh id and token. Never a second POST over a live share. A DELETE
+   * Recall does not take within deleteWaitMs gives the restart up: the share is stuck (narration stops, and the owner
+   * hears), and the DELETE goes on in the background.
+   */
   private async restart(): Promise<void> {
     this.restarting = true
     const generation = this.generation
     try {
       const old = this.share
-      if (old) {
-        this.retire(old)
-        this.state = 'stopping'
-        await this.deleteShare()
-      }
+      if (old) this.retire(old)
+      this.unshare()
+      const taken = await this.unshared()
       if (this.over || generation !== this.generation) return
-      this.state = 'requested'
-      const { share, status } = await this.post()
-      if (this.over || generation !== this.generation || share !== this.share) {
-        if (status >= 200 && status < 300 && !this.over) await this.deleteShare()
+      if (!taken) {
+        this.log(`share ${old?.epoch ?? 0} was not restarted: Recall did not take its stop in ${Math.round(this.timing.deleteWaitMs / 1000)} s`)
+        this.generation++
+        this.blank()
+        this.emit('stuck')
         return
       }
-      if (status < 200 || status >= 300) {
+      // The camera page may have dropped while the DELETE was on its way (camera_suspect): then no more POSTs.
+      const refused = this.postRefusal()
+      if (refused) {
+        this.log(`a share was not asked for again: ${refused === 'disabled' ? 'sharing is off for this meeting' : 'too many in a short time'}`)
+        this.state = 'off'
+        this.emit('failed')
+        return
+      }
+      this.state = 'requested'
+      const { share, status, ambiguous } = await this.post()
+      const ok = status >= 200 && status < 300
+      if (this.over || generation !== this.generation || share !== this.share) {
+        if ((ok || ambiguous) && !this.over) this.unshare()
+        return
+      }
+      if (!ok) {
         this.log(`share ${share.epoch} (a restart): ${status ? `Recall answered ${status}` : 'Recall did not answer'}`)
         this.retire(share)
         this.state = 'off'
+        // Recall may have taken it all the same: it is asked to stop it, and the next POST waits for that.
+        if (ambiguous) this.unshare()
         this.emit('failed')
         return
       }
@@ -627,6 +671,7 @@ export class ShareControl implements SlideSurface {
       this.fault('a restart failed', err)
     } finally {
       this.restarting = false
+      this.settle()
     }
   }
 
@@ -640,23 +685,27 @@ export class ShareControl implements SlideSurface {
     }
   }
 
+  /**
+   * The share is stopped for this meeting at once: the page blanked, its token dead. Recall is asked to stop it too,
+   * until it does, in the background: this resolves once Recall has taken the DELETE, or once its first try has not.
+   */
   stop(): Promise<void> {
-    if (this.stopping) return this.stopping
-    this.generation++
-    if (this.state === 'off' && !this.share?.accepting) return Promise.resolve()
-    this.stopping = (async () => {
-      try {
-        this.blank()
+    try {
+      this.generation++
+      if (this.state === 'off' && !this.share?.accepting) return Promise.resolve()
+      this.blank()
+      // Recall is being asked already, and nothing was POSTed since (a POST still on its way asks again when it returns).
+      if (this.deleting) {
         this.state = 'stopping'
-        await this.deleteShare()
-      } catch (err) {
-        console.error(`[slides] bot ${this.deps.botId}: stopping the share failed (${errorKind(err)})`)
-      } finally {
-        this.state = 'off'
-        this.stopping = null
+        return Promise.resolve()
       }
-    })()
-    return this.stopping
+      let tried: () => void = () => {}
+      const first = new Promise<void>(resolve => (tried = resolve))
+      return Promise.race([first, this.unshare(tried).then(() => {})])
+    } catch (err) {
+      console.error(`[slides] bot ${this.deps.botId}: stopping the share failed (${errorKind(err)})`)
+      return Promise.resolve()
+    }
   }
 
   close(): void {
@@ -704,8 +753,60 @@ export class ShareControl implements SlideSurface {
     if (this.retired.length > 20) this.retired.shift()
   }
 
-  /** DELETE with exactly {"screenshare":true}, tried again until Recall takes it (or says there is none), or the meeting is gone. */
-  private async deleteShare(): Promise<void> {
+  /**
+   * Asks Recall to stop the share in the background, after any stop already on its way (a POST may have reached Recall
+   * since that one was sent). The share is stopped for the meeting already; this is Recall taking it down too. While it
+   * runs the share is stopping, and every POST waits for it. tried runs after its first try.
+   */
+  private unshare(tried?: () => void): Promise<boolean> {
+    this.state = 'stopping'
+    const before = this.deleting
+    const run: Promise<boolean> = (async () => {
+      if (before) await before
+      return this.deleteShare(tried)
+    })()
+      .catch(err => {
+        console.error(`[slides] bot ${this.deps.botId}: stopping the share failed (${errorKind(err)})`)
+        return false
+      })
+      .finally(() => {
+        if (this.deleting === run) this.deleting = null
+        this.settle()
+      })
+    this.deleting = run
+    return run
+  }
+
+  /** Waits for the stops on their way, for deleteWaitMs at most: whether Recall took them. */
+  private async unshared(): Promise<boolean> {
+    let timer: NodeJS.Timeout | undefined
+    const late = new Promise<false>(resolve => {
+      timer = setTimeout(() => resolve(false), this.timing.deleteWaitMs)
+      timer.unref()
+    })
+    try {
+      let deleting = this.deleting
+      while (deleting) {
+        if (!(await Promise.race([deleting, late]))) return false
+        // One more may have been chained on meanwhile: Recall must take that one too.
+        deleting = this.deleting === deleting ? null : this.deleting
+      }
+      return true
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** A share that was stopping is off once Recall has taken every stop, and no restart is under way. */
+  private settle(): void {
+    if (this.state === 'stopping' && !this.deleting && !this.restarting) this.state = 'off'
+  }
+
+  /**
+   * DELETE with exactly {"screenshare":true}, tried again until Recall takes it (or says there is none), or the meeting
+   * is gone: true once Recall took it. tried runs after the first try.
+   */
+  private async deleteShare(tried?: () => void): Promise<boolean> {
     this.changedAt = this.now()
     for (let attempt = 0; ; attempt++) {
       let status = 0
@@ -715,13 +816,14 @@ export class ShareControl implements SlideSurface {
         status = statusOf(err)
       }
       this.changedAt = this.now()
+      if (attempt === 0) tried?.()
       if ((status >= 200 && status < 300) || status === 400 || status === 404) {
         this.log(`the share was stopped: Recall answered ${status}`)
-        return
+        return true
       }
       if (this.over) {
         this.log(`the share could not be stopped (${status ? `Recall answered ${status}` : 'Recall did not answer'}), and the bot is leaving`)
-        return
+        return false
       }
       const backoff = this.timing.deleteBackoffMs
       const wait = backoff[Math.min(attempt, backoff.length - 1)]
@@ -736,7 +838,8 @@ export class ShareControl implements SlideSurface {
   private contested(): void {
     this.log('the share was contested: its link was taken over again and again, so it was stopped')
     this.disabled = true
-    void this.stop().then(() => this.emit('contested'))
+    void this.stop()
+    this.emit('contested')
   }
 
   /**

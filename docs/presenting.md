@@ -271,7 +271,7 @@ Your session also gets a `presentation` event when the presentation starts, fini
 
 | What happens | Alex says | Your session hears | What to do |
 | --- | --- | --- | --- |
-| Recall refused the share | "I couldn't share my slides." | `share_failed` | Try again; the log has Recall's status. |
+| Recall refused the share | "I couldn't share my slides." | `share_failed` | Try again; the log has Recall's status. A share is never asked for while Recall may still hold the last one: a start waits up to 20 s for Recall to take the last stop, and fails if it hasn't. |
 | The page never showed the first slide | "My slides didn't load, so I've stopped sharing them." | `not_loading` | Check the tunnel; the log says how far it got. |
 | Someone said they can't see the slides | The host setting to change | `not_seen` | The host changes it ([The platform settings](#the-platform-settings)); then "Alex, start the presentation". |
 | The page stopped showing slides | "My slides seem stuck, so I've stopped sharing them." | `stuck` | Start it again. |

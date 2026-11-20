@@ -21,10 +21,14 @@ export interface SlideSurface {
   show(i: number, also?: readonly number[]): Promise<'shown' | 'timeout'>
   /** Shows a frame instead of the slides: no slide content, only the AI disclosure. */
   frame(kind: 'paused' | 'ended'): void
-  /** Blanks the page, revokes its link, and asks Recall to stop the share (only the share). Never rejects. */
+  /**
+   * Blanks the page and revokes its link at once, and asks Recall to stop the share (only the share) until it does, in
+   * the background: resolves once Recall has, or once its first try has not. Never rejects.
+   */
   stop(): Promise<void>
   /** Blanks the page and revokes its link, without calling Recall: the bot is leaving, and the share goes with it. */
   close(): void
+  /** stopping: stopped for the meeting, and Recall has not taken the stop yet (a start waits for it, for a while). */
   readonly state: 'off' | 'requested' | 'loaded' | 'stopping'
   on(event: ShareEvent, fn: () => void): void
 }
