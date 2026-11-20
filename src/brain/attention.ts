@@ -46,10 +46,14 @@
 //   "who else?" or "can we start?" counts only as the whole question: "Thanks Alex, can we start invoicing in
 //   March?", "Thanks Alex, who else uses this product?" and "Alex? Who's next on the agenda?" are for Alex.
 // - When the name opens a sentence that asks nothing, the address carries into the next sentence if that one is a
-//   question or a request: "Alex, quick question. How much is it?", "Alex, Sarah thinks March. Do you agree?".
-//   Not after a greeting, thanks or praise ("Thanks Alex. Did everyone get the deck?"), nor once Alex is told to
-//   wait or never mind, or is put off ("Alex, hold on. Go ahead, Sarah.", "Alex, no. What do you think, Sarah?"),
-//   nor when the next sentence is for someone else or the room ("Can we start without her?").
+//   question or a request: "Alex, quick question. How much is it?", "Alex, Sarah thinks March. Do you agree?". So
+//   it does after a hello or an apology, which open an exchange: "Hi, Alex. Can you tell me about pricing?", "Sorry,
+//   Alex. Can you repeat that?". Not after thanks, praise, "yes" or a goodbye ("Thanks Alex. Did everyone get the
+//   deck?"), nor once Alex is told to wait or never mind, or is put off ("Alex, hold on. Go ahead, Sarah.", "Alex,
+//   no. What do you think, Sarah?"), nor when the next sentence is for someone else or the room ("Hi Alex. Sarah,
+//   can you share your screen?", "Hi Alex. Can we start?", "Can we start without her?"). The cost: after a hello, a
+//   question meant for the room that isn't one of the room's questions above is answered ("Hi Alex. Is the API
+//   ready?").
 // - A line that only calls Alex ("Alex?", "Hey Alex.", "Okay, Alex.") or only announces a question ("Alex, quick
 //   question.", "Alex, I have two questions.", "Alex, I wanted to ask about pricing.", "Alex, sorry.") is a call:
 //   Alex says nothing, but the next thing said goes to it. After thanks or praise an announcement is the host moving
@@ -79,9 +83,10 @@
 //   marks the name: "cheers alex what do you think sarah" is answered.
 // - Carrying the address into the next sentence needs the full stop that ends the first one, so unpunctuated
 //   "alex sarah thinks march do you agree" is missed.
-// - After a thanks or a greeting, the next sentence is not carried: "Thanks Alex. Can you also check the budget?"
-//   is missed. "Thanks Alex, can you also check the budget?", in one sentence, is answered. Nor after "Alex,
-//   wait.": "Alex, wait. What did you say about pricing?" is missed; "Alex, wait, what did you ...?" is answered.
+// - After thanks, praise, "yes" or a goodbye, the next sentence is not carried: "Thanks Alex. Can you also check the
+//   budget?" is missed. "Thanks Alex, can you also check the budget?", in one sentence, is answered. Nor after
+//   "Alex, wait.": "Alex, wait. What did you say about pricing?" is missed; "Alex, wait, what did you ...?" is
+//   answered. (After a hello it is carried: see the rules above.)
 // - Unpunctuated, a new question after a stop word is found only where the stop clearly ends ("alex forget that
 //   whats the launch date", "alex enough about pricing whats the timeline"), so "alex no need to check with sam
 //   whats the launch date" is missed. And the new question has to start like one (a question word, "is it", "can
@@ -940,6 +945,8 @@ function nameUse(sentence: Word[], at: number): Use {
     const post = opening(rest)
     const said = rest.slice(post.end)
     const greets = lead.greets || post.greets
+    // Thanks, praise, "yes" or a goodbye: a greeting that is not a hello.
+    const acknowledges = lead.acknowledges || post.acknowledges
     const announces = lead.announces || post.announces
     // After a greeting, or in a new sentence ("Hey Alex. Did everyone get the deck?"), a question to the room isn't Alex's.
     if (asks(said, question, true, greets || /[.!?]/.test(name.after), greets)) return { how: 'asked', carries: false }
@@ -949,15 +956,18 @@ function nameUse(sentence: Word[], at: number): Use {
     // After thanks or praise, "Thanks Alex, next question." is the host moving on, not a call. "Thanks Alex, I have
     // another question." still is, and so is an announcement said to Alex before the name: "Great, one more
     // question, Alex.".
-    const movingOn = (lead.acknowledges || post.acknowledges) && post.announces && !post.ownQuestion
+    const movingOn = acknowledges && post.announces && !post.ownQuestion
     const called = said.length === 0 && !movingOn && (announces || (post.apologises && !greets))
     // Otherwise the address carries on only when the name was clearly said to Alex ("Alex, Sarah thinks March."),
-    // not after "Alex just answered that." or a greeting, a compliment or "stop", nor once Alex is told to wait
-    // or is put off ("Alex, hold on.", "Alex, we'll come back to you.", "Alex, no."): the floor goes elsewhere.
+    // not after "Alex just answered that." or thanks, praise, "yes", a goodbye or "stop", nor once Alex is told to
+    // wait or is put off ("Alex, hold on.", "Alex, we'll come back to you.", "Alex, no."): the floor goes elsewhere.
+    // A hello or an apology still carries ("Hi, Alex. Can you tell me about pricing?", "Sorry, Alex. Can you repeat
+    // that?"): it opens an exchange, and the question after it is usually for Alex. carriesInto() still refuses a
+    // next sentence that is for the room or someone else ("Hi Alex. Can we start?").
     const line = textOf(said)
     const quiet = STOP.test(line) || PLEASANTRY.test(line) || HOLD.test(line) || PUT_OFF.test(line) || POLITE_HOLD.test(line) ||
       lead.holds || post.holds
-    return { how: called ? 'called' : 'nothing_asked', carries: called || (setOff && !greets && !quiet), through: at + post.end }
+    return { how: called ? 'called' : 'nothing_asked', carries: called || (setOff && !acknowledges && !quiet), through: at + post.end }
   }
   // Otherwise the name has to be set off by a comma before it and punctuation after it, or end the sentence:
   // "So what do you think, Alex?", "Before we start, Alex, introduce yourself.". In "By the way, Alex is recording

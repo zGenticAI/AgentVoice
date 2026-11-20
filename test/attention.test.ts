@@ -85,7 +85,7 @@ test('when the name opens a sentence that asks nothing, the question in the next
   ], false)
 })
 
-test('the next sentence is not carried after a greeting, thanks or compliment, or when it is for someone else', () => {
+test('the next sentence is not carried after thanks, praise, "yes" or a goodbye, or when it is for someone else', () => {
   // Without the full stop these are different lines, so they are tested as written.
   heardAs('nothing_asked', [
     'Thanks Alex. Did everyone get the deck?',
@@ -96,11 +96,46 @@ test('the next sentence is not carried after a greeting, thanks or compliment, o
     'Alex, you were right. Can we move on?',
     'Alex, stop. What were we saying?',
     "Alex, I'll send you the deck. Can we move on?",
+    'Great, Alex. Can you check the budget?',
+    'Yes, Alex. What is the timeline?',
+    'Bye Alex. Can you send the notes?',
+    'Alex, thanks. What is the timeline?',
   ], false)
   heardAs('mentioned', [
     'Alex just answered that. Can we move on?',
     'Alex and I talked about this yesterday. Can you send me the notes?',
   ], false)
+})
+
+test('after a hello or an apology, a question or request in the next sentence is answered', () => {
+  // Speech recognition often writes the hello as a sentence of its own, "Hi, Alex.", with a full stop. Unpunctuated,
+  // the line is one sentence, and the question in it was answered already.
+  heardAs('asked', [
+    'Hi, Alex. Can you tell me about pricing?',
+    'Hello Alex. What is the timeline?',
+    'Hi Alex. Please summarise the agenda.',
+    'Good morning, Alex. Can you give us a recap?',
+    'Alex, hi. What is the timeline?',
+  ], true)
+  // The hello alone, or with a next sentence for the room or someone else, still asks nothing.
+  heardAs('nothing_asked', [
+    'Hi Alex.',
+    'Hi Alex. Can we start?',
+    'Hello Alex. Who is next?',
+    'Good morning, Alex. Can everyone hear me?',
+    'Hi Alex. Sarah, can you share your screen?',
+  ], false)
+  // Thanks is not a hello: the next sentence is still not carried (an accepted miss).
+  heardAs('nothing_asked', ['Thanks Alex. Can you also check the budget?'], false)
+  // An apology before the name opens an exchange as a hello does, so it carries too.
+  heardAs('asked', ['Sorry, Alex. Can you repeat that?', 'Excuse me, Alex. What is the timeline?'], false)
+  // The cost: after a hello, a question meant for the room that isn't one of the room's questions is answered.
+  heardAs('asked', ['Hi Alex. Is the API ready?'], false)
+  // Nothing in this depends on the name.
+  const nova = makeAttention({ name: 'Nova', variants: [], misheard: [], leaveMisheard: [] })
+  assert.equal(nova.attention('Hi, Nova. Can you tell me about pricing?'), 'asked')
+  assert.equal(nova.attention('Hi Nova. Can we start?'), 'nothing_asked')
+  assert.equal(nova.attention('Thanks Nova. Can you also check the budget?'), 'nothing_asked')
 })
 
 test('the next sentence is not carried after Alex is put on hold, or when the floor goes to someone else', () => {
