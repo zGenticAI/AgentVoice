@@ -195,18 +195,19 @@ function installSandbox(t: { after: (fn: () => unknown) => void }) {
   const sources = path.join(home, 'work', 'acme-docs')
   fs.mkdirSync(sources, { recursive: true })
   fs.mkdirSync(path.join(home, 'work', 'acme-site'))
-  const run = (args: string[], version = '2.3.2', withOpencode = true) =>
+  // homeAs: the home folder as HOME names it (a path through a link, as /var is /private/var on macOS).
+  const run = (args: string[], version = '2.3.2', withOpencode = true, homeAs = home) =>
     spawnSync('bash', [path.join(repo, 'scripts/install-opencode.sh'), ...args], {
       encoding: 'utf8',
       env: {
         PATH: [...(withOpencode ? [bin] : []), path.dirname(process.execPath), '/usr/bin', '/bin'].join(':'),
-        HOME: home,
+        HOME: homeAs,
         FAKE_OPENCODE_VERSION: version,
       },
     })
   const written = path.join(repo, '.opencode/opencode.json')
   const mine = () => JSON.parse(fs.readFileSync(written, 'utf8'))
-  return { repo, home, sources, run, written, mine }
+  return { dir, repo, home, sources, run, written, mine }
 }
 
 test('install-opencode.sh writes your own .opencode/opencode.json: the same channel, by absolute path', t => {
@@ -259,6 +260,17 @@ test("install-opencode.sh refuses OpenCode V1, a 2.x older than 2.3.2, no OpenCo
   refused(box.run(['--source', path.join(box.home, 'missing')]), /is not a folder this script can find/)
   refused(box.run(['--source', box.home]), /your whole disk or home folder/)
   refused(box.run(['--source', '/']), /your whole disk or home folder/)
+  // A folder that holds the home folder would let the meeting-assistant read all of it.
+  refused(box.run(['--source', path.dirname(box.home)]), /your whole disk or home folder, or holds your home folder/)
+  // The home folder named through a link (on macOS, /var is /private/var and $TMPDIR is under it) is still the home
+  // folder, given either way.
+  const linked = `${box.dir}-link`
+  fs.symlinkSync(box.dir, linked)
+  t.after(() => fs.rmSync(linked, { force: true }))
+  const homeAs = path.join(linked, 'home')
+  refused(box.run(['--source', box.home], '2.3.2', true, homeAs), /your whole disk or home folder/)
+  refused(box.run(['--source', homeAs], '2.3.2', true, homeAs), /your whole disk or home folder/)
+  refused(box.run(['--source', '~'], '2.3.2', true, homeAs), /your whole disk or home folder/)
   refused(box.run(['--bogus']), /Unknown option/)
   const later = box.run([], '2.10.0')
   assert.equal(later.status, 0, later.stderr)

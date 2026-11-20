@@ -269,14 +269,21 @@ test("install-codex.sh refuses no Codex, an older one, a config Codex can't load
   refused(box.run(), /Run npm install in .* first: the channel runs with its tsx\./)
 })
 
-test('install-codex.sh refuses a home folder inside a temporary folder, where Codex would leave placeholders in it', t => {
-  // On Linux, Codex's sandbox makes an empty read-only placeholder for a denied path that doesn't exist, when the path
-  // is in a folder its commands may write (this folder and the temporary folders), and can leave it behind: with a home
-  // folder in /tmp, ~/.ssh, ~/.aws and the rest became empty files, and Codex could no longer start here.
+test('install-codex.sh refuses a home folder inside a temporary folder on Linux, where Codex would leave placeholders in it', t => {
+  // On Linux, Codex's sandbox (bubblewrap) makes an empty read-only placeholder for a denied path that doesn't exist,
+  // when the path is in a folder its commands may write (this folder and the temporary folders), and can leave it
+  // behind: with a home folder in /tmp, ~/.ssh, ~/.aws and the rest became empty files, and Codex could no longer start
+  // here. macOS's sandbox makes no placeholders, so there the script goes on as usual.
+  const linux = process.platform === 'linux'
   const box = installSandbox(t)
   const before = box.snapshot()
   for (const [home, tmpdir] of [[box.tmpHome, undefined], ['/tmp/av-owner', '/var/tmp/av-elsewhere'], ['/tmp', undefined], [box.home, path.dirname(box.home)]] as const) {
     const r = box.run([], { home, tmpdir })
+    if (!linux) {
+      assert.equal(r.status, 0, `${home}: ${r.stderr}`)
+      assert.doesNotMatch(r.stderr, /Your home folder/)
+      continue
+    }
     assert.equal(r.status, 1, `${home}: ${r.stdout}`)
     assert.match(r.stderr, /^Your home folder \(.+\) is inside .+, a folder where Codex's sandbox lets commands write\. /, home)
     assert.match(r.stderr, /empty, read-only placeholders .*~\/\.ssh.*can stop Codex starting here/s)

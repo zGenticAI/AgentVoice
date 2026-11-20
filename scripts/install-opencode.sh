@@ -93,6 +93,15 @@ mine.mcp = { ...mine.mcp, servers: { ...mine.mcp?.servers, 'zoom-meeting': serve
 // The meeting-assistant's reading outside this folder: OpenCode asks external_directory first, which the committed
 // rules deny. Rules here come after those, so these allow it, for these folders only; the policies still hold.
 const outside = (rule) => rule?.action === 'external_directory' && rule?.effect === 'allow'
+// The home folder as the sources are compared with it: resolved as they are, since it may be reached through a link
+// (on macOS, /var is /private/var).
+let home = null
+try {
+  if (process.env.HOME) home = fs.realpathSync(process.env.HOME)
+} catch {
+  home = path.resolve(process.env.HOME)
+}
+const holdsHome = (folder) => home !== null && (home === folder || home.startsWith(folder.endsWith(path.sep) ? folder : folder + path.sep))
 const folders = []
 for (const source of given) {
   const expanded = source === '~' ? process.env.HOME : source.startsWith('~/') ? path.join(process.env.HOME ?? '', source.slice(2)) : source
@@ -108,8 +117,8 @@ for (const source of given) {
     console.error(`${source} is not a folder: give the folder a source is in.`)
     process.exit(1)
   }
-  if (real === path.parse(real).root || real === process.env.HOME) {
-    console.error(`${source} is your whole disk or home folder: give the folders your sources are in.`)
+  if (real === path.parse(real).root || holdsHome(real)) {
+    console.error(`${source} is your whole disk or home folder, or holds your home folder: give the folders your sources are in.`)
     process.exit(1)
   }
   folders.push(real)
