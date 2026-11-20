@@ -282,6 +282,8 @@ export class Presenter {
   private window: { kind: 'carry_on' | 'can_see'; until: number } | null = null
   private everStarted = false
   private finished = false
+  /** The owner's own pause stands (Decision 2a): only narration the owner starts lifts it, and a stop keeps it. */
+  private ownerPaused = false
   /** Speech recognition is lost now; and the fixed line that says so is still to be said (once per loss). */
   private deafNow = false
   private deafPending = false
@@ -428,7 +430,8 @@ export class Presenter {
           return `${reply} to "can everyone see my slides"`
         }
         if (mine === 'carry_on' && this.state === 'held' && reply) {
-          if (reply === 'yes') this.carryOn()
+          if (reply === 'yes' && this.ownerPaused) this.say(this.lines.waitForOwner)
+          else if (reply === 'yes') this.carryOn()
           else this.holdAs('asked')
           return `${reply} to "shall I carry on"`
         }
@@ -536,6 +539,7 @@ export class Presenter {
         if (!this.presenting() && this.state !== 'checking') return { ok: false, note: `Nothing is being presented (${this.state}).` }
         if (this.state === 'narrating') this.opts.host.interrupt()
         this.holdAs('owner')
+        this.ownerPaused = true
         return { ok: true, note: 'Paused. Only you can resume it.' }
       }
       const command: SlideCommand = action === 'goto' ? { kind: 'goto', slide: slide! } : { kind: action }
@@ -566,6 +570,11 @@ export class Presenter {
           this.say(this.lines.waitForOwner)
           return 'start (refused: the owner ended the presentation)'
         }
+        // A stop keeps the owner's pause: the room may stop the slides, but not start narration again.
+        if ((this.state === 'stopped' || this.state === 'ready') && this.ownerPaused && !owner) {
+          this.say(this.lines.waitForOwner)
+          return 'start (refused: paused by the owner)'
+        }
         if (this.state !== 'ready' && this.state !== 'stopped' && this.state !== 'ended') return owner ? null : 'start (presenting already)'
         this.startFlow()
         return 'start'
@@ -587,7 +596,7 @@ export class Presenter {
           return 'carry on'
         }
         if (this.state !== 'held') return this.state === 'narrating' || this.state === 'qa' ? 'carry on (nothing held)' : null
-        if (this.holding?.cause === 'owner' && !owner) {
+        if (this.ownerPaused && !owner) {
           this.say(this.lines.waitForOwner)
           return 'carry on (refused: paused by the owner)'
         }
@@ -601,6 +610,11 @@ export class Presenter {
           const to = from + 1
           if (to >= this.slides.length) return 'next (no slide after it)'
           if (to === this.resume.i && this.state !== 'qa') {
+            if (this.ownerPaused && !owner) {
+              // Back on the bookmark's slide, still held: only the owner resumes.
+              void this.showSlide(to).catch(err => this.fault('showing a slide', err))
+              return 'next (back at the bookmark, paused by the owner)'
+            }
             this.carryOn({ silent: true })
             return 'next (back at the bookmark)'
           }
@@ -646,7 +660,7 @@ export class Presenter {
     this.resume = { i, k: 0 }
     this.furthest = Math.max(this.furthest, i)
     // The room may move the slides while the owner has paused them, but only the owner resumes.
-    if (this.state === 'held' && this.holding?.cause === 'owner' && !owner) {
+    if (this.ownerPaused && !owner) {
       void this.showSlide(i).catch(err => this.fault('showing a slide', err))
       return
     }
@@ -672,6 +686,12 @@ export class Presenter {
 
   /** Narrates slide i again from its start: the bookmark's slide, or a detour's (then held again after it). */
   private restartSlide(i: number, owner: boolean): void {
+    if (this.ownerPaused && !owner) {
+      // The room may show the slide, but only the owner starts narration again.
+      void this.showSlide(i).catch(err => this.fault('showing a slide', err))
+      this.say(this.lines.waitForOwner)
+      return
+    }
     this.opts.host.interrupt()
     if (i === this.resume.i) {
       this.resume = { i, k: 0 }
@@ -686,6 +706,8 @@ export class Presenter {
   /** Shares the slides from the bookmark: the consent line first, then the line, the share, and the check question. */
   private startFlow(): void {
     const attempt = ++this.attempt
+    // Only the owner gets here while the owner's pause stands: the room's start is refused.
+    this.ownerPaused = false
     this.state = 'starting'
     this.holding = null
     this.window = null
@@ -811,6 +833,8 @@ export class Presenter {
   /** Starts narrating as the session's turn: from the bookmark, or one detour slide (detour). */
   private narrateFrom(opts: { prefix?: string; detour?: number }): void {
     const run = ++this.run
+    // Only the owner's own actions get here while the owner's pause stands (the room's are refused): they lift it.
+    this.ownerPaused = false
     this.state = 'narrating'
     this.holding = null
     this.window = null

@@ -257,7 +257,7 @@ npm run slides -- control end --meeting <bot id>
 | Action | What happens |
 | --- | --- |
 | `start` | As "Alex, start the presentation". |
-| `pause`, `resume` | Your pause is yours: only you can resume it. Someone saying "Alex, carry on" gets "I'll wait for Sam on that." |
+| `pause`, `resume` | Your pause is yours: only you can resume it. Someone saying "Alex, carry on", "yes" to "Shall I carry on?", or "start this slide again" gets "I'll wait for Sam on that." The room can still move between slides and stop sharing. A stop keeps your pause, so "Alex, start the presentation" then gets the same answer: use `start` (`resume` does nothing once the slides are stopped). |
 | `next`, `back`, `goto N`, `restart` | As the room's, at once, and said aloud ("Moving to slide 6."), since the meeting didn't hear you ask. |
 | `wrap_up` | "Let me jump to the last slide.", and the last slide in order. Yours only. |
 | `stop` | As "Alex, stop presenting". |

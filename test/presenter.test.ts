@@ -469,6 +469,81 @@ test('"Alex, pause" holds until "Alex, carry on"; the owner\'s pause is sticky: 
   done(s)
 })
 
+/** The owner pauses during slide 2's first sentence: held 'owner'. How many lines had been said then. */
+async function ownerPaused(s: ReturnType<typeof start>): Promise<number> {
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  assert.deepEqual(s.presenter.owner('pause'), { ok: true, note: 'Paused. Only you can resume it.' })
+  await wait(50)
+  return s.spoken.length
+}
+
+test("the owner's pause holds whatever the room says: back then next, go to the bookmark, start this slide again", async () => {
+  // What the room says, and the slide on screen after it.
+  const cases: [string[], number][] = [
+    [['Alex, go back.', 'Alex, next slide.'], 2],
+    [['Alex, go to slide 2.'], 2],
+    [['Alex, start this slide again.'], 2],
+    [['Alex, go back.', 'Alex, go through that slide again.', 'Alex, carry on.'], 1],
+  ]
+  for (const [lines, page] of cases) {
+    const s = start({ voice: { 'Team is twelve dollars.': 300 } })
+    const count = await ownerPaused(s)
+    for (const line of lines) {
+      s.said(line)
+      await wait(100)
+    }
+    await wait(200)
+    const what = lines.join(' ')
+    assert.equal(s.presenter.status().held, 'owner', what)
+    assert.equal(s.presenter.status().slide, page, what)
+    assert.deepEqual(s.spoken.slice(count).filter(l => NARRATION.includes(l)), [], `${what}: no narration`)
+    if (lines.length !== 2) assert.ok(s.spoken.slice(count).includes(SLIDES_LINES.waitForOwner), `${what}: "I'll wait for Sam on that."`)
+    // The owner's own resume lifts it.
+    assert.equal(s.presenter.owner('resume').ok, true)
+    await until(() => s.spoken.slice(count).some(l => NARRATION.includes(l)), 'narration again')
+    done(s)
+  }
+})
+
+test('the owner\'s pause holds through a "Shall I carry on?" window: a "yes" in it gets "I\'ll wait for Sam on that."', async () => {
+  const s = start({ voice: LONG, timing: { carryOnWindowMs: 3000 } })
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  await wait(300)
+  s.flux.turn('StartOfTurn', '')
+  s.flux.turn('EndOfTurn', 'Sorry, one thing first.')
+  await until(() => s.spoken.includes(SLIDES_LINES.shallCarryOn))
+  await wait(60)
+  assert.equal(s.presenter.owner('pause').ok, true)
+  const count = s.spoken.length
+  s.said('Yes.')
+  await until(() => s.spoken.includes(SLIDES_LINES.waitForOwner))
+  await wait(200)
+  assert.equal(s.presenter.status().held, 'owner')
+  assert.deepEqual(s.spoken.slice(count), [SLIDES_LINES.waitForOwner])
+  done(s)
+})
+
+test('a stop keeps the owner\'s pause: the room\'s start then gets "I\'ll wait for Sam on that."; the owner\'s start lifts it', async () => {
+  const s = start({ voice: { 'Team is twelve dollars.': 300 } })
+  const count = await ownerPaused(s)
+  s.said('Alex, stop presenting.')
+  await until(() => s.presenter.current === 'stopped' && s.spoken.includes(SLIDES_LINES.stopped))
+  s.said('Alex, start the presentation.')
+  await until(() => s.after(SLIDES_LINES.stopped).includes(SLIDES_LINES.waitForOwner), '"I\'ll wait for Sam on that."')
+  await wait(200)
+  assert.equal(s.presenter.current, 'stopped')
+  assert.equal(s.surface.calls.filter(c => c.startsWith('start')).length, 1, 'no second share')
+  assert.deepEqual(s.spoken.slice(count).filter(l => NARRATION.includes(l)), [], 'no narration')
+  const why = s.session.whyNotAnswered(5).lines!
+  assert.ok(why.some(l => l.line === 'Alex, start the presentation.' && /start \(refused: paused by the owner\)/.test(l.why)))
+  assert.deepEqual(s.presenter.owner('resume'), { ok: false, note: 'Not now: the presentation is stopped.' })
+  assert.equal(s.presenter.owner('start').ok, true)
+  await until(() => s.spoken.slice(count).some(l => NARRATION.includes(l)), 'narration again')
+  done(s)
+})
+
 test('a detour keeps the bookmark: "go back" shows the slide before, "carry on" returns to the bookmark with "Back to"', async () => {
   const s = start()
   await narrating(s)

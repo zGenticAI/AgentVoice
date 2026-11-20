@@ -42,7 +42,7 @@ Anyone who says the name can steer it, by these phrases only, said to Alex as th
 How it stops, and carries on:
 - A question by name stops it at that sentence. It answers in a few sentences, then says "Back to <the slide's title>." and that sentence again.
 - Talking over it, not to it, stops it at that sentence too. Once the room is quiet it asks "Shall I carry on?": "yes", or silence, carries on; "no" or "wait" holds it until someone says "Alex, carry on". It asks once each time.
-- "Alex, pause" holds it until someone says "Alex, carry on". When Sam paused it, only Sam can resume it: "Alex, carry on" gets "I'll wait for Sam on that."
+- "Alex, pause" holds it until someone says "Alex, carry on". When Sam paused it, only Sam can resume it: "Alex, carry on" gets "I'll wait for Sam on that." The room can still change slides and stop sharing, but after a stop, "Alex, start the presentation" gets the same answer until Sam starts it.
 - "Alex, go back" or "go to" an earlier slide shows it ("Here's slide 4.") and waits; "Alex, carry on" goes back to where it was.
 - If its page reconnects, it carries on a moment after it is back. If it can't hear the meeting, it stops at the end of the sentence and says so, and says nothing more until it hears again, even if Sam moves the slides meanwhile: it never talks on when it couldn't hear "please leave".
 - After the last slide it takes questions with that slide up, and stops sharing after two quiet minutes.
