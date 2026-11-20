@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ROOT } from '../src/config.ts'
+import { openCodeMatch } from './client-floors.ts'
 
 type Rule = { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' }
 const CONFIG = JSON.parse(fs.readFileSync(path.join(ROOT, 'opencode.json'), 'utf8'))
@@ -16,16 +17,8 @@ const POLICIES: Rule[] = CONFIG.policies
 const GLOBAL: Rule[] = CONFIG.permissions
 const AGENT_RULES: Rule[] = CONFIG.agents['meeting-assistant'].permissions
 
-/** OpenCode's wildcard match (packages/core/src/util/wildcard.ts at v2.3.2), as it runs off Windows. */
-function match(input: string, pattern: string): boolean {
-  let escaped = pattern
-    .replaceAll('\\', '/')
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.')
-  if (escaped.endsWith(' .*')) escaped = escaped.slice(0, -3) + '( .*)?'
-  return new RegExp('^' + escaped + '$', 's').test(input.replaceAll('\\', '/'))
-}
+/** OpenCode's wildcard match (packages/core/src/util/wildcard.ts at v2.3.2). */
+const match = openCodeMatch
 /** A permission check (packages/core/src/permission.ts, evaluate): the last rule that matches, else ask. */
 const evaluate = (action: string, resource: string, rules: Rule[]) =>
   rules.findLast(rule => match(action, rule.action) && match(resource, rule.resource))?.effect ?? 'ask'
