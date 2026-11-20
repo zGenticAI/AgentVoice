@@ -1,6 +1,6 @@
 # Setting it up
 
-The full setup, step by step. The [README](../README.md#quick-start) has the short version; [Your Claude Code session](claude-code.md) adds the deep tier. These pages call the assistant Alex, its default name, and you, its owner, Sam.
+The full setup, step by step. The [README](../README.md#quick-start) has the short version; [Your Claude Code session](claude-code.md), [Codex](codex.md) or [OpenCode](opencode.md) adds the deep tier. These pages call the assistant Alex, its default name, and you, its owner, Sam.
 
 1. **Install:** Node.js 24 or later, on macOS or Linux, then clone the repository and set it up:
    ```bash

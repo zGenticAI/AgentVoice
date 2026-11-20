@@ -94,7 +94,7 @@ Script: decks/q4-roadmap.script.md (new): 12 sections to write (TODO).
   pages 4, 7-9: the slide has text under 20 px, which may be hard to read in a small share window.
   page 5 has no text, so it can be answered about only from your script.
 Contact sheet: data/decks/q4-roadmap-k7m2qa/sheet.html
-Next: write the sections (or ask your Claude Code session to draft them), then
+Next: write the sections (or ask your coding session (Claude Code, Codex or OpenCode) to draft them), then
   npm run slides -- check decks/q4-roadmap.script.md
 ```
 
@@ -205,7 +205,7 @@ What it prints:
 
 ```
 Alex is joining (bot 1f2e...).
-It has "Q4 roadmap": 9 slides to present, about 9 min of your 15 min. It starts when someone says "Alex, start the presentation", or when you start it (npm run slides -- control start, or slides_control in Claude Code). Before then, make sure Alex may share its screen. Zoom: "Who can share?" set to "All participants" (in the meeting, the arrow beside Share, then Advanced sharing options). (npm run slides -- status and control take --meeting 1f2e... while it is in more than one meeting with slides.)
+It has "Q4 roadmap": 9 slides to present, about 9 min of your 15 min. It starts when someone says "Alex, start the presentation", or when you start it (npm run slides -- control start, or slides_control in your coding session). Before then, make sure Alex may share its screen. Zoom: "Who can share?" set to "All participants" (in the meeting, the arrow beside Share, then Advanced sharing options). (npm run slides -- status and control take --meeting 1f2e... while it is in more than one meeting with slides.)
 ```
 
 The meeting gets a chat notice that says Alex will present slides when asked, and how to pause them, and a consent line that says how to start them:

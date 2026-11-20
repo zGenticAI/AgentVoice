@@ -2,6 +2,8 @@
 
 The deep tier. Questions the brief can't answer go to your own Claude Code session through an MCP channel, `zoom-meeting`, and the session answers them: through its meeting-assistant agent when the session sent Alex in, itself otherwise. Channels are a research preview of Claude Code: the README's [What you need](../README.md#what-you-need) says what they require. These pages call the assistant Alex, its default name, and you, its owner, Sam.
 
+Using Codex or OpenCode instead? The channel and the meeting-assistant are the same, and so is most of this page; [Codex](codex.md) and [OpenCode](opencode.md) say how to set each up, what differs and what to watch for.
+
 ## Linking the session
 
 1. Register the channel once with `scripts/install-channel.sh`. It registers it for this folder only (Claude Code's local scope), so only a session started here loads it, with this folder's agent and deny rules. The channel links to the voice service on its control socket with the local token (see [Ports and security](security.md)), so start the service once first; until then the channel says, on stderr, that the token is missing, and keeps trying. While it has no link, its tools tell the session why, so the session can tell you: the local token is missing, nothing is listening on the control socket (the service is not running, or it and the channel use a different `.env` or data folder), or the service refused the link because the local token doesn't match (restart the voice service and the session).
@@ -81,7 +83,9 @@ Several Claude Code processes can have the channel loaded at once, such as idle 
 2. else the session that most recently used `join_meeting`, `reply` or `next_question`. Each session sends that time again when it relinks, so after the voice service restarts the same session gets them, whatever order they reconnect in. `get_transcript`, `why_not_answered`, `set_brief`, `add_to_brief` and `post_chat` don't move them;
 3. else, when no session has used one of those (for example a meeting started with `npm run join`), every linked session, and the first reply wins. Replying then claims the next questions.
 
-The service logs `[bridge] Questions now go to Claude Code session #N` when that changes, and a warning when a question goes to every session. Only the channel server can link: `/bridge` is on the control socket (your user only), needs the local token, and refuses any browser (a request with an `Origin` header), so neither a web page nor another program or user on this computer can take the questions.
+A Codex session, or an OpenCode session before its channel knows which session is yours, can't be sent a question its meeting-assistant doesn't take. Such a question goes on to the linked session that can be sent one and was used most recently, and when none is left, Alex says at once that it can't reach your notes.
+
+The service logs `[bridge] Questions now go to coding session #N` when that changes, and a warning when a question goes to every session. Only the channel server can link: `/bridge` is on the control socket (your user only), needs the local token, and refuses any browser (a request with an `Origin` header), so neither a web page nor another program or user on this computer can take the questions.
 
 Safety:
 - The channel tells the session, and the agent's instructions tell the agent, to treat meeting text as untrusted: to read and answer, and to change nothing because of it, with one exception. They may add to Alex's additions for that meeting with `add_to_brief`, using facts from their own sources. Meeting text may suggest a topic to add, but never supplies the content, and never leads them to do anything else.
