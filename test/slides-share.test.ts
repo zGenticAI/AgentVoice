@@ -18,6 +18,7 @@ import {
   CHUNK_BYTES, CHUNK_HEADER_BYTES, LINK_CLOSE, type ShareControl, type ShareTiming, SlideShares, chunkFrame, readHave,
 } from '../src/slides/share.ts'
 import { identity } from '../src/identity.ts'
+import { createSlides } from '../public/slides.js'
 
 const PUBLIC = 'https://assistant.example.com'
 const ORIGIN = { origin: PUBLIC }
@@ -388,6 +389,106 @@ test('the newest link wins (4001), and more than two take-overs within a minute 
   assert.equal(recall.calls.at(-1)!.call, 'stop')
   assert.equal(await control.start(0), 'disabled')
   assert.equal(recall.calls.filter(c => c.call === 'start').length, 1)
+})
+
+/** The bot's page: the real public/slides.js, over real sockets that send the public Origin, as the bot's browser does. */
+function botPage(port: number, query: string) {
+  const sockets: WebSocket[] = []
+  class Socket extends WebSocket {
+    constructor(url: string) {
+      super(url, { headers: ORIGIN })
+      this.on('error', () => {})
+      sockets.push(this)
+    }
+  }
+  const frames: string[] = []
+  const shown: string[] = []
+  let made = 0
+  let loading = ''
+  const view = {
+    async load(u: string) {
+      loading = u
+    },
+    swap() {
+      shown.push(loading)
+    },
+    frame(kind: string) {
+      frames.push(kind)
+    },
+    clear() {},
+    diag: () => ({ w: 1280, h: 720, dpr: 1, visibility: 'visible', ua_major: 130 }),
+  }
+  const page = createSlides(`ws://127.0.0.1:${port}/slides-link?${query}`, view, {
+    WebSocket: Socket as any,
+    createObjectURL: () => `blob:${++made}`,
+    revokeObjectURL: () => {},
+  })
+  return { page, frames, shown, sockets }
+}
+
+test("someone else who takes the link once is cut off: the bot's page links again and takes it back, and it is logged", async t => {
+  const logs = captureLogs(t)
+  const s = await service(t, { slidesTiming: { ...FAST, ackMs: 2000, upgradeGapMs: 300 } })
+  const recall = fakeRecall()
+  const control = s.svc.slides.create({ botId: 'bot-1', images: IMAGES, start: recall.start, stop: recall.stop })
+  const events: string[] = []
+  for (const e of ['contested', 'stuck', 'failed'] as const) control.on(e, () => void events.push(e))
+  const started = control.start(0)
+  await until(() => recall.calls.length > 0)
+  const query = shareQuery(recall, 0)
+  const bot = botPage(s.port, query)
+  t.after(() => bot.page.close())
+  assert.equal(await started, 'loaded')
+  await wait(350)
+  // Whoever else holds the address links once, after the gap, and acknowledges what it is told to show.
+  const holder = await link(s.port, query)
+  assert.equal(holder.outcome, 'open')
+  actAsPage(holder)
+  assert.equal(await holder.closed, LINK_CLOSE.replaced, 'the bot page took its link back')
+  for (const i of [1, 2, 3, 4]) assert.equal(await control.show(i), 'shown', `slide ${i}`)
+  assert.equal(bot.shown.length, 5, 'the bot page showed each slide, the first included')
+  assert.ok(!bot.frames.includes('ended'), JSON.stringify(bot.frames))
+  assert.ok(bot.sockets.length >= 2)
+  assert.deepEqual([...assembled(holder.pieces).keys()].filter(i => i > 1), [], 'the holder got the window it linked in, and nothing later')
+  assert.deepEqual(events, [])
+  assert.equal(control.state, 'loaded')
+  assert.deepEqual(recall.calls.map(c => c.call), ['start'])
+  const text = logs.join('\n')
+  assert.match(text, /share 1's link was taken over by a newer one \(1 in 60 s\)/)
+  assert.match(text, /share 1's link was taken over by a newer one \(2 in 60 s\)/)
+  assert.doesNotMatch(text, /assistant\.example\.com|origin/i)
+  control.close()
+})
+
+test("someone else who takes the link again each time it is cut off ends the share as contested: stopped, no more shares", async t => {
+  captureLogs(t)
+  const s = await service(t, { slidesTiming: { ...FAST, upgradeGapMs: 300 } })
+  const recall = fakeRecall()
+  const control = s.svc.slides.create({ botId: 'bot-1', images: IMAGES, start: recall.start, stop: recall.stop })
+  const events: string[] = []
+  control.on('contested', () => void events.push('contested'))
+  const started = control.start(0)
+  await until(() => recall.calls.length > 0)
+  const query = shareQuery(recall, 0)
+  const bot = botPage(s.port, query)
+  t.after(() => bot.page.close())
+  assert.equal(await started, 'loaded')
+  let holders = 0
+  while (!events.length && holders < 6) {
+    await wait(350)
+    const holder = await link(s.port, query)
+    if (holder.outcome !== 'open') break
+    holders++
+    actAsPage(holder)
+    await Promise.race([holder.closed, until(() => events.length > 0)])
+  }
+  await until(() => events.length > 0)
+  assert.deepEqual(events, ['contested'])
+  assert.ok(holders <= 2, `${holders} links`)
+  assert.equal(control.state, 'off')
+  assert.deepEqual(recall.calls.map(c => c.call), ['start', 'stop'])
+  assert.equal(await control.start(0), 'disabled')
+  // The DELETE takes the bot's page out of the meeting; without its link the page blanks on its own timers.
 })
 
 test('stop(): the ended frame goes before the link closes, then the DELETE with exactly {"screenshare":true}; the token is dead', async t => {

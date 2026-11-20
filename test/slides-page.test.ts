@@ -252,19 +252,39 @@ test('a link back within the grace cancels the blanking', async () => {
   assert.equal(p.view.front, 'blob:1')
 })
 
-test('4000 (over) and 4001 (replaced) end the page for good: ended, nothing kept, no more tries', async () => {
-  for (const code of [4000, 4001]) {
-    const p = page()
-    p.deck()
-    p.sock().say({ type: 'show', i: 0, seq: 1, keep: [0] })
-    p.pieces(0)
-    await settle()
-    p.sock().drop(code)
-    assert.equal(p.view.frames.at(-1), 'ended')
-    assert.deepEqual(p.live(), [])
-    p.clock.tick(600_000)
-    assert.equal(p.sockets.made.length, 1, String(code))
+test('4000 (over) ends the page for good: ended, nothing kept, no more tries', async () => {
+  const p = page()
+  p.deck()
+  p.sock().say({ type: 'show', i: 0, seq: 1, keep: [0] })
+  p.pieces(0)
+  await settle()
+  p.sock().drop(4000)
+  assert.equal(p.view.frames.at(-1), 'ended')
+  assert.deepEqual(p.live(), [])
+  p.clock.tick(600_000)
+  assert.equal(p.sockets.made.length, 1)
+})
+
+test('4001 (a newer link took its place) is not final: the page links again and takes its link back', async () => {
+  const p = page()
+  p.deck()
+  p.sock().say({ type: 'show', i: 0, seq: 1, keep: [0] })
+  p.pieces(0)
+  await settle()
+  p.sock().drop(4001)
+  assert.notEqual(p.view.frames.at(-1), 'ended')
+  p.clock.tick(retryDelay(0, () => 1))
+  assert.equal(p.sockets.made.length, 2, 'it links again, with its usual wait')
+  p.deck()
+  assert.deepEqual(p.sent()[0], { type: 'hello', v: 1, rev: 'r1', have: '01' }, 'with the slide it holds')
+  // The service's heartbeat goes on; the blanking the loss started does not come.
+  for (let ms = 0; ms < BLANK_AFTER_MS + 2000; ms += 1000) {
+    p.sock().say({ type: 'hb' })
+    p.clock.tick(1000)
   }
+  assert.equal(p.view.front, 'blob:1', 'the slide stays up: its link is back')
+  assert.deepEqual(p.view.frames, ['starting'])
+  assert.equal(p.sockets.made.length, 2)
 })
 
 test('a try that never gets the deck is given up on and tried again; the page sends nothing before the deck', () => {

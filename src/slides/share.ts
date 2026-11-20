@@ -31,7 +31,10 @@ export const SLIDES_LINK_PATH = '/slides-link'
 /** The most one message from the page may hold, and how many it may send a second. */
 export const LINK_MAX_BYTES = 1024
 export const LINK_MESSAGES_PER_SECOND = 20
-/** Close codes the page knows: the share is over (4000: show ended, don't come back), or a newer link took its place. */
+/**
+ * Close codes the page knows: the share is over (4000: show ended, don't come back), or a newer link took its place
+ * (4001: the page links again and takes it back, so a holder of the address is caught as contested if it keeps taking it).
+ */
 export const LINK_CLOSE = Object.freeze({ over: 4000, replaced: 4001, refused: 1008 })
 /** A binary piece of a slide: "AVSL", version, kind, slide index, the image's length and this piece's offset. */
 export const CHUNK_HEADER_BYTES = 16
@@ -238,8 +241,8 @@ export class ShareControl implements SlideSurface {
 
   /**
    * A link the routes let in for this share (its token checked). The newest link wins: the one before it is closed
-   * (4001). More than contestedReplacements of them within contestedMs, and someone else holds the address: the share
-   * is stopped, and no more are made.
+   * (4001), and the bot's page links again and takes it back. More than contestedReplacements of them within
+   * contestedMs, and someone else holds the address: the share is stopped, and no more are made.
    */
   take(ws: WebSocket, share: Share): void {
     // First, before any frame: an error nothing listens to would take the service down, and every meeting with it.
@@ -256,6 +259,8 @@ export class ShareControl implements SlideSurface {
         const now = this.now()
         share.replacements = share.replacements.filter(t => now - t < this.timing.contestedMs)
         share.replacements.push(now)
+        // A page that reloads or lost its link replaces it once; someone else with the address makes them take turns.
+        this.log(`share ${share.epoch}'s link was taken over by a newer one (${share.replacements.length} in ${Math.round(this.timing.contestedMs / 1000)} s)`)
         if (share.replacements.length > this.timing.contestedReplacements) return this.contested()
       }
       this.sendJson(link, { type: 'deck', v: 1, count: this.count, rev: this.rev })

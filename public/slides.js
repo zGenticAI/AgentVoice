@@ -19,8 +19,10 @@ export const RETRY_MS = [250, 500, 1000, 2000, 4000, 5000]
 export const BLANK_AFTER_MS = 12_000
 // It stops trying this long after the link was lost (ms), and shows "ended".
 export const GIVE_UP_MS = 75_000
-// Close codes that mean don't come back: the share is over (4000), or a newer link took this one's place (4001).
-export const FINAL_CODES = new Set([4000, 4001])
+// The close code that means don't come back: the share is over (4000). A newer link that took this one's place (4001)
+// is not final: the page links again with its usual waits and takes its link back, so whoever else holds the address
+// keeps it only until then, and one who keeps taking it ends the share as contested (src/slides/share.ts).
+export const FINAL_CODES = new Set([4000])
 // A piece of a slide: "AVSL", version 1, kind 1, the slide's index, the image's length and this piece's offset.
 const HEADER_BYTES = 16
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024
