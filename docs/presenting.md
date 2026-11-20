@@ -278,11 +278,11 @@ Your session also gets a `presentation` event when the presentation starts, fini
 | Someone else took the page's link | "My slides had a problem, so I've stopped sharing them." | `contested` | No more shares in that meeting. |
 | The camera page dropped just after a share started or stopped | Nothing more is shared in that meeting | `camera_suspect` | Take the platform out of `SLIDES_PLATFORMS` and run the share test again. |
 | Shares asked for too often | "I'll leave the slides off for now." | `rate_limited` | Wait: at most one every 10 s, and 12 an hour. |
-| Speech recognition lost | At the end of the sentence: "I can't hear the meeting right now, so I'll pause my slides." Once it hears again: "Shall I carry on?" | `deaf` | Nothing: Alex never talks on when it can't hear "please leave". |
+| Speech recognition lost | At the end of the sentence it is saying (what was queued after it isn't played, and it carries on from there): "I can't hear the meeting right now, so I'll pause my slides." Once it hears again: "Shall I carry on?" | `deaf` | Nothing: Alex never talks on when it can't hear "please leave". Your `resume` or a move meanwhile changes the slide in silence, and it carries on once it hears again. |
 | ElevenLabs failed twice | "I'm having trouble with my voice; one moment." | `voice_failed` | "Alex, carry on", or `resume`. |
 | Held for more than two minutes | Nothing | `held_long` | Resume it, or stop it. |
 
-When Alex's camera page reconnects, the slides wait, and carry on two seconds after it is back with "Back to <title>." and the sentence. The slides page blanks itself to "Slides paused" about 12 seconds after it loses its link (the service stopped, or your computer slept), and to its ended frame after 75 seconds, so a slide never stays up without the service.
+When Alex's camera page reconnects, the slides wait, and carry on two seconds after it is back with "Back to <title>." and the sentence. Your `resume` or a move meanwhile changes the slide in silence, and it carries on from there once the page is back. The slides page blanks itself to "Slides paused" about 12 seconds after it loses its link (the service stopped, or your computer slept), and to its ended frame after 75 seconds, so a slide never stays up without the service.
 
 ### The platform settings
 

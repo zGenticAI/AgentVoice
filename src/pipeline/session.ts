@@ -1119,6 +1119,12 @@ export class MeetingSession {
       interrupt: () => this.interrupt(),
       playing: () => this.playback.paused || this.playback.playsUntil > this.clock(),
       quietMs: () => (this.roomTurnOpen ? 0 : Math.max(0, Date.now() - this.roomQuietSince)),
+      attached: () => this.attached(),
+      lineLeftMs: () => this.playback.lineLeft(),
+      // As interrupt, but the turn goes on: it says why the slides stopped. The consent line is still heard in full.
+      clear: () => {
+        if (this.ws && Date.now() >= this.consentPlaysUntil) this.clearPage()
+      },
       free: () =>
         !this.ended &&
         !this.leaving &&

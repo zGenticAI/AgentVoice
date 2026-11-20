@@ -246,6 +246,16 @@ export class Playback<L> {
     return ms ? this.clock() + PAGE_LEAD_MS + ms : 0
   }
 
+  /**
+   * How long the page still plays the line it is playing now (ms), to the end of what went out of it: 0 when it plays
+   * none, or is paused. For the slides, which stop at the end of a sentence.
+   */
+  lineLeft(): number {
+    const now = this.clock()
+    const playing = this.lines.find(p => p.runs.some(([start, end]) => start <= now && now < end))
+    return playing ? Math.max(0, (playing.runs.at(-1)?.[1] ?? now) - now) : 0
+  }
+
   /** Lines the page may still be playing, for tests. */
   get following(): readonly Playing<L>[] {
     return this.lines

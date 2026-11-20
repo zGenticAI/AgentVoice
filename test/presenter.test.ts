@@ -10,7 +10,7 @@ import type { ToSession } from '../src/bridge.ts'
 import { JOIN_LINE, LEAVE_LINE, SLIDES_LINES } from '../src/consent.ts'
 import { SLIDES_LABEL } from '../src/identity.ts'
 import { MeetingSession, type SessionSlides } from '../src/pipeline/session.ts'
-import type { PresentationEvent, PresenterSlide, PresenterTiming } from '../src/slides/presenter.ts'
+import type { OwnerAction, PresentationEvent, PresenterSlide, PresenterTiming } from '../src/slides/presenter.ts'
 import { presenterSlides } from '../src/slides/presenter.ts'
 import { parseScript } from '../src/slides/script.ts'
 import type { ShareEvent, SlideSurface, StartOutcome } from '../src/slides/surface.ts'
@@ -18,8 +18,11 @@ import type { ShareEvent, SlideSurface, StartOutcome } from '../src/slides/surfa
 class FakeSocket extends EventEmitter {
   readyState = 1
   sent: (Buffer | string)[] = []
+  /** The page's controls, and when each was sent. */
+  controls: { type: string; at: number }[] = []
   send(data: Buffer | string) {
     this.sent.push(data)
+    if (typeof data === 'string') this.controls.push({ type: JSON.parse(data).type, at: Date.now() })
   }
   close() {
     if (this.readyState === 3) return
@@ -174,6 +177,8 @@ interface Options {
   slides?: false
   timing?: Partial<PresenterTiming>
   from?: number
+  /** ms before a line's voice comes back from ElevenLabs: none unless given. */
+  latency?: number
 }
 
 function start(opts: Options = {}) {
@@ -211,6 +216,7 @@ function start(opts: Options = {}) {
     speak: async function* (text: string) {
       spoken.push(text)
       if (opts.failing?.has(text)) throw new Error('voice failed')
+      if (opts.latency) await wait(opts.latency)
       yield Buffer.alloc((opts.voice?.[text] ?? 20) * 32)
     },
     recall: {
@@ -239,7 +245,9 @@ function start(opts: Options = {}) {
   const alex = () => session.transcript.lines.filter(l => l.role === 'agent' && l.speaker !== SLIDES_LABEL).map(l => l.text)
   const markers = () => session.transcript.lines.filter(l => l.speaker === SLIDES_LABEL).map(l => l.text)
   const after = (line: string) => spoken.slice(spoken.lastIndexOf(line) + 1)
-  return { ws, flux, surface, session, answered, inputs, asked, minutes, spoken, notified, events, said, alex, markers, after, presenter: session.presenter! }
+  /** The line said after `line`, once both have been said. */
+  const next = (line: string): string | undefined => (spoken.includes(line) ? after(line)[0] : undefined)
+  return { ws, flux, surface, session, answered, inputs, asked, minutes, spoken, notified, events, said, alex, markers, after, next, presenter: session.presenter! }
 }
 
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -369,6 +377,9 @@ test('the next slide comes only once the last sentence has played and the room i
 
 // The sentence talked over plays for 1.5 s, so someone talking pauses it, and words stop it there.
 const LONG = { 'Team is twelve dollars.': 1500 }
+
+// The deck's narration, every sentence: none of it may be said while it may not narrate.
+const NARRATION = ['Hello everyone.', 'This is the plan.', 'Team is twelve dollars.', 'Business is twenty-nine.', 'Any questions so far?', 'Here are the security details.', 'We ship in March.', 'Thank you.']
 
 test('talked over: it stops at that sentence, asks "Shall I carry on?" once the room is quiet, and silence carries on there', async () => {
   const s = start({ voice: LONG })
@@ -516,6 +527,196 @@ test('speech recognition lost: the sentence ends, the fixed line is said, and no
   await until(() => s.spoken.includes(SLIDES_LINES.shallCarryOn))
   await until(() => s.spoken.includes(SLIDES_LINES.carryOn))
   assert.ok(s.events.some(e => e.event === 'deaf'))
+  done(s)
+})
+
+// Slide 2's sentences play for 600 ms each, and all three go out to the page at once, well ahead of what it plays.
+const QUEUED = { 'Team is twelve dollars.': 600, 'Business is twenty-nine.': 600, 'Any questions so far?': 600 }
+
+test('speech recognition lost: the page stops at the end of the sentence it plays, not of what went out, and carries on from there', async () => {
+  const s = start({ voice: QUEUED })
+  await narrating(s)
+  const playback = (s.session as any).playback
+  const line = (text: string) => playback.following.find((p: any) => p.text === text)
+  await until(() => s.spoken.includes('Any questions so far?') && line('Team is twelve dollars.')?.runs[0]?.[0] < Date.now() - 50, 'slide 2 sent, and playing')
+  const ends = line('Team is twelve dollars.').runs.at(-1)[1]
+  assert.ok(ends > Date.now() && playback.playsUntil - ends > 1000, 'the next two sentences are queued at the page')
+  const from = s.ws.controls.length
+  s.flux.emit('lost', 'test')
+  assert.equal(s.presenter.status().held, 'deaf', 'held at once: nothing more goes out')
+  await until(() => s.spoken.includes(SLIDES_LINES.deaf), 'the fixed line')
+  const clear = s.ws.controls.slice(from).find(c => c.type === 'clear')
+  assert.ok(clear, 'the page is told to clear what it still has')
+  assert.ok(clear.at >= ends - 20 && clear.at <= ends + 100, `at the end of the sentence it was playing (${clear.at - ends} ms)`)
+  assert.ok(line(SLIDES_LINES.deaf).runs[0][0] - ends < 200, 'the fixed line plays straight after that sentence')
+  assert.ok(playback.playsUntil - ends < 1000, 'and nothing of the narration after it')
+  // What the meeting did not hear is not in the transcript, and narration carries on from it.
+  assert.ok(s.alex().includes('Team is twelve dollars.'))
+  assert.ok(!s.alex().includes('Business is twenty-nine.') && !s.alex().includes('Any questions so far?'))
+  s.flux.emit('open')
+  await until(() => s.next(SLIDES_LINES.carryOn) !== undefined, 'carried on once it hears again')
+  assert.equal(s.next(SLIDES_LINES.carryOn), 'Business is twenty-nine.')
+  done(s)
+})
+
+test("while it can't hear, the owner's resume and moves say nothing: the slide is shown, and it carries on once it hears again", async () => {
+  const cant = "it can't hear the meeting right now"
+  // The action, the slide on screen after it, its note, and the sentence it carries on with once it hears (null: a detour, which waits for "carry on").
+  const cases: [OwnerAction, number | undefined, number, { ok: boolean; note: string }, string | null][] = [
+    ['resume', undefined, 2, { ok: false, note: `Not yet: ${cant}, so it carries on once it can.` }, 'Team is twelve dollars.'],
+    ['next', undefined, 5, { ok: true, note: `Slide 5 is on screen, but ${cant}, so it carries on once it can.` }, 'We ship in March.'],
+    ['goto', 5, 5, { ok: true, note: `Slide 5 is on screen, but ${cant}, so it carries on once it can.` }, 'We ship in March.'],
+    ['restart', undefined, 2, { ok: true, note: `Slide 2 is on screen, but ${cant}, so it carries on once it can.` }, 'Team is twelve dollars.'],
+    ['wrap_up', undefined, 5, { ok: true, note: `Slide 5 is on screen, but ${cant}, so it carries on once it can.` }, 'We ship in March.'],
+    ['back', undefined, 1, { ok: true, note: `Slide 1 is on screen, but ${cant}, so it said nothing.` }, null],
+  ]
+  for (const [action, slide, page, note, first] of cases) {
+    // From slide 2, lost before its first sentence has played.
+    const s = start({ from: 2, latency: 30 })
+    await narrating(s)
+    s.flux.emit('lost', 'test')
+    await until(() => s.spoken.includes(SLIDES_LINES.deaf), 'the fixed line')
+    await wait(50)
+    const count = s.spoken.length
+    assert.deepEqual(s.presenter.owner(action, slide), note, action)
+    await wait(200)
+    assert.deepEqual(s.spoken.slice(count), [], `${action}: nothing said while it can't hear`)
+    assert.equal(s.presenter.status().slide, page, `${action}: the slide is shown`)
+    assert.ok(!s.events.some(e => e.event === 'finished'), action)
+    s.flux.emit('open')
+    if (first) {
+      await until(() => s.next(SLIDES_LINES.shallCarryOn) === SLIDES_LINES.carryOn, `${action}: "Shall I carry on?", and silence carries on`)
+      await until(() => s.next(SLIDES_LINES.carryOn) !== undefined)
+      assert.equal(s.next(SLIDES_LINES.carryOn), first, action)
+    } else {
+      await wait(200)
+      assert.deepEqual(s.spoken.slice(count), [], 'a detour waits for "carry on"')
+      assert.equal(s.presenter.status().held, 'detour')
+    }
+    done(s)
+  }
+})
+
+test('"Alex, pause" or the owner\'s pause, then hearing lost: the owner\'s resume waits for hearing; so does a start whose share loads meanwhile', async () => {
+  for (const by of ['room', 'owner'] as const) {
+    const s = start()
+    await narrating(s)
+    if (by === 'room') s.said('Alex, pause.')
+    else s.presenter.owner('pause')
+    await until(() => s.presenter.status().held === (by === 'room' ? 'asked' : 'owner'))
+    s.flux.emit('lost', 'test')
+    await wait(30)
+    const count = s.spoken.length
+    assert.deepEqual(s.presenter.owner('resume'), { ok: false, note: "Not yet: it can't hear the meeting right now, so it carries on once it can." })
+    await wait(200)
+    assert.deepEqual(s.spoken.slice(count), [], `${by}: nothing said while it can't hear`)
+    assert.equal(s.presenter.status().held, 'deaf')
+    s.flux.emit('open')
+    await until(() => s.next(SLIDES_LINES.shallCarryOn) === SLIDES_LINES.carryOn, 'carried on once it hears again')
+    done(s)
+  }
+  // Started again after a stop: hearing is lost while the share loads, so narration waits for it.
+  const s = start()
+  await narrating(s)
+  s.said('Alex, stop presenting.')
+  await until(() => s.surface.calls.includes('stop'))
+  const load = s.surface.start.bind(s.surface)
+  let loaded!: () => void
+  const loading = new Promise<void>(resolve => (loaded = resolve))
+  s.surface.start = (at: number) => loading.then(() => load(at))
+  s.said('Alex, start the presentation.')
+  await until(() => s.spoken.filter(l => l === SLIDES_LINES.sharing).length === 2, 'the second start')
+  s.flux.emit('lost', 'test')
+  const count = s.spoken.length
+  loaded()
+  await until(() => s.presenter.status().held === 'deaf', 'held: it cannot hear')
+  await wait(200)
+  assert.deepEqual(s.spoken.slice(count), [], "nothing narrated while it can't hear")
+  s.flux.emit('open')
+  await until(() => s.next(SLIDES_LINES.shallCarryOn) === SLIDES_LINES.carryOn)
+  await until(() => NARRATION.includes(s.next(SLIDES_LINES.carryOn)!), 'narration')
+  done(s)
+})
+
+test('hearing lost while a detour slide is narrated again: it stops there, held as deaf, and goes back to the bookmark once it hears', async () => {
+  const s = start({ latency: 40 })
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  s.said('Alex, go back.')
+  await until(() => s.presenter.status().held === 'detour' && s.spoken.includes("Here's slide 1."), 'the detour')
+  const said = s.spoken.filter(l => l === 'Hello everyone.').length
+  s.said('Alex, start this slide again.')
+  await until(() => s.spoken.filter(l => l === 'Hello everyone.').length === said + 1, 'the detour slide narrated again')
+  s.flux.emit('lost', 'test')
+  const count = s.spoken.length
+  await until(() => s.spoken.includes(SLIDES_LINES.deaf), 'the fixed line')
+  await wait(100)
+  assert.deepEqual(s.spoken.slice(count), [SLIDES_LINES.deaf], 'nothing more of the slide')
+  assert.equal(s.presenter.status().held, 'deaf')
+  s.flux.emit('open')
+  await until(() => s.spoken.includes(`${SLIDES_LINES.carryOn} Back to Pricing.`), 'back to the bookmark')
+  assert.equal(s.presenter.status().slide, 2)
+  done(s)
+
+  // Held on a detour when hearing goes: the owner's restart of that slide says nothing either.
+  const h = start()
+  await narrating(h)
+  await until(() => h.spoken.includes('Team is twelve dollars.'))
+  h.said('Alex, go back.')
+  await until(() => h.presenter.status().held === 'detour' && h.spoken.includes("Here's slide 1."), 'the detour')
+  h.flux.emit('lost', 'test')
+  await wait(30)
+  const before = h.spoken.length
+  assert.equal(h.presenter.owner('restart').ok, true)
+  await wait(200)
+  assert.deepEqual(h.spoken.slice(before), [], "nothing said while it can't hear")
+  assert.equal(h.presenter.status().held, 'deaf')
+  done(h)
+})
+
+test('while the camera page is away, the owner\'s resume and moves send nothing to the voice: the slide is shown, and it carries on once the page is back', async () => {
+  const away = 'its camera page is away'
+  // The action, the slide on screen after it, its note, and what it says 2 s after the page is back.
+  const cases: [OwnerAction, number, { ok: boolean; note: string }, string][] = [
+    ['resume', 1, { ok: false, note: `Not yet: ${away}, so it carries on once the page is back.` }, 'Back to Welcome.'],
+    ['next', 2, { ok: true, note: `Slide 2 is on screen, but ${away}, so it carries on once the page is back.` }, 'Back to Pricing.'],
+    ['wrap_up', 5, { ok: true, note: `Slide 5 is on screen, but ${away}, so it carries on once the page is back.` }, 'Back to Next steps.'],
+  ]
+  for (const [action, page, note, back] of cases) {
+    // The page goes while the first sentence is made: none of it went out.
+    const s = start({ latency: 30 })
+    await narrating(s)
+    await until(() => s.spoken.includes('Hello everyone.'))
+    s.ws.drop()
+    assert.equal(s.presenter.status().held, 'page_away')
+    const count = s.spoken.length
+    assert.deepEqual(s.presenter.owner(action), note, action)
+    await wait(200)
+    assert.deepEqual(s.spoken.slice(count), [], `${action}: nothing goes to the voice with no page`)
+    assert.equal(s.presenter.status().held, 'page_away')
+    assert.equal(s.presenter.status().slide, page, `${action}: the slide is shown`)
+    assert.equal(s.presenter.status().bookmark, page, `${action}: narration carries on there`)
+    assert.ok(!s.events.some(e => e.event === 'finished'), action)
+    s.session.attach(new FakeSocket() as any, {})
+    await until(() => s.next(back) !== undefined, 'carried on once the page is back')
+    // The consent line again first (the page did not say what it had heard), then the slide.
+    assert.ok(!s.spoken.slice(count, s.spoken.indexOf(back, count)).some(l => NARRATION.includes(l)), 'no narration before it')
+    assert.ok(NARRATION.includes(s.next(back)!))
+    done(s)
+  }
+})
+
+test('a sentence that could not go out to the page is not counted as heard: once the page is back, narration carries on at it', async () => {
+  const s = start({ latency: 30 })
+  await narrating(s)
+  await until(() => s.spoken.includes('Team is twelve dollars.'))
+  // The page's connection starts to close while the sentence is made: none of it reaches the page.
+  s.ws.readyState = 2
+  await until(() => s.presenter.status().held === 'page_away', 'held: no page')
+  assert.equal(s.presenter.status().slide, 2)
+  s.session.attach(new FakeSocket() as any, {})
+  await until(() => s.next('Back to Pricing.') !== undefined, 'carried on once the page is back')
+  assert.equal(s.next('Back to Pricing.'), 'Team is twelve dollars.')
   done(s)
 })
 

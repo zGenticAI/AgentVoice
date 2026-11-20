@@ -168,6 +168,12 @@ export interface PresenterHost {
   playing(): boolean
   /** How long the room has been quiet (ms): 0 while someone is in the middle of a turn. */
   quietMs(): number
+  /** The camera page is there to play the voice. */
+  attached(): boolean
+  /** How long the page still plays the line it is playing now (ms): 0 when it plays none. */
+  lineLeftMs(): number
+  /** Clears what the page still has to play, without stopping the turn: the lines it did not play are cut (see cut). */
+  clear(): void
   /** The session could speak now: the consent line over, the page there, hearing, and no turn running. */
   free(): boolean
   /** Opens the session's reply window: the next line is taken without the name. */
@@ -274,7 +280,7 @@ export class Presenter {
   private window: { kind: 'carry_on' | 'can_see'; until: number } | null = null
   private everStarted = false
   private finished = false
-  /** Speech recognition is lost now, and narration is to stop at the end of the sentence. */
+  /** Speech recognition is lost now; and the fixed line that says so is still to be said (once per loss). */
   private deafNow = false
   private deafPending = false
   /** When the camera page came back (for page_away), 0 while it is away. */
@@ -466,8 +472,13 @@ export class Presenter {
     this.deafNow = !on
     if (!on) {
       this.emit('deaf', "Speech recognition can't hear the meeting, so the slides are paused.")
-      if (this.state === 'narrating') this.deafPending = true
-      else if (this.state === 'held' || this.state === 'checking') this.holdAs('deaf')
+      if (this.state === 'narrating') {
+        // Held at once, so nothing more goes out; and what went out already would play on, so the page is stopped at the
+        // end of the sentence it plays now.
+        this.deafPending = true
+        this.holdAs('deaf')
+        this.turn(signal => this.deafStop(signal))
+      } else if (this.state === 'held' || this.state === 'checking') this.holdAs('deaf')
       return
     }
     this.deafPending = false
@@ -516,7 +527,7 @@ export class Presenter {
         this.opts.host.interrupt()
         this.resume = { i: last, k: 0 }
         this.narrateFrom({ prefix: this.lines.wrapUp })
-        return { ok: true, note: 'Jumping to the last slide.' }
+        return this.mutedNote(false) ?? { ok: true, note: 'Jumping to the last slide.' }
       }
       if (action === 'pause') {
         if (this.state === 'qa') return { ok: true, note: 'The last slide is up, for questions: there is nothing to pause.' }
@@ -526,8 +537,10 @@ export class Presenter {
         return { ok: true, note: 'Paused. Only you can resume it.' }
       }
       const command: SlideCommand = action === 'goto' ? { kind: 'goto', slide: slide! } : { kind: action }
+      const view = this.view
       const done = this.command(command, 'owner')
-      return done ? { ok: true, note: `Done: ${done}.` } : { ok: false, note: `Not now: the presentation is ${this.state}.` }
+      if (!done) return { ok: false, note: `Not now: the presentation is ${this.state}.` }
+      return this.mutedNote(action === 'resume', view) ?? { ok: true, note: `Done: ${done}.` }
     } catch (err) {
       this.fault('an owner action', err)
       return { ok: false, note: 'It failed: see the service log.' }
@@ -647,7 +660,10 @@ export class Presenter {
     const line = owner ? `Moving to slide ${page}.` : `Here's slide ${page}.`
     const work = async (signal: AbortSignal) => {
       await this.showSlide(i)
-      if (!signal.aborted) await this.opts.host.say(line, signal)
+      if (signal.aborted) return
+      // It can't hear "please leave", or has no page: the slide is shown in silence.
+      if (this.deafPending) return this.deafStop(signal)
+      if (!this.mute()) await this.opts.host.say(line, signal)
     }
     this.turn(work)
   }
@@ -774,7 +790,8 @@ export class Presenter {
     const back = this.backTo()
     let prefix: string | undefined
     if (!opts.silent && hold) {
-      if (hold.cause === 'talk' || hold.cause === 'deaf') prefix = long && back ? `${this.lines.carryOn} ${back}` : this.lines.carryOn
+      // From a detour (held there while it narrated it again), it says where it is going back to.
+      if (hold.cause === 'talk' || hold.cause === 'deaf') prefix = (long || this.inDetour()) && back ? `${this.lines.carryOn} ${back}` : this.lines.carryOn
       else if (hold.cause === 'question' || hold.cause === 'page_away' || hold.cause === 'detour' || this.inDetour()) prefix = back
       else if (long) prefix = back
     }
@@ -818,11 +835,12 @@ export class Presenter {
     let first = true
     while (this.live(run, signal)) {
       if (!this.normalise()) return this.toQuestions()
-      if (this.deafPending) return this.deafStop(signal)
       const { i } = this.resume
       const slide = this.slides[i]
       await this.showSlide(i)
       if (!this.live(run, signal)) return
+      // It never talks when it can't hear "please leave", or has no page: an owner's move shows the slide, and waits.
+      if (await this.stopMuted(signal)) return
       if (first && prefix) {
         await this.sayLine(prefix, signal)
         if (!this.live(run, signal)) return
@@ -833,13 +851,11 @@ export class Presenter {
         if (!this.live(run, signal)) return
       }
       for (let k = this.resume.k; k < slide.sentences.length; k++) {
-        // It never talks on when it can't hear "please leave": lost during the last sentence or a pause, it stops here.
-        if (this.deafPending) return this.deafStop(signal)
+        if (await this.stopMuted(signal)) return
         const said = await this.sayNarration(slide.sentences[k], signal, { i, k }, run)
         if (!this.live(run, signal) || !said) return
         this.resume = { i, k: k + 1 }
       }
-      if (this.deafPending) return this.deafStop(signal)
       // The page plays the last of it, and then the room gets a moment: never a change while someone is talking.
       await this.until(() => !this.opts.host.playing(), signal)
       if (!this.live(run, signal)) return
@@ -858,11 +874,56 @@ export class Presenter {
     }
   }
 
-  /** Speech recognition was lost: the fixed line, then held until hearing is back. */
+  /**
+   * Speech recognition was lost while narrating: held, and the page stopped at the end of the line it is playing now.
+   * What went out after it is not heard, so narration carries on from there. Then the fixed line, once per loss, and
+   * held until hearing is back. As the session's turn, which waits for that line's end (a clear there keeps the turn).
+   */
   private async deafStop(signal: AbortSignal): Promise<void> {
+    this.holdAs('deaf')
+    await sleep(this.opts.host.lineLeftMs(), signal)
+    if (signal.aborted) return
+    this.opts.host.clear()
+    // Hearing came back meanwhile: "Shall I carry on?" says enough.
+    if (!this.deafPending) return
     this.deafPending = false
     await this.sayLine(this.lines.deaf, signal)
-    this.holdAs('deaf')
+  }
+
+  /** Why it may not talk now: it can't hear "please leave", or the camera page that plays its voice is away. */
+  private mute(): 'deaf' | 'page_away' | null {
+    if (this.deafNow) return 'deaf'
+    if (!this.opts.host.attached()) return 'page_away'
+    return null
+  }
+
+  /**
+   * Narration stops here when it may not talk: the fixed line first if hearing was lost and it is still to be said,
+   * otherwise held in silence. The tick resumes it once it can hear, or once the page is back. True: it stopped.
+   */
+  private async stopMuted(signal: AbortSignal): Promise<boolean> {
+    if (this.deafPending) {
+      await this.deafStop(signal)
+      return true
+    }
+    const why = this.mute()
+    if (why) this.holdAs(why)
+    return why !== null
+  }
+
+  /**
+   * For an owner's action while it may not talk: what was done, and when it carries on. Null when it may talk, or the
+   * action changed nothing. resume: it was asked to resume. view: the slide on screen before the action.
+   */
+  private mutedNote(resume: boolean, view: number | null = null): { ok: boolean; note: string } | null {
+    const why = this.mute()
+    // Narration was started: it holds at its first step. A detour, or a move in questions, shows a slide and waits.
+    const carries = this.state === 'narrating'
+    if (!why || (!carries && this.view === view)) return null
+    const [cannot, once] = why === 'deaf' ? ["it can't hear the meeting right now", 'once it can'] : ['its camera page is away', 'once the page is back']
+    if (resume && carries) return { ok: false, note: `Not yet: ${cannot}, so it carries on ${once}.` }
+    const at = this.slides[this.view ?? this.bookmark()]
+    return { ok: true, note: `Slide ${at.page} is on screen, but ${cannot}, so it ${carries ? `carries on ${once}` : 'said nothing'}.` }
   }
 
   /** One detour slide narrated from its start (restart during a detour): the bookmark stays, and it is held after. */
@@ -870,9 +931,11 @@ export class Presenter {
     const slide = this.slides[i]
     await this.showSlide(i)
     if (!this.live(run, signal)) return
+    if (await this.stopMuted(signal)) return
     if (prefix) await this.sayLine(prefix, signal)
     await sleep(this.timing.leadMs + slide.hold * 1000, signal)
     for (let k = 0; k < slide.sentences.length && this.live(run, signal); k++) {
+      if (await this.stopMuted(signal)) return
       if (!(await this.sayNarration(slide.sentences[k], signal, undefined, run))) return
     }
     if (this.live(run, signal)) this.holdAs('detour')
@@ -891,8 +954,10 @@ export class Presenter {
   private async sayNarration(text: string, signal: AbortSignal, tag: NarrationTag | undefined, run: number): Promise<boolean> {
     for (let attempt = 1; ; attempt++) {
       try {
-        await this.opts.host.say(text, signal, tag)
-        return !signal.aborted
+        const complete = await this.opts.host.say(text, signal, tag)
+        // Not all of it went out (the page went as it was said): not heard, so the bookmark stays at it.
+        if (!complete && !signal.aborted && run === this.run) this.holdAs(this.mute() ?? 'page_away')
+        return complete && !signal.aborted
       } catch (err) {
         if (signal.aborted || run !== this.run) return false
         console.error(`[slides] bot ${this.opts.botId ?? '-'}: a sentence could not be said (${errorKind(err)})`)
