@@ -1,0 +1,90 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "zoom-meeting": {
+        "type": "local",
+        "command": ["node_modules/.bin/tsx", "src/channel/server.ts"],
+        "codemode": false,
+        "environment": {"AGENTVOICE_CLIENT": "opencode"}
+      }
+    }
+  },
+  "permissions": [
+    {"action": "zoom-meeting_join_meeting", "resource": "*", "effect": "ask"},
+    {"action": "zoom-meeting_set_brief", "resource": "*", "effect": "ask"},
+    {"action": "zoom-meeting_slides_control", "resource": "*", "effect": "ask"},
+    {"action": "shell", "resource": "npm run slides *", "effect": "ask"}
+  ],
+  "agents": {
+    "meeting-assistant": {
+      "mode": "subagent",
+      "permissions": [
+        {"action": "*", "resource": "*", "effect": "deny"},
+        {"action": "zoom-meeting_next_question", "resource": "*", "effect": "allow"},
+        {"action": "zoom-meeting_get_profile", "resource": "*", "effect": "allow"},
+        {"action": "zoom-meeting_reply", "resource": "*", "effect": "allow"},
+        {"action": "zoom-meeting_post_chat", "resource": "*", "effect": "allow"},
+        {"action": "zoom-meeting_get_transcript", "resource": "*", "effect": "allow"},
+        {"action": "zoom-meeting_add_to_brief", "resource": "*", "effect": "allow"},
+        {"action": "read", "resource": "*", "effect": "allow"},
+        {"action": "grep", "resource": "*", "effect": "deny"},
+        {"action": "glob", "resource": "*", "effect": "deny"},
+        {"action": "shell", "resource": "*", "effect": "deny"}
+      ]
+    }
+  },
+  "policies": [
+    {"action": "tool.use", "resource": "read:.env", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:.env.local", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env.local", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:.env.*.local", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env.*.local", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:.env.production", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env.production", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:.env.prod", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env.prod", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:.env.development", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env.development", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:.env.dev", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env.dev", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:.env.staging", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env.staging", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:.env.test", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env.test", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:.env.bak", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env.bak", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:.env.backup", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env.backup", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:.env.old", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.env.old", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:local-token", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/local-token", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*.pem", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*.key", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*.p12", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*.pfx", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:data/decks", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:data/decks/*", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/data/decks", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/data/decks/*", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.ssh", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.ssh/*", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.cloudflared", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.cloudflared/*", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.aws", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.aws/*", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.config/gh", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.config/gh/*", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.kube", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.kube/*", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.gnupg", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.gnupg/*", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.claude.json", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.git-credentials", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.netrc", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.docker/config.json", "effect": "deny"},
+    {"action": "tool.use", "resource": "read:*/.claude/.credentials.json", "effect": "deny"}
+  ]
+}

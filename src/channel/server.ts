@@ -25,6 +25,7 @@ import { canonicalText, parseScript, problemsText } from '../slides/script.ts'
 import { CLIENT_NAMES, type Client, clientFrom, clientWords } from './client-text.ts'
 import { joinDescription, joinRule } from './join-rule.ts'
 import { type ProfileBrief, profileText, profileToolDescription } from './profile-tool.ts'
+import { clientInfoWarnings, openCodeSink } from './push-opencode.ts'
 import { ATTACH_GRACE_MS, type Delivery, type Question, QuestionDesk } from './questions.ts'
 import { type ChannelEvent, NO_PUSH, type PushSink, claudeCodeSink, ownerSessionId } from './sink.ts'
 
@@ -258,13 +259,13 @@ function request(msg: FromSession & { request_id: string }, timeoutMs = 10_000):
 }
 
 /**
- * The sink for this client: Claude Code's channel notification, or none (src/channel/sink.ts). owner: the owner's
- * session, for a sink that posts to it by its ID.
+ * The sink for this client (src/channel/sink.ts): Claude Code's channel notification, OpenCode's synthetic input posted
+ * to the owner's session (src/channel/push-opencode.ts), or none for Codex, which drops server notifications. owner:
+ * the owner's session, for a sink that posts to it by its ID.
  */
-function sinkFor(client: Client, _owner: () => string | null): PushSink {
+function sinkFor(client: Client, owner: () => string | null): PushSink {
   if (client === 'claude-code') return claudeCodeSink(notification => mcp.notification(notification))
-  // Codex drops server notifications. OpenCode's own sink, posting to the owner's session, goes here; without it,
-  // OpenCode is pull only, as Codex is.
+  if (client === 'opencode') return openCodeSink({ owner })
   return NO_PUSH
 }
 const SINK = sinkFor(CLIENT, () => ownerSession)
@@ -751,6 +752,11 @@ async function callTool(tool: string, args: Record<string, unknown>, signal: Abo
     }
   }
   throw new Error(`unknown tool: ${tool}`)
+}
+
+// What the client says it is, checked against AGENTVOICE_CLIENT: warnings only, never a change in what the channel does.
+mcp.oninitialized = () => {
+  for (const warning of clientInfoWarnings(CLIENT, mcp.getClientVersion())) console.error(warning)
 }
 
 await mcp.connect(new StdioServerTransport())
