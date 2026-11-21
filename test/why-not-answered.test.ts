@@ -134,6 +134,15 @@ test('each line says what Alex did with it and why, by the attention rules', asy
   assert.match(s.why(5).lines![0].why, /talk about Alex, not to it/)
 })
 
+test('a hello alone is read as asking nothing, and says so; a question in the sentence after a hello is answered', async t => {
+  const s = setup(t, () => 'The tiers are on the pricing page.')
+  s.flux.endTurn('Hi, Alex.')
+  s.flux.endTurn('Hi, Alex. Can you tell me about pricing?')
+  await settle()
+  assert.deepEqual(s.verdicts(), ['nothing_asked/nothing', 'asked/answered'])
+  assert.match(s.why(2).lines![0].why, /a hello with nothing asked after it \("Hi Alex\."\)/)
+})
+
 test('a call takes the next line; a reply window takes one line, and says when it had closed', async t => {
   const s = setup(t, line => (line.startsWith('Alex') ? 'Do you want the short version?' : 'It was a bad deploy.'), { replyWindowMs: 80 })
   s.flux.endTurn('Alex?')

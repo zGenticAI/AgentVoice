@@ -78,7 +78,8 @@ const READINGS: Record<Reading, (v: Verdict) => string> = {
     `Only called ${NAME}: the name alone, or a question announced ("${NAME}, quick question."). ${NAME} says nothing, and takes the next line said within 10 seconds` +
     `${v.duringConsent ? ', counted from the end of the consent line' : ''}.`,
   nothing_asked: () =>
-    `Said to ${NAME}, but read as asking nothing: thanks, praise or a goodbye; asking ${NAME} to wait, or putting it off; the host moving on ("Thanks ${NAME}, who's next?") ` +
+    `Said to ${NAME}, but read as asking nothing: thanks, praise or a goodbye; a hello with nothing asked after it ("Hi ${NAME}."); ` +
+    `asking ${NAME} to wait, or putting it off; the host moving on ("Thanks ${NAME}, who's next?") ` +
     'or a question for someone else; or a question the rules cannot tell from a remark without its question mark ("is the API ready.").',
   mentioned: () =>
     `Read as talk about ${NAME}, not to it: the name inside or at the end of a sentence without a comma before it ("I asked ${NAME} yesterday"), ` +

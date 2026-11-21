@@ -94,6 +94,11 @@ export interface SlidesLines {
   carryOn: string
   /** "<name>, stop presenting". */
   stopped: string
+  /**
+   * In questions after the last slide, two minutes with nothing said to the assistant by name: said once the room is
+   * quiet, then the share stops. It says how to bring the slides back.
+   */
+  idleStop: string
   /** The share was refused (Recall's answer). */
   shareFailed: string
   /** Recall took the share, but the page never linked up, or never showed the first slide. */
@@ -133,6 +138,7 @@ export function slidesLines(id: Pick<Names, 'name' | 'owner'>): SlidesLines {
     shallCarryOn: 'Shall I carry on?',
     carryOn: "I'll carry on.",
     stopped: "Sure, I'll stop sharing my slides.",
+    idleStop: `I'll stop sharing my slides for now. Say "${name}, start the presentation" to bring them back.`,
     stoppedForOwner: "I'll stop sharing my slides now.",
     shareFailed: "I couldn't share my slides.",
     notLoading: "My slides didn't load, so I've stopped sharing them.",
