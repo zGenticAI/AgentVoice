@@ -16,7 +16,7 @@ npm-debug.log*
 data/*
 !data/.gitkeep
 # Yours, never committed: the owner's profile (it may name private paths), your own Claude Code permissions, and the
-# briefs you keep for single meetings (npm run join --brief), which hold your clients' facts.
+# briefs you keep for single meetings (npm run join -- "<link>" --brief <file>), which hold your clients' facts.
 profile.md
 .claude/settings.local.json
 /briefs/

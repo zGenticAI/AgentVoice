@@ -100,7 +100,7 @@ cp profile.example.md profile.md
 | Removing it from the participant list | The same as "Alex, please leave", once Recall confirms the removal. |
 | "Alex, start the presentation" (in a meeting it has slides for) | It shares its slides and presents them. "Alex, next slide", "go back", "go to slide 5", "pause", "carry on" and "stop presenting" steer it ([When Alex presents](docs/in-a-meeting.md#when-alex-presents)). |
 
-When Alex isn't sure a line was said to it, it stays quiet: say its name again. To find out why it didn't answer something, ask your coding session "why didn't Alex answer that?": its `why_not_answered` tool says what Alex did with each of the latest lines, and why. [In a meeting](docs/in-a-meeting.md) has the exact rules, and what to check when it doesn't answer.
+When Alex isn't sure a line was said to it, it stays quiet: say its name again. To find out why it didn't answer something, ask your coding session "why didn't Alex answer that?" while the meeting is on: its `why_not_answered` tool says what Alex did with each of the latest lines, and why. [In a meeting](docs/in-a-meeting.md) has the exact rules, and what to check when it doesn't answer.
 
 ## Linking your coding session
 

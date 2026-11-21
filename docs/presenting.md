@@ -174,7 +174,7 @@ The session sees the whole file, comments included, when it reads it, and the PD
 npm run slides -- check decks/q4-roadmap.script.md
 ```
 
-It needs no key and no network. It reads only a file named `<something>.script.md`. Of its lines, it prints only its deck's id, the figures and abbreviations in the paragraphs, a heading's title when that has some (as it will be said: "Back to <title>."), and the name of a key it doesn't know. It loads the script's deck, and prints:
+It needs no key and no network. It reads only a file named `<something>.script.md`. Of its lines, it prints only its deck's id, its `minutes`, the page numbers in its headings, the figures and abbreviations in the paragraphs, a heading's title when that has some (as it will be said: "Back to <title>."), and the name of a key it doesn't know. It loads the script's deck, and prints:
 - **Errors**, which a script must not have: a missing or broken deck, a section for a page the deck doesn't have (or that was left out with `--exclude`), `TODO` or nothing to say (without `hold`), an unknown key, `check: changed`, a list, table, quote, code block, image, URL or HTML, the limits above, and no slide to present at all.
 - **Warnings**, which never stop it: sections marked `check: yes`; signs, figures and abbreviations the voice may read wrongly; figures that aren't on the slide; a section over two minutes, or one so short people can't read the slide (add `hold`); narration over 70% of your `minutes`; pages with no section ("page 9 has no section, so it won't be shown"); and what prepare noticed about the slides: small text, no text, bars, a document page, an image left out or not drawn, one line for each with its pages.
 - **The estimate:** how long the narration takes, from its length at about 150 words a minute, with the pauses around each slide. A section still `TODO` is not counted: it says how many are left to write. The real timing is known only in a meeting.
@@ -261,7 +261,7 @@ npm run slides -- control end --meeting <bot id>
 | `start` | As "Alex, start the presentation". |
 | `pause`, `resume` | Your pause is yours: only you can resume it. Someone saying "Alex, carry on", "yes" to "Shall I carry on?", or "start this slide again" gets "I'll wait for Sam on that." The room can still move between slides and stop sharing. A stop keeps your pause, so "Alex, start the presentation" then gets the same answer: use `start` (`resume` does nothing once the slides are stopped). |
 | `next`, `back`, `goto N`, `restart` | As the room's, at once, and said aloud ("Moving to slide 6.", or "Going through slide 6 again." for the slide it is presenting), since the meeting didn't hear you ask. |
-| `wrap_up` | "Let me jump to the last slide.", and the last slide in order. Yours only. |
+| `wrap_up` | "Let me jump to the last slide.", and the last slide in order. Yours only, though the room's "Alex, go to the last slide" moves to the same slide, without the line. |
 | `stop` | As "Alex, stop presenting", but said as "I'll stop sharing my slides now.", since nobody in the meeting asked. While it can't hear the meeting, the share just stops, with nothing said. |
 | `end` | Stops it for good in this meeting, with the same line: the room can't start it again. Yours only. |
 
