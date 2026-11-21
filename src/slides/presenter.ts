@@ -382,6 +382,8 @@ export class Presenter {
   /** The idle stop under way (its number), from its line to the stop: 0 when none. Anything said to it calls it off. */
   private idling = 0
   private idles = 0
+  /** The idle stop whose line is going out or playing: 0 when none (talk over it, or hearing lost, calls it off). */
+  private idleLine = 0
   /** Lines to say once the session is free: a problem with the share said while an answer runs, say. */
   private readonly queued: string[] = []
   private readonly listeners: ((event: PresentationEvent) => void)[] = []
@@ -563,8 +565,11 @@ export class Presenter {
     if (this.state === 'qa') {
       // Nothing is held in questions after the last slide. A question, or "never mind", is something said to it; the
       // page going calls off an idle stop under way, since it can't speak (its clock starts again once the page is back).
+      // Talk over the idle line stops it (the session stops the turn): the room has not heard how to bring the slides
+      // back, so they stay up, and the two minutes start again.
       if (cause === 'question' || cause === 'asked') this.active()
       else if (cause === 'page_away') this.idling = 0
+      else if (cause === 'talk' && this.idling && this.idleLine === this.idling) this.active()
       return
     }
     // Talking over the presenter's own question is the answer to it: its window decides. Talked over as it goes out, the
@@ -605,6 +610,12 @@ export class Presenter {
     this.deafNow = !on
     if (!on) {
       this.emit('deaf', "Speech recognition can't hear the meeting, so the slides are paused.")
+      // In questions, an idle stop under way is called off: nobody can be heard talking to it now. Its line stops at
+      // once, since it never talks on while it can't hear. The two minutes start again once it can (below).
+      if (this.state === 'qa' && this.idling) {
+        if (this.idleLine === this.idling) this.opts.host.interrupt()
+        this.idling = 0
+      }
       if (this.state === 'narrating') {
         // Held at once, so nothing more goes out; and what went out already would play on, so the page is stopped at the
         // end of the sentence it plays now.
@@ -985,20 +996,35 @@ export class Presenter {
 
   /**
    * In questions after the last slide, nothing was said to the assistant for qaIdleMs, and the room is quiet: its line,
-   * which says how to bring the slides back, then the share stops. Anything said to it before the share stops calls it
-   * off (active), and so does the page going (hold): the line is said again only after another qaIdleMs. Other talk
-   * over the line stops the line, as any talk over the assistant does, and the share still stops: once that talk has
-   * ended, since a line said to it by name over its line calls the stop off.
+   * which says how to bring the slides back, then the share stops, but only once the room has heard the line to its
+   * end. Anything said to it before the share stops calls the stop off (active), and so do talk over the line (which
+   * stops it, as any talk over the assistant does) and a line that did not all go out (its voice failed): the room was
+   * not told how to bring the slides back. The line is then said again only after another qaIdleMs. The page going and
+   * hearing lost call it off too (hold, hearing): the two minutes start again once it can speak and hear.
    */
   private idleStop(): void {
     const idle = ++this.idles
     this.idling = idle
+    this.idleLine = idle
     const host = this.opts.host
     const on = () => this.idling === idle && this.state === 'qa'
     void (async () => {
-      await this.turn(signal => this.sayLine(this.lines.idleStop, signal))
-      // The page plays the line to its end, and whoever talked over it finishes: what they said may call it off.
-      while (on() && (host.playing() || host.quietMs() === 0)) await sleep(this.timing.tickMs)
+      let said = false
+      await this.turn(async signal => {
+        try {
+          said = await host.say(this.lines.idleStop, signal)
+        } catch (err) {
+          if (!signal.aborted) console.error(`[slides] bot ${this.opts.botId ?? '-'}: a line could not be said (${errorKind(err)})`)
+        }
+      })
+      // The page plays the line to its end.
+      while (on() && host.playing()) await sleep(this.timing.tickMs)
+      if (this.idleLine === idle) this.idleLine = 0
+      if (!on()) return
+      // Not all of it went out: not heard.
+      if (!said) return this.active()
+      // Whoever talks after it finishes: what they say may call it off.
+      while (on() && host.quietMs() === 0) await sleep(this.timing.tickMs)
       if (!on()) return
       await this.stopFlow('questions_idle')
     })().catch(err => this.fault('stopping after questions', err))
