@@ -4,9 +4,10 @@
 // with only "please", "thanks" or "now" after it. Fillers don't count, wherever they are, as the leave rule skips them
 // ("Alex, uh, start the presentation."), and when only fillers or lead words follow the name before a full stop, the
 // next sentence is read too ("Alex, um. Start the presentation."). So "Next slide, Alex.", "Alex stopped at slide
-// four.", "I asked Alex to go back.", "Alex, wait until Sarah joins." and "Alex, next slide, and what does SSO cost?"
-// are not commands: they go to the attention rules as any other line. In a window the assistant opened ("Shall I carry
-// on?"), a line is also read without the name. "Alex, stop." stays today's cancel, which the session checks first.
+// four.", "I asked Alex to go back.", "Alex, wait until Sarah joins.", "Alex, next slide, and what does SSO cost?" and
+// "What do you think, Alex? Um. Next slide." (see readOn) are not commands: they go to the attention rules as any
+// other line. In a window the assistant opened ("Shall I carry on?"), a line is also read without the name. "Alex,
+// stop." stays today's cancel, which the session checks first.
 //
 // windowReply reads the answer to the assistant's own questions in a window. "Shall I carry on?" takes a closed list of
 // yes and no. "Can everyone see my slides?" is answered in sentences ("Yes, we can see them.", "I don't see anything.",
@@ -16,7 +17,7 @@
 //
 // Only in a meeting with slides: the session runs the commands after the leave and cancel checks and before attention,
 // so "please leave" always wins, and a meeting without slides reads every line exactly as before.
-import { makeAttention } from '../brain/attention.ts'
+import { type ReadOn, makeAttention } from '../brain/attention.ts'
 import { type AgentName, identity } from '../identity.ts'
 
 export type SlideCommand =
@@ -152,11 +153,14 @@ function commandWords(said: string): string {
 }
 
 // Nothing yet: what follows the name is only fillers, lead words, commas and full stops. Then the next sentence is read
-// too: "Alex, um. Start the presentation.", "Alex, okay. Next slide." (saidAfterName's readOn). Not after a question
-// mark: "Alex, okay? Next slide." stays a question to it. The name's own mark is not one ("Alex? Um. Next slide.", as
-// "Alex? Next slide.").
+// too: "Alex, um. Start the presentation.", "Alex, okay. Next slide." (saidAfterName's readOn). Not past a question
+// mark or an exclamation mark after a filler or a lead word: "Alex, okay? Next slide." and "Alex, um? Next slide." stay
+// a question to it. The name's own mark, right after it, is read as a full stop when it asks nothing: an exclamation
+// mark ("Hello, Alex! Um. Start the presentation."), or a question mark when only openers come before the name, so
+// that it only calls it ("Alex? Um. Next slide.", as "Alex? Next slide.", and "Okay, Alex? Um. Next slide."). After
+// other words, the question mark ends a question to it, which is answered: "What do you think, Alex? Okay. Next slide."
 const NOTHING_YET = new RegExp(String.raw`^(?:[\s,.:;\-–—]|\b(?:${LEAD_WORDS.join('|')})\b)*$`, 'i')
-const readOn = (said: string): boolean => NOTHING_YET.test(commandWords(said).replace(/^\s*[?!]+/, ''))
+const readOn: ReadOn = (said, first) => NOTHING_YET.test(commandWords(said.replace(first ? /^\s*[?!]+/ : /^\s*!+/, '')))
 
 /** A command in words said to the assistant (after its name, or the whole line in a window), or null. */
 function readCommand(said: string): SlideCommand | null {

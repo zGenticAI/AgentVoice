@@ -77,10 +77,15 @@ const POSITIVES: [string, SlideCommand][] = [
   ['Hello, Alex. Um, start the presentation.', { kind: 'start' }],
   ['Thanks, Alex. Um. Next slide.', { kind: 'next' }],
   // The name's own question or exclamation mark is no question: read on past a filler sentence after it, as after "Alex.".
+  // A question mark, only when openers alone come before the name: then it only calls it.
   ['Alex? Um. Next slide.', { kind: 'next' }],
   ['Alex! Um. Next slide.', { kind: 'next' }],
   ['Alex? Okay. Next slide.', { kind: 'next' }],
+  ['Okay, Alex? Um. Next slide.', { kind: 'next' }],
+  ['Hey Alex? Okay. Next slide.', { kind: 'next' }],
   ['Hello, Alex! Um. Start the presentation.', { kind: 'start' }],
+  ['Thanks, Alex! Um. Next slide.', { kind: 'next' }],
+  ['What a great slide, Alex! Um. Next slide.', { kind: 'next' }],
   // "Oh", "well" and "actually" lead, as "so" and "okay" do.
   ['Alex, oh, next slide.', { kind: 'next' }],
   ['Alex, well, go back.', { kind: 'back' }],
@@ -146,7 +151,13 @@ test('a filler makes no command of a line that is not one: the command is still 
     'Alex, uh, wait until Sarah joins.',
     // Read on only past fillers and lead words, and a full stop: not past a question mark, a question or another name.
     'Alex, okay? Next slide.',
+    'Alex, okay! Next slide.',
     'Alex? Okay? Next slide.',
+    // A mark after a filler is not the name's own, wherever the filler leaves it.
+    'Alex, um? Next slide.',
+    'Alex, hmm? Next slide.',
+    'Alex, um! Next slide.',
+    'Alex, um... ? Next slide.',
     'Alex, um. What does it cost?',
     'Alex? Um. What does it cost?',
     'Alex, um. Sarah, next slide.',
@@ -157,6 +168,21 @@ test('a filler makes no command of a line that is not one: the command is still 
     'Uh, next slide.',
   ]) {
     assert.equal(slideCommand(line), null, line)
+  }
+})
+
+test('a question that ends on the name is not read past: it is a question to Alex, and is answered', () => {
+  // The name's own question mark only calls it when openers alone come before the name ("Alex?", "Okay, Alex?").
+  // After other words, it ends a question to it, and a filler sentence then a command after it make no command of it.
+  for (const line of [
+    'What do you think, Alex? Okay. Next slide.',
+    'What do you think, Alex? Um. Next slide.',
+    'Can you hear me, Alex? Okay. Start the presentation.',
+    'Any thoughts, Alex? Um. Stop presenting.',
+    'What does it cost, Alex? Okay. Go back.',
+  ]) {
+    assert.equal(slideCommand(line), null, line)
+    assert.equal(attention(line), 'asked', line)
   }
 })
 

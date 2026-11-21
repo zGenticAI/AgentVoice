@@ -1053,9 +1053,11 @@ function spokenTo(sentence: Word[], at: number): boolean {
  * for leaving ("Ionics", as the first word) do, not the spellings Alec, Alexa or Aleks, which are also real names.
  *
  * readOn, for the slide commands (src/slides/commands.ts) only: while it is true of what was said so far, the next
- * sentence is read too ("Alex, um. Start the presentation."). The leave rule passes none, so it reads as it always did.
+ * sentence is read too ("Alex, um. Start the presentation."). Its `first` is true when only openers come before the
+ * name in its sentence ("Alex?", "Okay, Alex?", "Hello, Alex!"), as spokenTo() reads them, and false when other words
+ * do ("What do you think, Alex?"). The leave rule passes none, so it reads as it always did.
  */
-function saidAfterNameOf(text: string, sets: NameSets, readOn?: (said: string) => boolean): string[] {
+function saidAfterNameOf(text: string, sets: NameSets, readOn?: ReadOn): string[] {
   const sentences = sentencesOf(wordsOf(text, sets))
   const said: string[] = []
   const words = (sentence: Word[] = []) => sentence.map(w => w.raw + w.after).join('')
@@ -1066,7 +1068,8 @@ function saidAfterNameOf(text: string, sets: NameSets, readOn?: (said: string) =
       const last = i === sentence.length - 1
       let next = last ? s + 2 : s + 1
       let after = word.after + words(sentence.slice(i + 1)) + (last ? words(sentences[s + 1]) : '')
-      while (readOn && next < sentences.length && readOn(after)) after += words(sentences[next++])
+      const first = readOn !== undefined && opening(sentence.slice(0, i), true, true).end === i
+      while (readOn && next < sentences.length && readOn(after, first)) after += words(sentences[next++])
       said.push(after)
     })
   })
@@ -1112,6 +1115,12 @@ function wordsThatCountOf(text: string, sets: NameSets, partial: boolean): numbe
   return count
 }
 
+/**
+ * For the slide commands: whether to read on into the next sentence, given what was said after the name so far, and
+ * whether only openers came before the name in its sentence (see saidAfterNameOf()).
+ */
+export type ReadOn = (said: string, first: boolean) => boolean
+
 /** The attention rules for one assistant's names. */
 export interface AttentionRules {
   /** Whether a line is for the assistant, and if not, why not. */
@@ -1120,7 +1129,7 @@ export interface AttentionRules {
    * For the leave rule (text.ts): what was said to the assistant right after its name, each time it was said to it.
    * readOn: for the slide commands, read on into the next sentence while it is true (see saidAfterNameOf()).
    */
-  saidAfterName(text: string, readOn?: (said: string) => boolean): string[]
+  saidAfterName(text: string, readOn?: ReadOn): string[]
   /** For talking over the assistant (session.ts): how many words count as taking the floor (see wordsThatCountOf()). */
   wordsThatCount(text: string, partial?: boolean): number
 }
