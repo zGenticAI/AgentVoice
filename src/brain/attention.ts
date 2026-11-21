@@ -51,9 +51,10 @@
 //   Alex. Can you repeat that?". Not after thanks, praise, "yes" or a goodbye ("Thanks Alex. Did everyone get the
 //   deck?"), nor once Alex is told to wait or never mind, or is put off ("Alex, hold on. Go ahead, Sarah.", "Alex,
 //   no. What do you think, Sarah?"), nor when the next sentence is for someone else or the room ("Hi Alex. Sarah,
-//   can you share your screen?", "Hi Alex. Can we start?", "Can we start without her?"). The cost: after a hello, a
-//   question meant for the room that isn't one of the room's questions above is answered ("Hi Alex. Is the API
-//   ready?").
+//   can you share your screen?", "Hi Alex. Can we start?", "Can we start without her?"). After a hello, a word on
+//   its own is the next speaker called on, as in one sentence ("Hi Alex. Sarah?", "Hi Alex, Sarah?"), but a question
+//   word ("Hi Alex. Why?"). The cost: after a hello, a question meant for the room that isn't one of the room's
+//   questions above is answered ("Hi Alex. Is the API ready?").
 // - A line that only calls Alex ("Alex?", "Hey Alex.", "Okay, Alex.") or only announces a question ("Alex, quick
 //   question.", "Alex, I have two questions.", "Alex, I wanted to ask about pricing.", "Alex, sorry.") is a call:
 //   Alex says nothing, but the next thing said goes to it. After thanks or praise an announcement is the host moving
@@ -869,11 +870,17 @@ function auxiliaryAsks(words: Word[], at: number, leaveRule: boolean): boolean {
   return false
 }
 
-/** True when the next sentence carries on an address to Alex: a question or request, not for anyone else. */
-function carriesInto(sentence: Word[]): boolean {
+/**
+ * True when the next sentence carries on an address to Alex: a question or request, not for anyone else. `greeted`:
+ * the name came with a hello or an apology ("Hi Alex."). Then a word on its own is the next speaker called on ("Hi
+ * Alex. Sarah?"), as it is in one sentence ("Hi Alex, Sarah?", forSomeoneElse()): starting the sentence, a name can't
+ * be told from a thing ("Pricing?"), so any one word is, but a question word or "anything" ("Hi Alex. Why?").
+ */
+function carriesInto(sentence: Word[], greeted = false): boolean {
   const o = opening(sentence)
   const said = sentence.slice(o.end)
   if (o.greets || !asks(said, endsOnMark(sentence), true, true)) return false
+  if (greeted && said.length === 1 && !QUESTION_WORDS.has(said[0].text) && !ANY.has(said[0].text)) return false
   // Without a question mark, only a clear request carries: "Alex, one more thing. Tell us about security."
   const [first, second] = said.map(w => w.text)
   const toYou = (AUXILIARIES.has(first) || MODALS.has(first)) && second === 'you'
@@ -884,6 +891,8 @@ interface Use {
   how: 'asked' | 'called' | 'nothing_asked' | 'mentioned'
   /** The address can carry into the next sentence: "Alex, quick question. How much is it?". */
   carries: boolean
+  /** With a hello or an apology: what carries into the next sentence is read as after one (see carriesInto()). */
+  greets?: boolean
   /** The last word this use took in: the name said again right after it ("Alex? Alex?") needn't be looked at again. */
   through?: number
 }
@@ -967,7 +976,7 @@ function nameUse(sentence: Word[], at: number): Use {
     const line = textOf(said)
     const quiet = STOP.test(line) || PLEASANTRY.test(line) || HOLD.test(line) || PUT_OFF.test(line) || POLITE_HOLD.test(line) ||
       lead.holds || post.holds
-    return { how: called ? 'called' : 'nothing_asked', carries: called || (setOff && !acknowledges && !quiet), through: at + post.end }
+    return { how: called ? 'called' : 'nothing_asked', carries: called || (setOff && !acknowledges && !quiet), greets: greets && !called, through: at + post.end }
   }
   // Otherwise the name has to be set off by a comma before it and punctuation after it, or end the sentence:
   // "So what do you think, Alex?", "Before we start, Alex, introduce yourself.". In "By the way, Alex is recording
@@ -1006,7 +1015,7 @@ function attentionOf(text: string, sets: NameSets): Attention {
       const use = nameUse(sentence, i)
       if (use.how === 'asked') return 'asked'
       // "Alex, quick question. How much is it?": the question is in the next sentence.
-      if (use.carries && next && carriesInto(next)) return 'asked'
+      if (use.carries && next && carriesInto(next, use.greets)) return 'asked'
       if (use.how === 'called') calledLast = true
       if (use.how !== 'mentioned') quiet = 'nothing_asked'
       i = Math.max(i, use.through ?? i)

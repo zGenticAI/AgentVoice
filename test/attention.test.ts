@@ -125,6 +125,20 @@ test('after a hello or an apology, a question or request in the next sentence is
     'Good morning, Alex. Can everyone hear me?',
     'Hi Alex. Sarah, can you share your screen?',
   ], false)
+  // A name on its own after the hello is the next speaker called on, as it is in one sentence ("Hi Alex, Sarah?"). Starting
+  // a sentence, a name can't be told from a thing, so any one word is ("Hi Alex. Pricing?"), but a question word.
+  heardAs('nothing_asked', [
+    'Hi Alex, Sarah?',
+    'Hi Alex. Sarah?',
+    'Hello, Alex. Sarah?',
+    'Good morning, Alex. Priya?',
+    'Hi Alex. And Sarah?',
+    'Hi Alex. Tom? Are you with us?',
+    'Sorry, Alex. Sarah?',
+    'Sorry to interrupt, Alex. Sarah?',
+    'Hi Alex. Pricing?',
+  ], false)
+  heardAs('asked', ['Hi Alex. Why?', 'Hi Alex, quick question. Pricing?'], false)
   // Thanks is not a hello: the next sentence is still not carried (an accepted miss).
   heardAs('nothing_asked', ['Thanks Alex. Can you also check the budget?'], false)
   // An apology before the name opens an exchange as a hello does, so it carries too.
@@ -135,6 +149,7 @@ test('after a hello or an apology, a question or request in the next sentence is
   const nova = makeAttention({ name: 'Nova', variants: [], misheard: [], leaveMisheard: [] })
   assert.equal(nova.attention('Hi, Nova. Can you tell me about pricing?'), 'asked')
   assert.equal(nova.attention('Hi Nova. Can we start?'), 'nothing_asked')
+  assert.equal(nova.attention('Hi Nova. Sarah?'), 'nothing_asked')
   assert.equal(nova.attention('Thanks Nova. Can you also check the budget?'), 'nothing_asked')
 })
 
