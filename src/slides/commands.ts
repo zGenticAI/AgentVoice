@@ -139,9 +139,10 @@ const COMPILED = RULES.map(([kind, re]) => [kind, new RegExp(`${LEAD}(?:${re.sou
 // The sounds of someone thinking, as the attention rules know them (FILLER in src/brain/attention.ts): um, uh, er, erm,
 // hmm and ah, drawn out or not. None carries meaning in a command, so they are dropped wherever they are, with the
 // commas, dashes and dots around them: "Alex, uh, start the presentation.", "Alex, start the, um, presentation.",
-// "Alex, go to slide, er, five.", "Alex, next slide, um, please." A word joined to them stays whole ("uh-huh").
+// "Alex, go to slide, er, five.", "Alex, next slide, um, please." A word joined to them stays whole ("uh-huh"). A run
+// of dots ("...", or "…") is taken whole, so that a long one with no filler after it costs no more than a short one.
 const FILLER = String.raw`(?:u+h*m+|u+h+|e+r+m*|h+m+|a+h+)`
-const SOFT = String.raw`(?:[\s,;:\-–—]|\.{2,})`
+const SOFT = String.raw`(?:[\s,;:\-–—]|\.{2,}(?!\.))`
 const FILLERS = new RegExp(String.raw`${SOFT}*(?<![\p{L}\p{N}'’\-])${FILLER}(?![\p{L}\p{N}'’\-])${SOFT}*`, 'giu')
 
 /** The words to match, without fillers. */
@@ -152,9 +153,10 @@ function commandWords(said: string): string {
 
 // Nothing yet: what follows the name is only fillers, lead words, commas and full stops. Then the next sentence is read
 // too: "Alex, um. Start the presentation.", "Alex, okay. Next slide." (saidAfterName's readOn). Not after a question
-// mark: "Alex, okay? Next slide." stays a question to it.
+// mark: "Alex, okay? Next slide." stays a question to it. The name's own mark is not one ("Alex? Um. Next slide.", as
+// "Alex? Next slide.").
 const NOTHING_YET = new RegExp(String.raw`^(?:[\s,.:;\-–—]|\b(?:${LEAD_WORDS.join('|')})\b)*$`, 'i')
-const readOn = (said: string): boolean => NOTHING_YET.test(commandWords(said))
+const readOn = (said: string): boolean => NOTHING_YET.test(commandWords(said).replace(/^\s*[?!]+/, ''))
 
 /** A command in words said to the assistant (after its name, or the whole line in a window), or null. */
 function readCommand(said: string): SlideCommand | null {

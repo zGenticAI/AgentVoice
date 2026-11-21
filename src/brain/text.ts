@@ -64,10 +64,13 @@ export function isLeaveReply(text: string): boolean {
 // Words that can come first: "Actually Alex, never mind", "OK, stop, Alex".
 const CANCEL_OPENERS =
   '(?:(?:actually|ok|okay|oh|sorry|hey|hi|so|well|no|right|alright|wait|thanks|thank\\s+you|um+|uh+|er+m?|hmm+)[,.!\\s]+)'
-// Between the name and the request: punctuation, perhaps "no" or "wait" ("Alex, no, never mind"), and the fillers an
-// opener may be ("Alex, uh, never mind").
+// Between the name and the request: punctuation, perhaps "no" or "wait" ("Alex, no, never mind"), and fillers: the
+// sounds the slide commands and the attention rules skip (um, uh, uhm, er, erm, hm, hmm, ah, drawn out or not), with a
+// dash after them too ("Alex, uh, never mind.", "Alex, ah - stop."). A word joined to one by a hyphen is a word of its
+// own ("uh-oh"), as in the slide commands.
 const CANCEL_BETWEEN =
-  '[,.?!:;\\s\\-–—]*(?:(?:no|nah|nope|oh|ok|okay|actually|sorry|well|wait|hold\\s+on|hang\\s+on|hold\\s+up|um+|uh+|er+m?|hmm+)[,.!\\s]+)*'
+  '[,.?!:;\\s\\-–—]*(?:(?:no|nah|nope|oh|ok|okay|actually|sorry|well|wait|hold\\s+on|hang\\s+on|hold\\s+up)[,.!\\s]+|' +
+  '(?:u+h*m+|u+h+|e+r+m*|h+m+|a+h+)(?:[,.!\\s–—]|-(?![a-z]))+)*'
 const CANCEL_PHRASE =
   '(?:please[,\\s]+)?(?:' +
   [

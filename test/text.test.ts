@@ -262,7 +262,7 @@ test('telling Alex never mind, or to stop, is a cancel request', () => {
   assert.equal(isCancelRequest('Alex, is it fine to share this?'), false)
 })
 
-test('a filler between the name and the cancel is skipped, as one before the name is', () => {
+test('a filler between the name and the cancel is skipped: the sounds the slide commands skip, with or without a dash', () => {
   for (const said of [
     'Alex, uh, never mind.',
     'alex uh never mind',
@@ -273,9 +273,18 @@ test('a filler between the name and the cancel is skipped, as one before the nam
     'Alex, uh. Never mind.',
     // In an open window the session reads a line without the name as if said with it: "Uh, never mind."
     'Alex, Uh, never mind.',
+    // The same sounds the slide commands skip ("Alex, ah, stop presenting."), and a dash after them.
+    'Alex, ah, never mind.',
+    'Alex, ah, stop.',
+    'Alex, uhm, never mind.',
+    'Alex, hm, stop.',
+    'Alex, uh - never mind.',
+    'Alex, er — stop.',
   ]) {
     assert.equal(isCancelRequest(said), true, said)
   }
+  // A word joined to a filler by a hyphen stays whole, as in the slide commands.
+  assert.equal(isCancelRequest('Alex, uh-huh, never mind.'), false)
   // Still only the whole request: a filler doesn't make one of a question or a request that has a cancel word in it.
   for (const said of ['Alex, um, can you stop the recording?', 'Alex, uh, never mind, what time is it?', "Alex, uh, don't stop", 'Alex, um, stop the recording.']) {
     assert.equal(isCancelRequest(said), false, said)

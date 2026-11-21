@@ -76,6 +76,11 @@ const POSITIVES: [string, SlideCommand][] = [
   ['Alex, so, um. Next slide.', { kind: 'next' }],
   ['Hello, Alex. Um, start the presentation.', { kind: 'start' }],
   ['Thanks, Alex. Um. Next slide.', { kind: 'next' }],
+  // The name's own question or exclamation mark is no question: read on past a filler sentence after it, as after "Alex.".
+  ['Alex? Um. Next slide.', { kind: 'next' }],
+  ['Alex! Um. Next slide.', { kind: 'next' }],
+  ['Alex? Okay. Next slide.', { kind: 'next' }],
+  ['Hello, Alex! Um. Start the presentation.', { kind: 'start' }],
   // "Oh", "well" and "actually" lead, as "so" and "okay" do.
   ['Alex, oh, next slide.', { kind: 'next' }],
   ['Alex, well, go back.', { kind: 'back' }],
@@ -141,7 +146,9 @@ test('a filler makes no command of a line that is not one: the command is still 
     'Alex, uh, wait until Sarah joins.',
     // Read on only past fillers and lead words, and a full stop: not past a question mark, a question or another name.
     'Alex, okay? Next slide.',
+    'Alex? Okay? Next slide.',
     'Alex, um. What does it cost?',
+    'Alex? Um. What does it cost?',
     'Alex, um. Sarah, next slide.',
     'Alex, um, I think. Next slide.',
     // A word with a filler in it stays whole.
@@ -151,6 +158,18 @@ test('a filler makes no command of a line that is not one: the command is still 
   ]) {
     assert.equal(slideCommand(line), null, line)
   }
+})
+
+test('a long run of dots, or of "…", with no filler after it is read at once', () => {
+  // A run of dots could be split many ways: it is taken whole, so the time grows with the line, not with the splits.
+  for (const line of ['Alex, ' + '.'.repeat(36) + ' what', 'Alex, ' + '…'.repeat(12) + ' w', '.'.repeat(36) + ' what']) {
+    const from = performance.now()
+    assert.equal(slideCommand(line), null)
+    assert.equal(slideCommand(line, { inWindow: true }), null)
+    const ms = performance.now() - from
+    assert.ok(ms < 250, `${line.length} characters: ${ms.toFixed(0)} ms`)
+  }
+  assert.deepEqual(slideCommand('Alex, ' + '.'.repeat(36) + ' um, next slide.'), { kind: 'next' })
 })
 
 test('the leave rule reads what follows the name as before: only the slide commands read on past a filler', () => {

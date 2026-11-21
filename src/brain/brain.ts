@@ -113,9 +113,10 @@ export const slidesHeading = (owner: string) =>
 
 /**
  * The cached block of a meeting with slides, after the brief: the outline (each slide's number, title and first
- * sentence, at most SLIDES_OUTLINE_CHARS) and how to answer while presenting. Until the presentation first starts, it
- * also says so, and which words start it: the brain can't start it by answering, as it can't leave. So the block
- * changes once, at the first start, and is otherwise the same all meeting: it is cached with the rules and the brief.
+ * sentence, at most SLIDES_OUTLINE_CHARS) and how to answer while presenting. While the presenter is ready (before the
+ * first start, and again after a first start that was refused, did not load or was not seen), it also says the
+ * presentation has not started, and which words start it: the brain can't start it by answering, as it can't leave.
+ * So the block changes only as the presenter leaves ready or goes back to it: it is cached with the rules and the brief.
  * Titles come from a PDF: their block tags are stripped, so they can't close the block. The service's own lines come
  * after it.
  */
