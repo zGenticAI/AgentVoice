@@ -6,7 +6,8 @@
 // the participants' label, or a word the attention, leave and cancel rules already use ("Will" would answer
 // every "Will you ...?"). And three lines must read as they do for the default name: "<Name>, please leave"
 // (the consent line teaches it), "<Name>, what is the timeline?" and "I asked <Name> yesterday.". So must the two a
-// meeting with slides teaches: "<Name>, start the presentation" (its consent line) and "<Name>, pause" (its chat notice).
+// meeting with slides teaches: "<Name>, start the presentation" (its consent line, the hints after a "no" to "Can everyone
+// see my slides?" and the line before the idle stop in questions) and "<Name>, pause" (its chat notice).
 // Warnings are names that work but cost something: everyday words, forms of address and replies ("Dude", "Sweet":
 // said to anyone), other assistants' wake words, very short names and accents (ignored when matching). A spelling
 // (AGENT_NAME_VARIANTS) is warned about when it is an everyday word or a form of address; a mishearing
@@ -183,7 +184,8 @@ export function checkName(agent: AgentName & { readonly botName?: string; readon
     if (grammar.attention(`I asked ${name} yesterday.`) !== 'mentioned') {
       errors.push(`"I asked ${name} yesterday." is not taken as talk about the assistant.`)
     }
-    // The consent line of a meeting with slides teaches how to start them, and its chat notice how to pause them.
+    // The consent line of a meeting with slides teaches how to start them (so do the hints and the idle stop's line,
+    // src/consent.ts), and its chat notice how to pause them.
     const slides = makeSlideCommands(agent)
     if (slides.command(`${name}, start the presentation`)?.kind !== 'start') {
       errors.push(`"${name}, start the presentation" is not taken as the start of a presentation, but the consent line of a meeting with slides tells the meeting to say it.`)

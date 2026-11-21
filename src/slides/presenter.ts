@@ -8,7 +8,7 @@
 //   checking ─question, pause, page away, deaf─▶ held(cause) ─its resume rule─▶ checking (the question, if unheard)
 //   narrating ─talk, question, command, page away, deaf, voice─▶ held(cause) ─its resume rule─▶ narrating
 //   narrating|held ─"go back", "go to slide M" (behind, or on request)─▶ a detour ─"carry on"─▶ narrating(bookmark)
-//   narrating(last) ─done─▶ qa ─2 min quiet, "stop presenting"─▶ stopped ─"start the presentation"─▶ starting
+//   narrating(last) ─done─▶ qa ─2 min with nothing said to it, then its line; "stop presenting"─▶ stopped ─"start the presentation"─▶ starting
 //   any ─the owner's end─▶ ended (the room can't restart it)      any ─leave, time-up, end─▶ disposed
 //
 // Who may do what (Decision 2a): anyone who says the name may start, pause, carry on, move between slides and stop
@@ -16,9 +16,11 @@
 //
 // The share goes through SlideSurface (src/slides/surface.ts); the presenter never sees a token and never calls Recall.
 // Nothing here may take the service down: its timers and promises catch their own errors, and a fault degrades to a
-// hold, with an event for the owner. The log has states and counts only: never a title, a sentence or a slide's text.
+// hold, with an event for the owner. The log has states, counts and the events' notes, which are fixed text: never a
+// title, a sentence or a slide's text, nor anything said in the meeting.
 import { endsOnQuestion } from '../brain/attention.ts'
 import { type HintPlatform, SLIDES_LINES, type SlidesLines } from '../consent.ts'
+import { identity } from '../identity.ts'
 import { stripBlockTags } from '../untrusted.ts'
 import { type SlideCommand, lateNo, slideCommand, windowReply } from './commands.ts'
 import { MAX_PAGE_TEXT, MAX_TITLE, type Manifest } from './manifest.ts'
@@ -81,6 +83,12 @@ const ordinal = (n: number): string => {
  */
 export const placeIn = (position: number, of: number): string => `${ordinal(position)} of ${of} in this presentation`
 
+/** A length of time for the owner: "2 minutes", "45 seconds" (or ms, for tests' short timings). */
+const span = (ms: number): string => {
+  const [n, unit] = ms >= 60_000 ? [Math.round(ms / 60_000), 'minute'] : ms >= 1000 ? [Math.round(ms / 1000), 'second'] : [ms, 'millisecond']
+  return `${n} ${unit}${n === 1 ? '' : 's'}`
+}
+
 export type PresenterState = 'ready' | 'starting' | 'checking' | 'narrating' | 'held' | 'qa' | 'stopped' | 'ended' | 'disposed'
 
 /**
@@ -132,6 +140,13 @@ export type PresentationEventKind =
   | 'contested'
   | 'rate_limited'
   | 'held_long'
+
+/**
+ * Why the share was stopped (stopFlow), for the log and the note of the owner's `stopped` event: room, "<name>, stop
+ * presenting"; owner, the owner's stop; end, the owner's end; questions_idle, two minutes in questions after the last
+ * slide with nothing said to the assistant by name.
+ */
+export type StopReason = 'room' | 'owner' | 'end' | 'questions_idle'
 
 export interface PresentationEvent {
   event: PresentationEventKind
@@ -260,7 +275,10 @@ export const PRESENTER_TIMING = Object.freeze({
   longHoldMs: 20_000,
   /** A hold longer than this is told to the owner (ms). */
   heldLongMs: 120_000,
-  /** In questions after the last slide: the share stops after this long with nothing said to the assistant (ms). */
+  /**
+   * In questions after the last slide: after this long with nothing said to the assistant by name (ms), and once the
+   * room is quiet for talkQuietMs, it says how to bring the slides back, and stops sharing them.
+   */
   qaIdleMs: 120_000,
 })
 export type PresenterTiming = { -readonly [K in keyof typeof PRESENTER_TIMING]: number }
@@ -356,8 +374,14 @@ export class Presenter {
   private deafPending = false
   /** When the camera page came back (for page_away), 0 while it is away. */
   private pageBackAt = 0
-  /** When the room last said something to the assistant, or a command, in questions after the last slide. */
+  /**
+   * When the room last said something to the assistant by name, or a command, in questions after the last slide; or
+   * when it could hear the room again, or its page came back: nobody could be heard talking to it meanwhile.
+   */
   private lastActivity = Date.now()
+  /** The idle stop under way (its number), from its line to the stop: 0 when none. Anything said to it calls it off. */
+  private idling = 0
+  private idles = 0
   /** Lines to say once the session is free: a problem with the share said while an answer runs, say. */
   private readonly queued: string[] = []
   private readonly listeners: ((event: PresentationEvent) => void)[] = []
@@ -536,8 +560,11 @@ export class Presenter {
    * question: a line said to the assistant is answered; asked: "never mind"; page_away: the camera page dropped.
    */
   hold(cause: HoldCause): void {
-    if (cause === 'question' && this.state === 'qa') {
-      this.lastActivity = Date.now()
+    if (this.state === 'qa') {
+      // Nothing is held in questions after the last slide. A question, or "never mind", is something said to it; the
+      // page going calls off an idle stop under way, since it can't speak (its clock starts again once the page is back).
+      if (cause === 'question' || cause === 'asked') this.active()
+      else if (cause === 'page_away') this.idling = 0
       return
     }
     // Talking over the presenter's own question is the answer to it: its window decides. Talked over as it goes out, the
@@ -550,6 +577,21 @@ export class Presenter {
     // A question in 'checking' is answered, and held: the check question comes after it (carryOn).
     if (this.state !== 'narrating' && this.state !== 'held' && this.state !== 'checking') return
     this.holdAs(cause)
+  }
+
+  /**
+   * A line said to the assistant by name that asks nothing, or only calls it ("Thanks, Alex.", "Alex?"): in questions
+   * after the last slide, something said to it, as a question is. The idle clock starts again, and an idle stop under
+   * way is called off.
+   */
+  addressed(): void {
+    if (this.state === 'qa') this.active()
+  }
+
+  /** Something was said to the assistant in questions after the last slide: the idle clock starts again. */
+  private active(): void {
+    this.lastActivity = Date.now()
+    this.idling = 0
   }
 
   /** A narration line the meeting did not hear to the end: narration resumes at that sentence. */
@@ -573,11 +615,15 @@ export class Presenter {
       return
     }
     this.deafPending = false
+    // In questions, nobody could be heard talking to it meanwhile: the two minutes start again.
+    if (this.state === 'qa') this.lastActivity = Date.now()
   }
 
   /** The camera page came back (after any repeat of the consent line). */
   pageBack(): void {
     this.pageBackAt = Date.now()
+    // In questions, what was said while the page was away was not heard: the two minutes start again.
+    if (this.state === 'qa') this.lastActivity = Date.now()
   }
 
   /** The meeting is over for the presenter: the share is blanked and revoked, with no call to Recall. */
@@ -611,7 +657,7 @@ export class Presenter {
         if (was === 'ended') return { ok: true, note: 'The presentation had ended already.' }
         // It never talks while it can't hear "please leave": the share just stops.
         const quiet = was === 'ready' || was === 'stopped' || this.mute() === 'deaf'
-        void this.stopFlow({ end: true, owner: true, quiet }).catch(err => this.fault('ending', err))
+        void this.stopFlow('end', { quiet }).catch(err => this.fault('ending', err))
         return { ok: true, note: 'The presentation is over for this meeting: the room can no longer restart it.' }
       }
       if (action === 'wrap_up') {
@@ -658,7 +704,7 @@ export class Presenter {
   /** Carries out a command, from the room or the owner. What it did, or null when it is no command in this state. */
   private command(command: SlideCommand, by: 'room' | 'owner'): string | null {
     const owner = by === 'owner'
-    if (this.state === 'qa') this.lastActivity = Date.now()
+    if (this.state === 'qa') this.active()
     switch (command.kind) {
       case 'start': {
         if (this.state === 'ended' && !owner) {
@@ -677,7 +723,7 @@ export class Presenter {
       case 'stop': {
         if (this.state === 'ready' || this.state === 'stopped' || this.state === 'ended') return owner ? null : 'stop (nothing shared)'
         // The owner's stop while it can't hear "please leave": the share just stops, with nothing said.
-        void this.stopFlow({ owner, quiet: owner && this.mute() === 'deaf' }).catch(err => this.fault('stopping', err))
+        void this.stopFlow(by, { quiet: owner && this.mute() === 'deaf' }).catch(err => this.fault('stopping', err))
         return 'stop'
       }
       case 'pause': {
@@ -890,14 +936,19 @@ export class Presenter {
   }
 
   /**
-   * Stops the share: said (unless quiet), then the share stopped. end: for good, by the owner. owner: the owner's stop,
-   * which nobody in the room asked for, so its line is not an answer to anyone.
+   * Stops the share: said (unless quiet), then the share stopped, and the owner told why. end: for good, by the owner.
+   * owner: the owner's stop, which nobody in the room asked for, so its line is not an answer to anyone. questions_idle:
+   * its own line was said already (idleStop).
    */
-  private async stopFlow(opts: { end?: boolean; quiet?: boolean; owner?: boolean }): Promise<void> {
+  private async stopFlow(reason: StopReason, opts: { quiet?: boolean } = {}): Promise<void> {
     const was = this.state
+    const end = reason === 'end'
+    const owner = reason === 'owner' || end
+    const quiet = opts.quiet || reason === 'questions_idle'
     this.attempt++
     this.run++
-    this.state = opts.end ? 'ended' : 'stopped'
+    this.idling = 0
+    this.state = end ? 'ended' : 'stopped'
     this.holding = null
     this.window = null
     this.canSeeLate = 0
@@ -905,12 +956,52 @@ export class Presenter {
     const shared = was !== 'ready' && was !== 'stopped' && was !== 'ended'
     // At once: what is still playing of the narration stops, and the bookmark stays where the meeting stopped hearing.
     if (was === 'narrating') this.opts.host.interrupt()
-    if (!opts.quiet && shared) this.sayNow(opts.owner ? this.lines.stoppedForOwner : this.lines.stopped)
+    if (!quiet && shared) this.sayNow(owner ? this.lines.stoppedForOwner : this.lines.stopped)
     if (!shared) return
     this.view = null
     await this.shared(() => this.opts.surface.stop(), undefined)
     this.opts.host.marker('stopped sharing the slides')
-    this.emit('stopped', opts.end ? 'The owner ended the presentation.' : 'The slides were stopped; the bookmark is kept.')
+    this.emit('stopped', this.stopNote(reason))
+  }
+
+  /** The note of the owner's `stopped` event, also in the log: fixed text, so that each stop reads differently. */
+  private stopNote(reason: StopReason): string {
+    const { name } = identity
+    switch (reason) {
+      case 'room':
+        return `Someone in the meeting asked ${name} to stop presenting, so the slides were stopped; the bookmark is kept.`
+      case 'owner':
+        return 'The owner stopped the slides; the bookmark is kept.'
+      case 'end':
+        return 'The owner ended the presentation.'
+      case 'questions_idle':
+        return (
+          `Nothing was said to ${name} by name for ${span(this.timing.qaIdleMs)} in questions after the last slide, so ${name} ` +
+          `said how to bring the slides back and stopped sharing them. To share them again: slides_control start, or ` +
+          `"${name}, start the presentation" in the meeting.`
+        )
+    }
+  }
+
+  /**
+   * In questions after the last slide, nothing was said to the assistant for qaIdleMs, and the room is quiet: its line,
+   * which says how to bring the slides back, then the share stops. Anything said to it before the share stops calls it
+   * off (active), and so does the page going (hold): the line is said again only after another qaIdleMs. Other talk
+   * over the line stops the line, as any talk over the assistant does, and the share still stops: once that talk has
+   * ended, since a line said to it by name over its line calls the stop off.
+   */
+  private idleStop(): void {
+    const idle = ++this.idles
+    this.idling = idle
+    const host = this.opts.host
+    const on = () => this.idling === idle && this.state === 'qa'
+    void (async () => {
+      await this.turn(signal => this.sayLine(this.lines.idleStop, signal))
+      // The page plays the line to its end, and whoever talked over it finishes: what they said may call it off.
+      while (on() && (host.playing() || host.quietMs() === 0)) await sleep(this.timing.tickMs)
+      if (!on()) return
+      await this.stopFlow('questions_idle')
+    })().catch(err => this.fault('stopping after questions', err))
   }
 
   /** The share stopped itself (stuck, contested, a fault): said, and the presentation stopped with its bookmark. */
@@ -1277,12 +1368,13 @@ export class Presenter {
       }
       if (this.state === 'checking') return this.checkTick(now)
       if (this.state === 'qa') {
-        // Quiet, so it needs neither hearing nor the page: only no turn running (an answer resets lastActivity).
-        if (now - this.lastActivity >= this.timing.qaIdleMs && !host.busy()) {
-          this.lastActivity = now
-          void this.stopFlow({ quiet: true }).catch(err => this.fault('stopping after questions', err))
-        }
-        return
+        // Nothing said to it for qaIdleMs: once the room is quiet, no turn runs (an answer resets lastActivity) and
+        // nothing plays or waits for a reply, its line, then the stop. Not while it can't hear or its page is away (the
+        // session is not free then): nobody could be heard talking to it, and it never talks then. Its clock starts
+        // again once it can (hearing, pageBack).
+        if (this.idling || now - this.lastActivity < this.timing.qaIdleMs) return
+        if (!host.free() || host.windowOpen() || host.playing() || host.quietMs() < this.timing.talkQuietMs) return
+        return this.idleStop()
       }
       if (this.state !== 'held' || !this.holding) return
       const hold = this.holding
@@ -1403,7 +1495,8 @@ export class Presenter {
   private emit(event: PresentationEventKind, note: string, at: number | null = this.view ?? this.resume.i): void {
     const slide = at === null ? undefined : this.slides[at]
     const message: PresentationEvent = { event, of: this.slides.length, note, ...(slide ? { slide: slide.page, title: slide.title } : {}) }
-    console.log(`[slides] bot ${this.opts.botId ?? '-'}: ${event} (${this.state})`)
+    // The note too: notes are fixed text, never a title or anything said in the meeting.
+    console.log(`[slides] bot ${this.opts.botId ?? '-'}: ${event} (${this.state}): ${note}`)
     for (const fn of this.listeners) {
       try {
         fn(message)

@@ -45,7 +45,7 @@ How it stops, and carries on:
 - "Alex, pause" holds it until someone says "Alex, carry on". When Sam paused it, only Sam can resume it: "Alex, carry on" gets "I'll wait for Sam on that." The room can still change slides and stop sharing, but after a stop, "Alex, start the presentation" gets the same answer until Sam starts it.
 - "Alex, go back" or "go to" an earlier slide shows it ("Here's slide 4.") and waits; "Alex, carry on" goes back to where it was.
 - If its page reconnects, it carries on a moment after it is back. If it can't hear the meeting, it stops at the end of the sentence and says so, and says nothing more until it hears again, even if Sam moves the slides meanwhile: it never talks on when it couldn't hear "please leave".
-- After the last slide it takes questions with that slide up, and stops sharing after two quiet minutes.
+- After the last slide it takes questions with that slide up. Two minutes in questions with nothing said to Alex by name: then, once the room is quiet, it says how to bring the slides back ("Alex, start the presentation") and stops sharing. Anything said to Alex by name, "Thanks, Alex." too, starts the two minutes again, even said over that line. While it can't hear the meeting or its page is away, it doesn't stop for this, and the two minutes start again once it can.
 
 "Alex, please leave" works at any moment, as always: the slides are blanked at once, before the goodbye. "Alex, never mind" (or "Alex, stop") stops what it is saying and holds the slides until someone says carry on. Only Sam can end the presentation for good or jump to its last slide. Alex doesn't notice when someone else starts sharing their screen: say "Alex, pause" or "Alex, stop presenting".
 
