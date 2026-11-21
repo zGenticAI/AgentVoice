@@ -17,17 +17,19 @@ Sam runs Acme, a small company that builds scheduling software for clinics.
 
 ## Hand to the session
 
-<!-- The questions the assistant hands to your Claude Code session rather than answering from the brief: one line,
-     or a list. Without it: current work, repos, documents, decisions, plans, design detail, positioning or how it
-     compares with other products. -->
+<!-- The questions the assistant hands to your coding session (Claude Code, Codex or OpenCode) rather than answering
+     from the brief: one line, or a list. Without it: current work, repos, documents, decisions, plans, design
+     detail, positioning or how it compares with other products. -->
 current work, repos, documents, decisions, plans, design detail, the product roadmap, or how Acme compares with other products
 
 ## Knowledge sources
 
 <!-- Where the meeting-assistant agent looks, read only, in this order, after the brief: a path, what it is for, and
      any rule for that source. The agent gets this from the zoom-meeting get_profile tool. Folders outside the
-     project need read access in Claude Code (docs/claude-code.md: "The meeting assistant"). Without it, the agent answers from
-     the brief alone. -->
+     project need read access: in Claude Code, in .claude/settings.local.json (docs/claude-code.md:
+     "The meeting assistant"); in OpenCode, given to scripts/install-opencode.sh --source <folder>
+     (docs/opencode.md). Codex's meeting-assistant reads them with its shell (docs/codex.md). Without that
+     access, the agent answers from the brief alone. -->
 - `~/work/acme-docs/overview.md`: what Acme's product does, for questions about the product.
 - The newest `~/work/acme-docs/status/status-*.md`: current status of the work.
 - `~/work/acme-website/src/`: the public website copy, for positioning. Use only what is already published there.
@@ -42,7 +44,8 @@ current work, repos, documents, decisions, plans, design detail, the product roa
 ## Never open
 
 <!-- More paths the agent must never read, on top of its own (.env files, ~/.ssh, ~/.cloudflared, ~/.claude.json,
-     anything named like a key, secret, token, credential or certificate). To enforce them, also add Read deny rules
-     for them to .claude/settings.local.json (docs/claude-code.md: "The meeting assistant"). -->
+     anything named like a key, secret, token, credential or certificate). To enforce them in Claude Code, also add
+     Read deny rules for them to .claude/settings.local.json (docs/claude-code.md: "The meeting assistant"). Codex
+     and OpenCode don't read that file: see "The floor" in docs/codex.md and docs/opencode.md for what holds there. -->
 - `~/work/acme-docs/hr/`
 - `~/work/acme-ops/secrets/`

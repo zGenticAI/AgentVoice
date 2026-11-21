@@ -2,7 +2,7 @@
 
 These pages call the assistant Alex, its default name, and you, its owner, Sam.
 
-The assistant is called Alex unless `.env` says otherwise. To give it another name, set `AGENT_NAME` and restart the service and your Claude Code session (the channel reads the name when it starts). The name is said in the consent line, the chat notice, the prompts, the bot page and the logs, and the participant list shows `"<name> (<OWNER_NAME>'s AI assistant)"` unless `AGENT_BOT_NAME` says otherwise.
+The assistant is called Alex unless `.env` says otherwise. To give it another name, set `AGENT_NAME` and restart the service and the zoom-meeting channel, which reads the name when it starts: restart your Claude Code or Codex session, or, with OpenCode, its background service (`opencode service stop`, then `opencode service start`). The name is said in the consent line, the chat notice, the prompts, the bot page and the logs, and the participant list shows `"<name> (<OWNER_NAME>'s AI assistant)"` unless `AGENT_BOT_NAME` says otherwise.
 
 What makes a good name:
 - **One word of letters, 3 to 20 long.** The rules read "Mary-Jane" as two words and the apostrophe in "O'Neil" as a possessive, so such a name would never be heard. Accents are fine but ignored ("José" and "Jose" are the same name), and letters English doesn't use (such as "ø") are refused: the speech model is English and writes English spellings.
@@ -20,7 +20,7 @@ Then find what speech recognition makes of the name in real meetings. After a me
 
 Copy only the spellings into `.env`, never lines of the meeting. These lists are only what you put in them: the service never learns words from meetings, which would keep something from them and could let a participant teach it a word that makes it leave. Alex comes with its own lists, used while `AGENT_NAME` is Alex and both lists are unset.
 
-After each change, run `npm run check-name` to try the name and lists on the sample meeting lines, then restart the service and your Claude Code session:
+After each change, run `npm run check-name` to try the name and lists on the sample meeting lines, then restart the service and the channel, as above:
 ```bash
 npm run check-name                                   # the name and lists in .env
 npm run check-name -- Nova --variants Novah --misheard Novel,Noble   # or --variants=Novah --misheard=Novel,Noble

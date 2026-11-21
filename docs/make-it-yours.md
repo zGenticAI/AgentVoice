@@ -1,6 +1,6 @@
 # Make it yours
 
-Everything the assistant says about you, and everything it, your Claude Code session and the meeting-assistant agent are told about you, comes from two places you own. No person or company is written into the code. These pages call the assistant Alex, its default name, and you, its owner, Sam.
+Everything the assistant says about you, and everything it, your coding session and the meeting-assistant agent are told about you, comes from two places you own. No person or company is written into the code. These pages call the assistant Alex, its default name, and you, its owner, Sam.
 
 **`.env`: short values that go into sentences.**
 - `OWNER_NAME` (required): your name as the assistant says it. "Hello, I'm Alex, Sam's AI assistant. ... I can't agree to anything for Sam.", "Let me check that with Sam's notes.", the participant list ("Alex (Sam's AI assistant)") and the chat notice ("afterwards I send Sam a summary to keep"). There is no default: the service and the channel refuse to start without it, so no install ever introduces itself as someone else's assistant. The wording never uses a pronoun for you, so none needs setting.
@@ -21,9 +21,9 @@ Each is one line of letters, spaces, apostrophes, hyphens and dots, at most 60 c
 
 Any other `## ` heading is ignored, with a warning at start-up, so a misspelt one is not silently lost; HTML comments are left out, so the example's notes can stay. The service builds the spoken answers' rules from the profile when it starts, so restart it after changing About or Hand to the session; `get_profile` reads the file again at every call. The spoken answers never see the knowledge sources, Never share or Never open: they come only from the brief and what your session added. Never share and Never open add to the agent's own rules (see [The meeting assistant](claude-code.md#the-meeting-assistant)), and can't loosen them.
 
-`npm run check` prints your settings, the profile sections it found, the consent line, the chat notice and the opening lines of the assistant's rules as a meeting will get them: read them before a meeting does.
+`npm run check` prints your settings, the profile sections it found, the consent line and the chat notice, with and without slides, and the opening lines of the assistant's rules as a meeting will get them: read them before a meeting does.
 
-The consent wording (`src/consent.ts`) is fixed apart from the names in it: it says the assistant is an AI, that it is transcribing, that it can agree to nothing, and how to make it leave. Whoever runs the assistant is responsible for it being right under the recording and consent rules where they and the people they meet are.
+The consent wording (`src/consent.ts`) is fixed apart from the names in it: it says the assistant is an AI, that it is transcribing, that it can agree to nothing, and how to make it leave. A meeting with slides has a consent line and a chat notice of its own, which also say it has slides to present: the consent line says how to start them, and the chat notice how to pause them. Whoever runs the assistant is responsible for it being right under the recording and consent rules where they and the people they meet are.
 
 ## The bot page
 
