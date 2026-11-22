@@ -2,6 +2,8 @@
 
 Everything the assistant says about you, and everything it, your coding session and the meeting-assistant agent are told about you, comes from two places you own. No person or company is written into the code. These pages call the assistant Alex, its default name, and you, its owner, Sam.
 
+Installed from npm, each `npm run <command> -- …` on this page is `agentvoice <command> …` (a file you name in it is found from the folder you run it in), and `.env` and `data/` are in your AgentVoice folder: `~/.agentvoice/.env` and `~/.agentvoice/data/`.
+
 **`.env`: short values that go into sentences.**
 - `OWNER_NAME` (required): your name as the assistant says it. "Hello, I'm Alex, Sam's AI assistant. ... I can't agree to anything for Sam.", "Let me check that with Sam's notes.", the participant list ("Alex (Sam's AI assistant)") and the chat notice ("afterwards I send Sam a summary to keep"). There is no default: the service and the channel refuse to start without it, so no install ever introduces itself as someone else's assistant. The wording never uses a pronoun for you, so none needs setting.
 - `OWNER_FULL_NAME` (optional, `OWNER_NAME` unless set): in the assistant's rules ("You are Alex, Sam Rivera's AI assistant") and the minutes ("the minutes of a meeting for Sam Rivera").

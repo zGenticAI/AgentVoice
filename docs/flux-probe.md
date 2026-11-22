@@ -2,6 +2,8 @@
 
 A test you run on your own computer, with your real keys. These pages call the assistant Alex, its default name.
 
+Installed from npm, each `npm run <command> -- …` on this page is `agentvoice <command> …` (a file you name in it is found from the folder you run it in), and `.env` and `data/` are in your AgentVoice folder: `~/.agentvoice/.env` and `~/.agentvoice/data/`.
+
 When someone talks over Alex, it pauses first, and stops only for words ([In a meeting](in-a-meeting.md#joining-leaving-and-stopping)). How well that works depends on things Deepgram Flux doesn't document: how it spells "mm-hm" and "uh-huh", whether a cough or a laugh starts a turn, how long the turn of a backchannel takes to end, how soon after someone starts speaking it says so, how often it sends updates, whether a turn ended by `ForceEndTurn` still arrives when the stream is closed straight after, whether `ForceEndTurn` still ends a turn on a stream that has had no audio for a while, and how long it keeps open a stream that gets no audio. The service's constants (`PAUSE_MAX_MS`, `TAIL_MS` and `STT_HOLD_MS` in `src/pipeline/session.ts`) and its word lists (`BACKCHANNEL_SOUND`, `BACKCHANNEL_WORDS` and `BACKCHANNEL_PHRASES` in `src/brain/attention.ts`) were set from Deepgram's documentation and need checking against the real thing.
 
 `npm run flux-probe` measures them. It streams short test clips to Flux exactly as the service does, and prints a report for you to paste back to your coding session, which tunes the constants and lists from it.
@@ -30,6 +32,13 @@ npm run flux-probe -- --files ~/clips                # also every .wav in a fold
 npm run flux-probe -- --nonverbal                    # also ElevenLabs' [coughs], [laughs] and [clears throat]
 npm run flux-probe -- --json data/flux-probe.json    # also write every raw event and the analysis
 npm run flux-probe -- --only bc,noise-cough,idle     # just these clips and checks
+# installed from npm:
+agentvoice flux-probe
+agentvoice flux-probe --mic
+agentvoice flux-probe --files ~/clips
+agentvoice flux-probe --nonverbal
+agentvoice flux-probe --json ~/.agentvoice/data/flux-probe.json
+agentvoice flux-probe --only bc,noise-cough,idle
 ```
 
 | Option | What it does |

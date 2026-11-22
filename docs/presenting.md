@@ -2,6 +2,8 @@
 
 How Alex presents a slide deck you prepared: exporting it as a PDF, `npm run slides -- prepare`, writing the script Alex reads from, `npm run slides -- check`, and then, in a meeting, sharing the slides as its screen and saying your script over them, word for word. These pages call the assistant Alex, its default name, and you, its owner, Sam.
 
+Installed from npm, each `npm run <command> -- …` on this page is `agentvoice <command> …` (a file you name in it is found from the folder you run it in), and `.env` and `data/` are in your AgentVoice folder: `~/.agentvoice/.env` and `~/.agentvoice/data/`.
+
 Preparing and checking a deck happen on your computer, need no key and no network, and touch no meeting. [Presenting in a meeting](#presenting-in-a-meeting) covers the rest.
 
 ## Before your first presentation
@@ -84,6 +86,10 @@ The meeting gets a shared screen of 1280x720, which the platform compresses, and
 npm run slides -- prepare decks/q4-roadmap.pdf
 npm run slides -- prepare decks/q4-roadmap.pdf --exclude 3,9
 npm run slides -- prepare decks/q4-roadmap.pdf --label "Q4 plan"
+# installed from npm:
+agentvoice slides prepare decks/q4-roadmap.pdf
+agentvoice slides prepare decks/q4-roadmap.pdf --exclude 3,9
+agentvoice slides prepare decks/q4-roadmap.pdf --label "Q4 plan"
 ```
 
 It prints what it made:
@@ -98,10 +104,12 @@ Next: write the sections (or ask your coding session (Claude Code, Codex or Open
   npm run slides -- check decks/q4-roadmap.script.md
 ```
 
+Installed from npm, its last line is `agentvoice slides check decks/q4-roadmap.script.md`, and the contact sheet is in `~/.agentvoice/data/decks/`.
+
 - **The deck** goes into `data/decks/<id>/`: one 1280x720 WebP image per page, `manifest.json` (each slide's title and text, for Alex's answers about the slide on screen, and what prepare noticed about it), and `sheet.html`, the contact sheet. The id is the file's name and six random letters: a handle on your computer, not a secret. The deck holds no speaker notes, and not the PDF's path: of its script, only a mark made with a key kept in `data/decks`, so check can tell the deck's own script from any other file.
 - **`--exclude 3,9`** (or `4-6`) leaves pages out completely: they are never rendered, and nothing of them is kept in the deck or in a new script. Use it for a slide whose text must not appear anywhere. Give it on every prepare of that deck: a page prepared again without it is rendered again. In a script written before, prepare takes out its own notes of the slide's text, and the heading's title if it is the slide's, but keeps your paragraphs and any heading you wrote: delete them if they must not be kept.
 - **`--label`** names the deck, and its id, instead of the file's name.
-- **The script** is written next to the PDF: `decks/q4-roadmap.pdf` gets `decks/q4-roadmap.script.md`, readable only by you. Keep both in `decks/` (gitignored) or outside this folder. If it is already there, prepare updates it instead (see [After you change the deck](#after-you-change-the-deck)).
+- **The script** is written next to the PDF: `decks/q4-roadmap.pdf` gets `decks/q4-roadmap.script.md`, readable only by you. Keep both in `decks/` (gitignored) or outside this folder (from npm, in any folder of yours). If it is already there, prepare updates it instead (see [After you change the deck](#after-you-change-the-deck)).
 - A deck of 30 slides takes a few seconds. A PDF may have at most 100 pages and 100 MiB, a page's image at most 2 MiB (prepare lowers the quality a little first, and says so), and all a deck's images together at most 40 MiB. A long deck of detailed photos can reach that: prepare stops at the page that goes over, and says so. Export it again with lighter images, split it, or leave some pages out with `--exclude`. Prepare stops a PDF that takes more than 3 minutes.
 
 ## Writing the script
@@ -172,6 +180,8 @@ The session sees the whole file, comments included, when it reads it, and the PD
 
 ```bash
 npm run slides -- check decks/q4-roadmap.script.md
+# installed from npm:
+agentvoice slides check decks/q4-roadmap.script.md
 ```
 
 It needs no key and no network. It reads only a file named `<something>.script.md`. Of its lines, it prints only its deck's id, its `minutes`, the page numbers in its headings, the figures and abbreviations in the paragraphs, a heading's title when that has some (as it will be said: "Back to <title>."), and the name of a key it doesn't know. It loads the script's deck, and prints:
@@ -195,6 +205,10 @@ Only the script prepare wrote for the deck (the one beside its PDF) is compared 
 npm run join -- "<meeting link>" --slides decks/q4-roadmap.script.md
 npm run join -- "<meeting link>" --slides decks/q4-roadmap.script.md --from 6     # start at slide 6
 npm run join -- "<meeting link>" --slides decks/q4-roadmap.script.md --brief decks/acme.md
+# installed from npm:
+agentvoice join "<meeting link>" --slides decks/q4-roadmap.script.md
+agentvoice join "<meeting link>" --slides decks/q4-roadmap.script.md --from 6
+agentvoice join "<meeting link>" --slides decks/q4-roadmap.script.md --brief decks/acme.md
 ```
 
 Or ask your coding session: "send Alex into this meeting with the Q4 slides: <link>". It reads the script itself and passes its text to `join_meeting` as `slides` (and `slides_from` for `--from`): never a path.
@@ -254,6 +268,11 @@ npm run slides -- status
 npm run slides -- control pause
 npm run slides -- control goto 6
 npm run slides -- control end --meeting <bot id>
+# installed from npm:
+agentvoice slides status
+agentvoice slides control pause
+agentvoice slides control goto 6
+agentvoice slides control end --meeting <bot id>
 ```
 
 | Action | What happens |
@@ -337,6 +356,10 @@ Prepare compares each slide's text and picture with the old deck's. An unchanged
 npm run slides -- list
 npm run slides -- delete q4-roadmap-k7m2qa
 npm run slides -- delete --all
+# installed from npm:
+agentvoice slides list
+agentvoice slides delete q4-roadmap-k7m2qa
+agentvoice slides delete --all
 ```
 
 - `data/decks` and each deck's folder are readable only by you (0700, files 0600). The loader refuses a deck that isn't: any file another user could read or write, a symbolic link, a file it doesn't expect, an image that isn't exactly what prepare made.

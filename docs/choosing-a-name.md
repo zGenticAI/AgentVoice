@@ -2,6 +2,8 @@
 
 These pages call the assistant Alex, its default name, and you, its owner, Sam.
 
+Installed from npm, each `npm run <command> -- …` on this page is `agentvoice <command> …` (a file you name in it is found from the folder you run it in), and `.env` and `data/` are in your AgentVoice folder: `~/.agentvoice/.env` and `~/.agentvoice/data/`.
+
 The assistant is called Alex unless `.env` says otherwise. To give it another name, set `AGENT_NAME` and restart the service and the zoom-meeting channel, which reads the name when it starts: restart your Claude Code or Codex session, or, with OpenCode, its background service (`opencode service stop`, then `opencode service start`). The name is said in the consent line, the chat notice, the prompts, the bot page and the logs, and the participant list shows `"<name> (<OWNER_NAME>'s AI assistant)"` unless `AGENT_BOT_NAME` says otherwise.
 
 What makes a good name:
@@ -24,6 +26,9 @@ After each change, run `npm run check-name` to try the name and lists on the sam
 ```bash
 npm run check-name                                   # the name and lists in .env
 npm run check-name -- Nova --variants Novah --misheard Novel,Noble   # or --variants=Novah --misheard=Novel,Noble
+# installed from npm:
+agentvoice check-name
+agentvoice check-name Nova --variants Novah --misheard Novel,Noble
 ```
 It runs the start-up checks, with the participant-list name the service would use with that name (`AGENT_BOT_NAME` from `.env`, or the one made from the name), and prints what reading `.env` warns about (a renamed setting, say) with the other warnings. A name given on the command line comes with the lists given with it, and with `.env`'s own lists only when it is `.env`'s `AGENT_NAME` (otherwise it says they were not used). It then reads about 1,900 meeting lines (`test/fixtures/name-corpus.json`: every line the tests and reviews have used, written and as speech recognition gives it) with your name, spellings and mishearings, and lists every line that would be handled differently than with Alex, worst first: a line that would now make it leave, then lines it would now answer when nobody asked it, then the rest, each explained (for example `as "Will", "Will will say it now." is answered`). No differences means the rules read your name on these lines exactly as they read Alex. That is not an all-clear: the corpus only shows the lines it contains, so a word they don't use can still be heard in ordinary speech, and the warnings still stand. Add `--all` to list every difference.
 

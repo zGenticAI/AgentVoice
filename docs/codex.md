@@ -2,14 +2,16 @@
 
 The deep tier with Codex CLI instead of Claude Code: the same `zoom-meeting` channel and the same meeting-assistant agent, set up by files committed in this folder. Codex is **pull only**: the meeting's questions reach it only through the meeting-assistant, and the channel can't put anything into your session by itself. Tested with Codex CLI 0.171.0 (see [Tested versions](#tested-versions)). These pages call the assistant Alex, its default name, and you, its owner, Sam. [Your Claude Code session](claude-code.md) has what works the same way in every client: briefs, `add_to_brief`, `why_not_answered`, presentations (but see `npm run slides` below) and the meeting-assistant's loop.
 
+Installed from npm, "this folder" on this page is your session folder, the one `agentvoice setup codex` made (see [Installed from npm](#installed-from-npm)); `npm run <command> -- …` is `agentvoice <command> …`; and `.env` and `data/` are in your AgentVoice folder: `~/.agentvoice/.env` and `~/.agentvoice/data/`.
+
 **The main risk:** Codex can't limit the meeting-assistant's tools, so it has your session's shell, and meeting text reaches it. Read [The meeting-assistant has a shell](#the-meeting-assistant-has-a-shell) before you use it, and turn its shell off there if you prefer.
 
 ## What you need
 
 - Codex CLI 0.171.0 or later: `npm install -g @openai/codex`. `scripts/install-codex.sh` refuses an older one, and says so for a newer one.
-- This folder as a Git clone, as the README's Quick start makes it: Codex loads a project's `.codex/` folder only from a Git checkout you trust.
-- On Linux, a home folder outside `/tmp` and `$TMPDIR`. Codex's sandbox lets commands write in those, and there it makes an empty, read-only placeholder for each home-folder entry of [the floor](#the-floor) that doesn't exist, and can leave them behind: in the check, `~/.ssh`, `~/.aws` and the others became empty files, and Codex could no longer start in this folder. With a home folder elsewhere, nothing was made. `scripts/install-codex.sh` refuses a home folder in a temporary folder.
-- `npm install` run in this folder, and the voice service set up and started once (see [Setting it up](setup.md)): the channel links to it with the local token the service makes.
+- This folder as a Git clone, as the README's Quick start makes it: Codex loads a project's `.codex/` folder only from a Git checkout you trust. Installed from npm, the session folder, which `agentvoice setup codex` makes a Git repository of its own (`git init`).
+- On Linux, a home folder outside `/tmp` and `$TMPDIR`. Codex's sandbox lets commands write in those, and there it makes an empty, read-only placeholder for each home-folder entry of [the floor](#the-floor) that doesn't exist, and can leave them behind: in the check, `~/.ssh`, `~/.aws` and the others became empty files, and Codex could no longer start in this folder. With a home folder elsewhere, nothing was made. `scripts/install-codex.sh` refuses a home folder in a temporary folder, and `agentvoice setup codex` refuses a home folder or an AgentVoice folder in one.
+- `npm install` run in this folder (from npm: AgentVoice installed, and `agentvoice init` run), and the voice service set up and started once (see [Setting it up](setup.md)): the channel links to it with the local token the service makes.
 
 ## Setting it up
 
@@ -28,6 +30,24 @@ What is committed:
 
 Keep your own settings, such as your model and provider, in `~/.codex/config.toml`, not in these files.
 
+### Installed from npm
+
+1. Make a folder for your meeting sessions and set it up for Codex:
+   ```bash
+   mkdir -p ~/agentvoice-session && cd ~/agentvoice-session && agentvoice setup codex
+   ```
+   It takes a folder that isn't there yet or is empty (or one it set up before for your AgentVoice folder): Codex lets commands write the folder it starts in, so it must never be your AgentVoice folder, your home folder or a project of yours. It checks your Codex (0.171.0 or later), makes the folder a Git repository of its own (`git init`), writes `.codex/config.toml` and `.codex/agents/meeting-assistant.toml` from the package's, and asks Codex with `codex mcp list` whether it loads them yet, as the script does. It writes nothing outside the folder, your own `~/.codex/config.toml` included.
+2. Start Codex at the root of that folder: `cd <the folder> && codex`, and choose "Trust and continue" the first time (or set `trust_level = "trusted"` under `[projects."<the folder>"]`, as setup prints). Then run `agentvoice setup codex` again there: it should say "Codex trusts this folder and loads its config".
+3. From here on it is as above: step 3, and the rest of this page.
+
+The config it writes is the committed one with two changes:
+- The channel is started by absolute paths into the installed package: `command` is the Node you ran setup with, `args` is the package's `agentvoice.js` and `channel`, and `env` has `AGENTVOICE_HOME`, your AgentVoice folder, beside `AGENTVOICE_CLIENT = "codex"`, since Codex gives the channel a fixed set of environment variables, not your shell's.
+- The floor gains entries for your AgentVoice folder, which is outside the session folder: its `.env` names, `data/local-token` and `data/decks`, as `~/.agentvoice/…` (absolute paths for an `AGENTVOICE_HOME` elsewhere). Check it: `codex sandbox -P agentvoice -C . -- cat ~/.agentvoice/.env` must say "Permission denied". (Not yet tried with Codex itself: check it before your first meeting.)
+
+Run it again after upgrading AgentVoice or Node: it refreshes its own files, and keeps the meeting-assistant's shell switch as you left it. If you changed `.codex/config.toml`, it stops, with a diff, and writes nothing: Codex has no file of yours that setup merges into, so `agentvoice setup codex --replace-changed` replaces it, keeping yours as `.codex/config.toml.before-setup-<date and time>`, and you make your changes to the new one again.
+
+Slides can't be prepared from Codex: the floor denies `data/decks` to every command it runs, so run `agentvoice slides prepare` and `check` yourself in a terminal, as below.
+
 ## What works, and what doesn't
 
 | | Claude Code | Codex |
@@ -43,7 +63,7 @@ Keep your own settings, such as your model and provider, in `~/.codex/config.tom
 | The file floor | deny rules on Claude Code's file tools and the shell commands it recognises | Codex's sandbox, on every command Codex runs, but only in this folder and for the credential folders in your home folder |
 | Network for commands | as your Claude Code settings say | none for any command in this folder, yours included |
 | `next_question` waits of up to 600 seconds | yes | yes |
-| `npm run slides -- prepare` and `check` | the session runs them, and Claude Code asks you first | the floor denies every file in `data/decks` to every command Codex runs, these included, so `check`, and `prepare` once a deck is there, can't read what they need (from the floor; not tried with Codex): run them yourself in a terminal, and ask the session only to draft the script |
+| `npm run slides -- prepare` and `check` (`agentvoice slides` from npm) | the session runs them, and Claude Code asks you first | the floor denies every file in `data/decks` to every command Codex runs, these included, so `check`, and `prepare` once a deck is there, can't read what they need (from the floor; not tried with Codex): run them yourself in a terminal, and ask the session only to draft the script |
 
 When your Codex session links, the voice service logs `[bridge] Coding session #N can't be sent questions: only its meeting-assistant takes them`. When no session takes a question, `why_not_answered` says so, and that the meeting-assistant must be running. If a Claude Code or OpenCode session is linked as well, a question your Codex session can't take goes on to the one of them used most recently that can be sent one.
 
@@ -61,12 +81,12 @@ What is not contained:
 - It can change files in this folder, with the shell or `apply_patch`, and post in the meeting chat (`post_chat`) and add to what Alex answers from (`add_to_brief`) without asking.
 - Codex's web search is a hosted tool, outside the sandbox and its network setting: what it searches for leaves your computer.
 
-To turn its shell off, uncomment the last two lines of `.codex/agents/meeting-assistant.toml`, between meetings:
+To turn its shell off, uncomment the last two lines of `.codex/agents/meeting-assistant.toml` (from npm, the one in your session folder: `agentvoice setup codex` keeps it off when you run it again), between meetings:
 ```toml
 [features]
 shell_tool = false
 ```
-It then loses the shell, and keeps everything else (checked: `exec_command` and `write_stdin` went). Codex 0.171.0 has no separate tool to read a file, so it can no longer read your knowledge sources: it answers from the brief and `get_profile` alone, and hands the rest to you. A model that edits with `apply_patch` keeps that tool (from Codex's source: the test model was never offered it). The file is committed, so `git status` shows your change: keep it out of your commits.
+It then loses the shell, and keeps everything else (checked: `exec_command` and `write_stdin` went). Codex 0.171.0 has no separate tool to read a file, so it can no longer read your knowledge sources: it answers from the brief and `get_profile` alone, and hands the rest to you. A model that edits with `apply_patch` keeps that tool (from Codex's source: the test model was never offered it). In a clone the file is committed, so `git status` shows your change: keep it out of your commits.
 
 ## The floor
 
@@ -78,7 +98,7 @@ It then loses the shell, and keeps everything else (checked: `exec_command` and 
 A test checks it denies the same example files as `.claude/settings.json`, in this folder and in the home folder, and the clients' credentials as well. Unlike Claude Code's deny rules, the sandbox holds for every command, whatever it is: in the check, `cat` got "Permission denied" for each kind, even running as root, and `.env.example` stayed readable. In this folder, it replaces a `sandbox_mode` in your own config.
 
 Its limits:
-- **It stops at this folder.** Codex finds the files a pattern matches by walking the folder before each command, which it can't do for the whole disk, so outside this folder only the home-folder entries hold. A `.env` or a key in a knowledge-source folder elsewhere is readable to Codex's commands, the meeting-assistant's included. Claude Code and OpenCode deny those names anywhere. Keep secrets out of the folders your sources are in.
+- **It stops at this folder.** Codex finds the files a pattern matches by walking the folder before each command, which it can't do for the whole disk, so outside this folder only the home-folder entries hold. A `.env` or a key in a knowledge-source folder elsewhere is readable to Codex's commands, the meeting-assistant's included. Claude Code and OpenCode deny those names anywhere. Keep secrets out of the folders your sources are in. Installed from npm, the home-folder entries include your AgentVoice folder's `.env` names, local token and decks (see [Installed from npm](#installed-from-npm)), so those hold there; its other files (transcripts, minutes, `profile.md`, the briefs and the log) are readable to Codex's commands, as files outside this folder are.
 - A file created after a command starts isn't denied to that command (Codex says so too).
 - On Linux, Codex looks for the files the patterns match 16 folders deep (`glob_scan_max_depth` in `.codex/config.toml`): a `.env` or a key deeper than that in this folder isn't denied (not tried).
 - The channel itself is not sandboxed: it reads `.env` and the data folder, as with every client. That is why `join_meeting` takes a brief or a script as text, never a path.
@@ -107,8 +127,8 @@ Not checked: Codex's terminal UI (`codex` with no subcommand: its trust prompt, 
 
 ## How to check it works
 
-1. `scripts/install-codex.sh` says "Codex trusts this folder and loads its config: the zoom-meeting channel, the meeting-assistant and the floor."
-2. The floor: `codex sandbox -P agentvoice -C . -- cat .env` says "Permission denied", and `codex sandbox -P agentvoice -C . -- head -n 1 .env.example` prints the template's first line.
+1. `scripts/install-codex.sh` (from npm, `agentvoice setup codex` in the session folder) says "Codex trusts this folder and loads its config: the zoom-meeting channel, the meeting-assistant and the floor."
+2. The floor: `codex sandbox -P agentvoice -C . -- cat .env` says "Permission denied", and `codex sandbox -P agentvoice -C . -- head -n 1 .env.example` prints the template's first line. From npm, in the session folder: `codex sandbox -P agentvoice -C . -- cat ~/.agentvoice/.env` says "Permission denied".
 3. With the voice service running, start Codex here. The service's log shows `[bridge] Coding session linked (1 linked)` (or more) and `[bridge] Coding session #N can't be sent questions: only its meeting-assistant takes them`.
 4. In a test meeting you host, send Alex in from the session, allow `join_meeting`, and check that the session starts the meeting-assistant. Ask Alex something the brief doesn't cover: Alex says it is checking, then says the meeting-assistant's answer. If Alex says at once that it can't reach your notes, nothing took the question: ask the session "why didn't Alex answer that?".
 
