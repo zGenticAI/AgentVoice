@@ -29,11 +29,12 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { Brain } from './brain/brain.ts'
 import { type BriefFor, SERVICE_FEATURES, SessionBridge } from './bridge.ts'
 import { type BriefInUse, MAX_BRIEF_CHARS, SHARED_BRIEF_FILE, briefProblem, briefTooLong, readSharedBrief } from './brief.ts'
-import { ROOT, type SlidesPlatform, config, publicUrlProblem, recallRegionProblem, retiredSettings } from './config.ts'
+import { WORDS } from './commands.ts'
+import { INSTALL_MODE, OWNER_DIR, ROOT, type SlidesPlatform, config, publicUrlProblem, recallRegionProblem, retiredSettings } from './config.ts'
 import { cachedLines } from './consent.ts'
 import { prepareControlSocket } from './control-socket.ts'
 import { identity } from './identity.ts'
-import { ensureLocalToken, prepareDataDir } from './local-token.ts'
+import { ensureLocalToken, prepareDataDir, prepareOwnerDir } from './local-token.ts'
 import { checkNameAtStartup } from './name-check.ts'
 import { hasLocalToken, sameSecret } from './network.ts'
 import { loadAgentPage } from './pages.ts'
@@ -706,7 +707,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
       if (off) throw new JoinError(off)
       if (slides.pageProblem) throw new JoinError(`The slides page can't be served, so no presentation could load: ${slides.pageProblem}`)
     }
-    if (!cfg.agentPageToken) throw new JoinError('Set AGENT_PAGE_TOKEN in .env first.')
+    if (!cfg.agentPageToken) throw new JoinError(`Set AGENT_PAGE_TOKEN in ${WORDS.envFile} first.`)
     // A page the bot can't load would leave it in the meeting, silent, until the page wait runs out or it is asked to leave.
     const unreachable = publicUrlProblem(cfg.publicUrl)
     if (unreachable) throw new JoinError(unreachable)
@@ -717,7 +718,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
       const leaving = ending === 1 ? '1 of them ending: its bot is leaving the call' : `${ending} of them ending: their bots are leaving their calls`
       throw new JoinError(
         `Already in ${busy} meeting${busy === 1 ? '' : 's'}, the most MAX_MEETINGS allows${ending ? ` (${leaving})` : ''}. ` +
-          'Try again once one has ended, or raise MAX_MEETINGS in .env.',
+          `Try again once one has ended, or raise MAX_MEETINGS in ${WORDS.envFile}.`,
       )
     }
     // The script and its deck, read before the bot is created: a deck that is gone, or a script with errors, refuses the
@@ -1118,7 +1119,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     }
     if (!hasLocalToken(req, cfg.localToken)) {
       console.warn('[security] refused /api/share-test without the local token')
-      send(res, 401, 'The local token is missing or wrong (npm run join sends the one in the data folder).')
+      send(res, 401, `The local token is missing or wrong (${WORDS.run('join')} sends the one in the data folder).`)
       return true
     }
     return false
@@ -1203,7 +1204,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     }
     if (!hasLocalToken(req, cfg.localToken)) {
       console.warn('[security] refused /api/slides without the local token')
-      return send(res, 401, 'The local token is missing or wrong (npm run slides sends the one in the data folder).')
+      return send(res, 401, `The local token is missing or wrong (${WORDS.run('slides')} sends the one in the data folder).`)
     }
     if (req.method === 'GET') {
       const answer = slideControls.slidesStatus(url.searchParams.get('meeting') || undefined)
@@ -1234,7 +1235,7 @@ export function createServers<S extends ServiceSession>(cfg: ServiceConfig, deps
     // Nor for another program without the local token, which only you can read.
     if (!hasLocalToken(req, cfg.localToken)) {
       console.warn('[security] refused /api/join without the local token')
-      return send(res, 401, 'The local token is missing or wrong (npm run join sends the one in the data folder).')
+      return send(res, 401, `The local token is missing or wrong (${WORDS.run('join')} sends the one in the data folder).`)
     }
     // A form or a "simple" cross-site request can't send JSON without the browser asking first.
     if (!isJson(req)) return send(res, 415, 'Send JSON, with Content-Type: application/json.')
@@ -1444,7 +1445,9 @@ async function main(): Promise<void> {
   const problem = recallRegionProblem(config.recallRegion) || agentPage.problem || PROFILE.problem
   if (problem) throw new Error(problem)
   for (const warning of [...retiredSettings(process.env), ...PROFILE.warnings]) console.warn(warning)
-  // Transcripts, minutes, the brief, the local token and the control socket: reachable by you only.
+  // Transcripts, minutes, the brief, the local token and the control socket: reachable by you only. Installed from npm,
+  // the owner's folder around them too, with .env and its keys.
+  if (INSTALL_MODE === 'installed') prepareOwnerDir(OWNER_DIR)
   prepareDataDir(config.dataDir)
   prepareDecksDir(decksDir(config.dataDir))
   const localToken = ensureLocalToken(config.dataDir)
@@ -1531,7 +1534,7 @@ async function main(): Promise<void> {
   console.log(`  Public address:          ${config.publicUrl || '(not set)'}`)
   const link = [config.agentPageToken ? '' : 'AGENT_PAGE_TOKEN is not set.', publicUrlProblem(config.publicUrl)].filter(Boolean)
   if (link.length) console.warn(`[start] ${link.join(' ')} Until then, a meeting can't be joined.`)
-  console.log(`  This computer only:      ${config.controlSocket} (npm run join, the zoom-meeting channel)`)
+  console.log(`  This computer only:      ${config.controlSocket} (${WORDS.run('join')}, the zoom-meeting channel)`)
   console.log(`  Details:                 curl --unix-socket ${shellPath(config.controlSocket)} http://localhost/health`)
 }
 

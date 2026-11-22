@@ -10,11 +10,12 @@
 // sample meeting lines (test/fixtures/name-corpus.json) with the name, its spellings and its mishearings, and
 // explains every line that reads differently than with the default name.
 // Prints to stdout; changes nothing. A usage error goes to stderr, with exit status 2.
+import { WORDS } from '../commands.ts'
 import { DEFAULT_NAME, fold, nameList, readIdentity } from '../identity.ts'
 import { checkName, checkOwner, describeName } from '../name-check.ts'
 import { compareCorpus, loadCorpus, reportDifferences } from '../name-corpus.ts'
 
-const USAGE = 'Usage: npm run check-name -- [<name> [--variants a,b] [--misheard c,d]] [--all]'
+const USAGE = `Usage: ${WORDS.run('check-name', '[<name> [--variants a,b] [--misheard c,d]] [--all]')}`
 
 function usage(problem: string): never {
   process.stderr.write(`${problem}\n${USAGE}\n`)
@@ -56,7 +57,7 @@ function parseArgs(args: readonly string[]): Args {
   if (parsed.name === undefined) {
     for (const which of ['variants', 'misheard'] as const) {
       if (parsed[which] !== undefined) {
-        usage(`--${which} needs a name before it: without one, the name and lists in .env are checked, and --${which} would be ignored.`)
+        usage(`--${which} needs a name before it: without one, the name and lists in ${WORDS.envFile} are checked, and --${which} would be ignored.`)
       }
     }
   }
@@ -97,13 +98,13 @@ const botNameFrom = process.env.AGENT_BOT_NAME?.trim()
 
 /** "AGENT_NAME_VARIANTS and AGENT_NAME_MISHEARD", or just one of them. */
 const variables = (lists: typeof envLists) => lists.map(([, variable]) => variable).join(' and ')
-const source = args.name === undefined ? ', from .env' : fromEnv.length ? `, with .env's ${variables(fromEnv)}` : ''
+const source = args.name === undefined ? `, from ${WORDS.envFile}` : fromEnv.length ? `, with ${WORDS.envFile}'s ${variables(fromEnv)}` : ''
 console.log(`Name: ${describeName(agent)}${source}`)
-for (const [which, variable] of replaced) console.log(`--${which} was used instead of .env's ${variable}.`)
+for (const [which, variable] of replaced) console.log(`--${which} was used instead of ${WORDS.envFile}'s ${variable}.`)
 if (unused.length) {
   console.log(
-    `.env's ${variables(unused)} ${unused.length === 1 ? 'was' : 'were'} not used: ${unused.length === 1 ? 'it is' : 'they are'} ` +
-      `for "${envName}", .env's AGENT_NAME. Give this name's own with --variants and --misheard.`,
+    `${WORDS.envFile}'s ${variables(unused)} ${unused.length === 1 ? 'was' : 'were'} not used: ${unused.length === 1 ? 'it is' : 'they are'} ` +
+      `for "${envName}", ${WORDS.envFile}'s AGENT_NAME. Give this name's own with --variants and --misheard.`,
   )
 }
 console.log(`Participant-list name: "${agent.botName}", ${botNameFrom}`)
@@ -148,9 +149,9 @@ console.log(
 )
 console.log(
   '\nThen see what speech recognition makes of it in real meetings: after a meeting, read its transcript in ' +
-    'data/transcripts/ (kept for TRANSCRIPT_RETENTION_DAYS, and deleted at once if someone asked the assistant to leave ' +
+    `${WORDS.ownerPath('data/transcripts/')} (kept for TRANSCRIPT_RETENTION_DAYS, and deleted at once if someone asked the assistant to leave ` +
     'or removed it), and look at how the lines said to the assistant wrote the name. Add other spellings to ' +
-    'AGENT_NAME_VARIANTS and mishearings that are ordinary words to AGENT_NAME_MISHEARD in .env, then run this again. ' +
+    `AGENT_NAME_VARIANTS and mishearings that are ordinary words to AGENT_NAME_MISHEARD in ${WORDS.envFile}, then run this again. ` +
     'Neither may be the name of anyone you meet with: a mishearing counts for leaving.',
 )
 const leaves = differences.some(d => d.now.leave && !d.was.leave)

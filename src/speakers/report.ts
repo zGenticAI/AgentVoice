@@ -3,6 +3,7 @@
 // in docs/speaker-probe.md.
 import fs from 'node:fs'
 import path from 'node:path'
+import { WORDS } from '../commands.ts'
 import { identity } from '../identity.ts'
 import { type Platform, PLATFORM_NAMES } from '../recall.ts'
 import { GRID, gridConfigs, gridKey, quantile } from './probe.ts'
@@ -235,7 +236,7 @@ export function formatReport(pooled: Partial<Record<Platform, PooledPlatform>>, 
   const lines: string[] = []
   lines.push(`Speaker probe: ${o.files} meeting file(s) in ${o.dir}${o.skipped ? ` (${o.skipped} skipped: not the probe's)` : ''}.`)
   if (!o.files) {
-    lines.push('Nothing measured yet. See docs/speaker-probe.md for how to run a test meeting.')
+    lines.push(`Nothing measured yet. See ${WORDS.doc('speaker-probe')} for how to run a test meeting.`)
     return lines.join('\n')
   }
   for (const [platform, p] of Object.entries(pooled) as [Platform, PooledPlatform][]) {
@@ -288,6 +289,6 @@ export function formatReport(pooled: Partial<Record<Platform, PooledPlatform>>, 
       )
     }
   }
-  lines.push('', `How to read this: docs/speaker-probe.md. Grid: clocks ${GRID.clock.join(', ')}.`)
+  lines.push('', `How to read this: ${WORDS.doc('speaker-probe')}. Grid: clocks ${GRID.clock.join(', ')}.`)
   return lines.join('\n')
 }

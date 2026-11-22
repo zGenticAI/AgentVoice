@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { type Attention, makeAttention } from './brain/attention.ts'
 import { makeNameRules } from './brain/text.ts'
+import { WORDS } from './commands.ts'
 import { ROOT } from './env.ts'
 import type { AgentName } from './identity.ts'
 
@@ -214,7 +215,7 @@ export function reportDifferences(comparison: Comparison, agent: AgentName, perG
     for (const d of these) left.splice(left.indexOf(d), 1)
     out.push('', `${group.title}: ${these.length} line${these.length === 1 ? '' : 's'}`)
     for (const d of these.slice(0, perGroup)) out.push(`  - as "${agent.name}", "${d.line}" ${group.says(d)}`)
-    if (these.length > perGroup) out.push(`  ... and ${these.length - perGroup} more (npm run check-name -- --all lists them all)`)
+    if (these.length > perGroup) out.push(`  ... and ${these.length - perGroup} more (${WORDS.run('check-name', '--all')} lists them all)`)
   }
   return out
 }

@@ -4,6 +4,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { WORDS } from '../commands.ts'
 import { PrepareError, prepareDeck } from './convert.ts'
 import { DeckError, DeckStore, TEMP_PREFIX, UNFINISHED_MAX_AGE_MS, scriptKey, scriptMark, sweepUnfinished } from './deck.ts'
 import { type Kind, linkKind, refusal } from './detect.ts'
@@ -314,7 +315,7 @@ export async function runPrepare(given: PrepareInput): Promise<Outcome> {
   lines.push(`Contact sheet: ${shown(path.join(store.folder(manifest.id), 'sheet.html'), input.cwd)}`)
   if (!wrote) return { lines, code: 1 }
   lines.push('Next: write the sections (or ask your coding session (Claude Code, Codex or OpenCode) to draft them), then')
-  lines.push(`  npm run slides -- check ${shellArg(shown(scriptFile, input.cwd))}`)
+  lines.push(`  ${WORDS.run('slides', `check ${shellArg(shown(scriptFile, input.cwd))}`)}`)
   return { lines, code: 0 }
 }
 
@@ -385,7 +386,7 @@ export function runCheck(input: CheckInput): Outcome {
       if (!(err instanceof DeckError)) throw err
       deckErrors.push({
         message: err.code === 'missing'
-          ? `the prepared deck ${id} is gone (decks are deleted ${input.retentionDays} days after they were last used, or by slides delete). Run npm run slides -- prepare <your PDF> again: your script is kept, and updated for the new deck`
+          ? `the prepared deck ${id} is gone (decks are deleted ${input.retentionDays} days after they were last used, or by slides delete). Run ${WORDS.run('slides', 'prepare <your PDF>')} again: your script is kept, and updated for the new deck`
           : err.message.replace(/\.$/, ''),
       })
     }
@@ -451,7 +452,7 @@ export function runDelete(input: { decksDir: string; ids: readonly string[]; all
   let code = 0
   for (const id of ids) {
     if (!DECK_ID.test(id)) {
-      lines.push(`"${id.slice(0, 40)}" is not a deck id (npm run slides -- list shows them).`)
+      lines.push(`"${id.slice(0, 40)}" is not a deck id (${WORDS.run('slides', 'list')} shows them).`)
       code = 1
     } else if (store.delete(id)) lines.push(`Deleted ${id}.`)
     else {

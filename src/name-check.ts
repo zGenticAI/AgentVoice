@@ -24,6 +24,7 @@
 // must be set, and each goes into prompts and onto the bot page, so it must be one short line of plain name text.
 import { GRAMMAR_WORDS, isFillerOnly, makeAttention } from './brain/attention.ts'
 import { LEAVE_AND_CANCEL_WORDS, makeNameRules } from './brain/text.ts'
+import { WORDS } from './commands.ts'
 import { makeSlideCommands } from './slides/commands.ts'
 import {
   ADDRESS_WORDS, type AgentName, COMMON_FIRST_NAMES, COMMON_WORD_NAMES, IDENTITY_WARNINGS, type Identity, type Names, PARTICIPANT_LABEL,
@@ -204,7 +205,7 @@ export function checkName(agent: AgentName & { readonly botName?: string; readon
     warnings.push(
       `"${name}" is also ${kinds.join(', and ')}, so ordinary lines that start with it, or have it after a comma, may be taken ` +
         `as said to the assistant, and "${capitalised(name)}, you can go now." said to someone else makes it leave and delete ` +
-        'the meeting record. A name that isn\'t a word is safer: npm run check-name shows what changes on the sample lines.',
+        `the meeting record. A name that isn't a word is safer: ${WORDS.run('check-name')} shows what changes on the sample lines.`,
     )
   }
   if (WAKE_WORDS.has(folded)) {
@@ -214,7 +215,7 @@ export function checkName(agent: AgentName & { readonly botName?: string; readon
   }
   if (!nameProblem && folded.length === MIN_LETTERS) {
     warnings.push(
-      `"${name}" is short. Short names are easier to mishear: after a meeting, see how its transcript (data/transcripts/) ` +
+      `"${name}" is short. Short names are easier to mishear: after a meeting, see how its transcript (${WORDS.ownerPath('data/transcripts/')}) ` +
         'writes the name, and add what speech recognition writes.',
     )
   }
@@ -323,7 +324,7 @@ export function checkOwner(id: Names): NameCheck {
   const warnings: string[] = []
   if (!id.owner) {
     errors.push(
-      'OWNER_NAME is not set. Add the name of the person the assistant works for to .env, as it should say it ' +
+      `OWNER_NAME is not set. Add the name of the person the assistant works for to ${WORDS.envFile}, as it should say it ` +
         `(OWNER_NAME=Sam makes "${defaultBotName(id.name, 'Sam')}" and "Sam's notes"). There is no default, so that no ` +
         "assistant ever introduces itself as someone else's.",
     )
@@ -370,10 +371,10 @@ export function checkNameAtStartup(
   for (const warning of owned.warnings) write(`[owner] Warning: ${warning}`)
   if (!named.errors.length && !owned.errors.length) return
   for (const error of owned.errors) write(`[owner] ${error}`)
-  if (owned.errors.length) write('[owner] Fix the owner\'s settings in .env (see docs/make-it-yours.md), then start again.')
+  if (owned.errors.length) write(`[owner] Fix the owner's settings in ${WORDS.envFile} (see ${WORDS.doc('make-it-yours')}), then start again.`)
   for (const error of named.errors) write(`[name] ${error}`)
   if (named.errors.length) {
-    write('[name] Fix the name in .env (see docs/choosing-a-name.md), then start again. npm run check-name tries one.')
+    write(`[name] Fix the name in ${WORDS.envFile} (see ${WORDS.doc('choosing-a-name')}), then start again. ${WORDS.run('check-name')} tries one.`)
   }
   process.exit(1)
 }

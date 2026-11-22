@@ -18,7 +18,8 @@
 // session's agent without a restart.
 import fs from 'node:fs'
 import path from 'node:path'
-import { ROOT, pathSetting } from './env.ts'
+import { PROFILE_HERE, WORDS } from './commands.ts'
+import { OWNER_DIR, pathSetting } from './env.ts'
 
 /** The sections, by key, with their headings as the file writes them. */
 export const PROFILE_SECTIONS = {
@@ -102,7 +103,7 @@ export function readProfile(file: string, named = false): OwnerProfile {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     const which = named ? `PROFILE_FILE names ${file}` : file
-    const fix = named ? 'fix the path in .env, or remove PROFILE_FILE to use profile.md in this folder (or none)' : 'make it readable, or remove it'
+    const fix = named ? `fix the path in ${WORDS.envFile}, or remove PROFILE_FILE to use ${PROFILE_HERE} (or none)` : 'make it readable, or remove it'
     const problem =
       code === 'ENOENT' && !named
         ? ''
@@ -113,10 +114,13 @@ export function readProfile(file: string, named = false): OwnerProfile {
   return parseProfile(text, file)
 }
 
-/** Where the profile is: PROFILE_FILE (a leading "~" is the home folder, a relative path is from this folder), else profile.md here. */
+/**
+ * Where the profile is: PROFILE_FILE (a leading "~" is the home folder, a relative path is from the owner's folder), else
+ * profile.md in the owner's folder (this folder, in a clone).
+ */
 export function profileFile(env: Record<string, string | undefined> = process.env): { file: string; named: boolean } {
   const set = env.PROFILE_FILE?.trim()
-  return set ? { file: pathSetting(set), named: true } : { file: path.join(ROOT, 'profile.md'), named: false }
+  return set ? { file: pathSetting(set), named: true } : { file: path.join(OWNER_DIR, 'profile.md'), named: false }
 }
 
 /** Reads the profile PROFILE_FILE names again: for get_profile, so an edit applies without a restart. */

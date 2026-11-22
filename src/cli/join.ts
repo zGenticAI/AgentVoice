@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline'
 import { briefProblem } from '../brief.ts'
+import { WORDS } from '../commands.ts'
 import { ROOT, config } from '../config.ts'
 import { identity } from '../identity.ts'
 import { writePrivate } from '../probe/flux-probe.ts'
@@ -57,7 +58,7 @@ if (args.slidesFile) {
   }
   slides = { script: checked.text, ...(args.from !== undefined ? { from: args.from } : {}) }
   if (checked.warnings) {
-    console.log(`The script has ${checked.warnings} warning${checked.warnings === 1 ? '' : 's'}: npm run slides -- check ${args.slidesFile} lists them.`)
+    console.log(`The script has ${checked.warnings} warning${checked.warnings === 1 ? '' : 's'}: ${WORDS.run('slides', `check ${args.slidesFile}`)} lists them.`)
   }
 }
 
@@ -239,14 +240,14 @@ if (brief_note) console.log(brief_note)
 if (slides) {
   console.log(
     typeof slides_note === 'string'
-      ? `${slides_note} (npm run slides -- status and control take --meeting ${bot_id} while it is in more than one meeting with slides.)`
+      ? `${slides_note} (${WORDS.run('slides', 'status')} and control take --meeting ${bot_id} while it is in more than one meeting with slides.)`
       : 'The voice service did not take the slides for this meeting, so it will not present them.',
   )
 }
 if (args.speakerProbe) {
   console.log(
     speaker_probe === true
-      ? 'The speaker probe is on for this meeting: use it only in a test meeting whose participants have agreed (docs/speaker-probe.md).'
+      ? `The speaker probe is on for this meeting: use it only in a test meeting whose participants have agreed (${WORDS.doc('speaker-probe')}).`
       : 'The voice service did not turn the speaker probe on for this meeting, so it measures nothing.',
   )
 }

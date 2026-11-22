@@ -5,7 +5,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline/promises'
-import { ROOT } from '../config.ts'
+import { WORDS } from '../commands.ts'
+import { OWNER_DIR, ROOT } from '../config.ts'
 import { identity } from '../identity.ts'
 import { fluxUrl } from '../pipeline/deepgram.ts'
 import { synthesize } from '../pipeline/tts.ts'
@@ -18,14 +19,14 @@ if ('error' in parsed) {
 }
 const { args } = parsed
 if (args.help) {
-  console.log(`${USAGE}\nSee docs/flux-probe.md.`)
+  console.log(`${USAGE}\nSee ${WORDS.doc('flux-probe')}.`)
   process.exit(0)
 }
 
 const env = (name: string) => process.env[name]?.trim() ?? ''
 const key = env('DEEPGRAM_API_KEY')
 if (!key) {
-  console.error(`DEEPGRAM_API_KEY is not set. Add it to ${path.join(ROOT, '.env')}`)
+  console.error(`DEEPGRAM_API_KEY is not set. Add it to ${path.join(OWNER_DIR, '.env')}`)
   process.exit(1)
 }
 // Every key and token in the environment, so that nothing the probe prints or writes can hold one.

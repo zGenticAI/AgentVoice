@@ -1,6 +1,7 @@
 // Where a meeting may have slides presented in it. Presenting is off on every platform until the owner turns one on in
 // SLIDES_PLATFORMS, once the screen-share test has passed there (docs/share-test.md): whether a share mid-call leaves
 // the camera page, and with it the assistant's voice and hearing, untouched is known only from a real meeting.
+import { WORDS } from '../commands.ts'
 import { type SlidesPlatform, config } from '../config.ts'
 import { identity } from '../identity.ts'
 import { PLATFORM_NAMES, type Platform } from '../recall.ts'
@@ -15,7 +16,7 @@ export function slidesPlatformProblem(platform: Platform, enabled: readonly Slid
   const now = enabled.length ? `it lists ${enabled.join(', ')}` : 'it lists none yet'
   return (
     `Presenting slides is off on ${name}. Run the screen-share test in a ${name} meeting you host first ` +
-    `(docs/share-test.md). Once it passes, add ${platform} to SLIDES_PLATFORMS in .env (${now}) and restart the service.`
+    `(${WORDS.doc('share-test')}). Once it passes, add ${platform} to SLIDES_PLATFORMS in ${WORDS.envFile} (${now}) and restart the service.`
   )
 }
 
@@ -50,7 +51,7 @@ export function slidesNote(
   const slides = `${deck.narrated} slide${deck.narrated === 1 ? '' : 's'} to present, about ${duration(deck.totalMs)}${of}`
   return (
     `It has "${deck.name}": ${slides}. It starts when someone says "${name}, start the presentation", or when you start it ` +
-    `(npm run slides -- control start, or slides_control in your coding session). Before then, make sure ${name} may share its screen. ` +
+    `(${WORDS.run('slides', 'control start')}, or slides_control in your coding session). Before then, make sure ${name} may share its screen. ` +
     shareSetting(platform, name)
   )
 }

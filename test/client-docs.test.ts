@@ -12,6 +12,7 @@ import { OPENCODE_TESTED } from '../src/channel/push-opencode.ts'
 import { EVENT_HEADER, plainEvent } from '../src/channel/sink.ts'
 import { REPORT_END as FLUX_REPORT_END } from '../src/probe/flux-report.ts'
 import { REPORT_END as SHARE_REPORT_END } from '../src/sharetest/report.ts'
+import { slidesNote } from '../src/slides/platforms.ts'
 import { CODEX_CONFIG, OPENCODE_CONFIG, type OpenCodeRule } from './client-floors.ts'
 import type { TomlTable } from './toml.ts'
 
@@ -78,7 +79,9 @@ test('the pages quote what Alex says and what the reports end with as the code h
   assert.ok(read('docs/share-test.md').includes(`\`${SHARE_REPORT_END}\``))
   assert.ok(read('src/slides/actions.ts').includes("'Next: write the sections (or ask your coding session (Claude Code, Codex or OpenCode) to draft them), then'"))
   assert.ok(read('docs/presenting.md').includes('Next: write the sections (or ask your coding session (Claude Code, Codex or OpenCode) to draft them), then'))
-  assert.ok(read('src/slides/platforms.ts').includes('(npm run slides -- control start, or slides_control in your coding session)'))
+  // What the join says, as a clone words it (src/commands.ts): the page shows the clone's command.
+  const note = slidesNote({ name: 'Q3', narrated: 2, totalMs: 60_000, script: { minutes: null } }, 'zoom', 'Alex')
+  assert.ok(note.includes('(npm run slides -- control start, or slides_control in your coding session)'), note)
   assert.ok(read('docs/presenting.md').includes('(npm run slides -- control start, or slides_control in your coding session)'))
 })
 

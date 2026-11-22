@@ -5,6 +5,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { refuseInsidePackage } from '../home.ts'
 import {
   DECK_ID, MAX_DECK_BYTES, MAX_IMAGE_BYTES, MAX_MANIFEST_BYTES, MAX_PAGES, type Manifest, SLIDE_HEIGHT, SLIDE_WIDTH, manifestProblem,
 } from './manifest.ts'
@@ -46,8 +47,9 @@ export interface LoadedDeck {
   usedAt: Date
 }
 
-/** Creates the decks folder if needed, readable by this user only. */
+/** Creates the decks folder if needed, readable by this user only. Installed from npm, never inside the package's folder. */
 export function prepareDecksDir(dir: string): void {
+  refuseInsidePackage(dir, 'ALEX_DATA_DIR')
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   fs.chmodSync(dir, 0o700) // mode applies only when the folder is created
 }

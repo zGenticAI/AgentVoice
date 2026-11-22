@@ -2,6 +2,7 @@
 // slides -- status and control): the socket is in the data folder, which only you can open, and the request carries the
 // local token the service made.
 import http from 'node:http'
+import { WORDS } from '../commands.ts'
 import { config } from '../config.ts'
 import { controlSocketProblem, nothingListening } from '../control-socket.ts'
 import { readLocalToken } from '../local-token.ts'
@@ -68,6 +69,6 @@ export function controlCall(
 /** Why the voice service could not be reached, in words for the owner. */
 export function unreachableText(err: Error, socketPath = config.controlSocket): string {
   return nothingListening(err)
-    ? `The voice service is not running (nothing is listening on ${socketPath}). Start it with npm start, or scripts/install-service.sh.`
+    ? `The voice service is not running (nothing is listening on ${socketPath}). Start it with ${WORDS.start}, or ${WORDS.serviceInstall}.`
     : `Could not reach the voice service on ${socketPath}: ${err.message}`
 }

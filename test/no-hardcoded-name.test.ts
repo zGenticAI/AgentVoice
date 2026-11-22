@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { ROOT } from '../src/config.ts'
+import { literals } from './source-literals.ts'
 
 // The default name, its spellings and mishearings. Only src/identity.ts may say them in code: everything the
 // assistant says, shows or is told is built from the configured name. Comments may still use Alex as the example.
@@ -11,80 +12,6 @@ const ALLOWED = new Set(['src/identity.ts'])
 // Nothing is let through: the installed service's name (SERVICE_LABEL) and its log (data/agent-voice.log) are the
 // project's, not the assistant's.
 const namesDefault = (text: string) => DEFAULT_NAMES.test(text)
-
-/** Every string, template and regular expression literal in JavaScript or TypeScript source, with its line. */
-function literals(source: string): { text: string; line: number }[] {
-  const found: { text: string; line: number }[] = []
-  let i = 0
-  let line = 1
-  // The last token, to tell a regular expression from a division.
-  let last = ''
-  const lineAt = (from: number, to: number) => source.slice(from, to).split('\n').length - 1
-  const readQuoted = (quote: string, nested = false): void => {
-    const start = i
-    i++
-    while (i < source.length && source[i] !== quote) {
-      if (source[i] === '\\') i++
-      else if (quote === '`' && source[i] === '$' && source[i + 1] === '{') {
-        // An expression in a template: skip to its closing brace, past any strings in it.
-        let depth = 1
-        i += 2
-        while (i < source.length && depth > 0) {
-          if (source[i] === '{') depth++
-          else if (source[i] === '}') depth--
-          else if (`'"\``.includes(source[i])) {
-            readQuoted(source[i], true)
-            continue
-          }
-          if (depth > 0) i++
-        }
-      }
-      i++
-    }
-    i++
-    // A string in a template's expression is given the template's first line, and its lines counted with the template's.
-    found.push({ text: source.slice(start, i), line })
-    if (!nested) line += lineAt(start, i)
-  }
-  while (i < source.length) {
-    const c = source[i]
-    if (c === '\n') {
-      line++
-      i++
-    } else if (/\s/.test(c)) {
-      i++
-    } else if (source.startsWith('//', i)) {
-      i = source.indexOf('\n', i)
-      if (i < 0) break
-    } else if (source.startsWith('/*', i)) {
-      const end = source.indexOf('*/', i) + 2
-      line += lineAt(i, end)
-      i = end
-    } else if (`'"\``.includes(c)) {
-      readQuoted(c)
-      last = 'literal'
-    } else if (c === '/' && (last === '' || '(,=:[!&|?{};+-*%<>~^'.includes(last) || ['return', 'typeof', 'case'].includes(last))) {
-      const start = i
-      let inClass = false
-      for (i++; i < source.length && (source[i] !== '/' || inClass); i++) {
-        if (source[i] === '\\') i++
-        else if (source[i] === '[') inClass = true
-        else if (source[i] === ']') inClass = false
-      }
-      i++
-      found.push({ text: source.slice(start, i), line })
-      last = 'literal'
-    } else if (/[\w$]/.test(c)) {
-      const start = i
-      while (i < source.length && /[\w$]/.test(source[i])) i++
-      last = source.slice(start, i)
-    } else {
-      last = c
-      i++
-    }
-  }
-  return found
-}
 
 /** A page with its comments taken out: HTML, CSS and script comments may still name the default. */
 function withoutComments(html: string): string {

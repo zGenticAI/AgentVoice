@@ -1,14 +1,15 @@
 // What npm run slides takes. Kept apart from the command so it can be tested without rendering anything.
+import { WORDS } from '../commands.ts'
 import { OWNER_ACTIONS, type OwnerAction } from '../slides/presenter.ts'
 
 export const SLIDES_USAGE = `Usage:
-  npm run slides -- prepare <deck.pdf> [--exclude <pages>] [--label <name>]
-  npm run slides -- check <deck.script.md>
-  npm run slides -- list
-  npm run slides -- delete <deck id> | --all
-  npm run slides -- status [--meeting <bot id>]
-  npm run slides -- control <${OWNER_ACTIONS.join('|')}> [<slide>] [--meeting <bot id>]
-See docs/presenting.md.`
+  ${WORDS.run('slides', 'prepare <deck.pdf> [--exclude <pages>] [--label <name>]')}
+  ${WORDS.run('slides', 'check <deck.script.md>')}
+  ${WORDS.run('slides', 'list')}
+  ${WORDS.run('slides', 'delete <deck id> | --all')}
+  ${WORDS.run('slides', 'status [--meeting <bot id>]')}
+  ${WORDS.run('slides', `control <${OWNER_ACTIONS.join('|')}> [<slide>] [--meeting <bot id>]`)}
+See ${WORDS.doc('presenting')}.`
 
 export type SlidesArgs =
   | { command: 'prepare'; file: string; exclude: number[]; label?: string }
