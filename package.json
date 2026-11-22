@@ -1,6 +1,6 @@
 {
   "name": "agent-voice",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A self-hosted AI meeting assistant: a Claude voice agent that joins your Zoom, Google Meet and Teams meetings through Recall.ai",
   "license": "Apache-2.0",

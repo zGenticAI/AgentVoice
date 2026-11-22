@@ -1,6 +1,6 @@
 # Codex
 
-The deep tier with Codex CLI instead of Claude Code: the same `zoom-meeting` channel and the same meeting-assistant agent, set up by files committed in this folder. Codex is **pull only**: the meeting's questions reach it only through the meeting-assistant, and the channel can't put anything into your session by itself. Tested with Codex CLI 0.171.0 (see [Tested versions](#tested-versions)). These pages call the assistant Alex, its default name, and you, its owner, Sam. [Your Claude Code session](claude-code.md) has what works the same way in every client: briefs, `add_to_brief`, `why_not_answered`, presentations and the meeting-assistant's loop.
+The deep tier with Codex CLI instead of Claude Code: the same `zoom-meeting` channel and the same meeting-assistant agent, set up by files committed in this folder. Codex is **pull only**: the meeting's questions reach it only through the meeting-assistant, and the channel can't put anything into your session by itself. Tested with Codex CLI 0.171.0 (see [Tested versions](#tested-versions)). These pages call the assistant Alex, its default name, and you, its owner, Sam. [Your Claude Code session](claude-code.md) has what works the same way in every client: briefs, `add_to_brief`, `why_not_answered`, presentations (but see `npm run slides` below) and the meeting-assistant's loop.
 
 **The main risk:** Codex can't limit the meeting-assistant's tools, so it has your session's shell, and meeting text reaches it. Read [The meeting-assistant has a shell](#the-meeting-assistant-has-a-shell) before you use it, and turn its shell off there if you prefer.
 
@@ -43,6 +43,7 @@ Keep your own settings, such as your model and provider, in `~/.codex/config.tom
 | The file floor | deny rules on Claude Code's file tools and the shell commands it recognises | Codex's sandbox, on every command Codex runs, but only in this folder and for the credential folders in your home folder |
 | Network for commands | as your Claude Code settings say | none for any command in this folder, yours included |
 | `next_question` waits of up to 600 seconds | yes | yes |
+| `npm run slides -- prepare` and `check` | the session runs them, and Claude Code asks you first | the floor denies every file in `data/decks` to every command Codex runs, these included, so `check`, and `prepare` once a deck is there, can't read what they need (from the floor; not tried with Codex): run them yourself in a terminal, and ask the session only to draft the script |
 
 When your Codex session links, the voice service logs `[bridge] Coding session #N can't be sent questions: only its meeting-assistant takes them`. When no session takes a question, `why_not_answered` says so, and that the meeting-assistant must be running. If a Claude Code or OpenCode session is linked as well, a question your Codex session can't take goes on to the one of them used most recently that can be sent one.
 
@@ -79,6 +80,7 @@ A test checks it denies the same example files as `.claude/settings.json`, in th
 Its limits:
 - **It stops at this folder.** Codex finds the files a pattern matches by walking the folder before each command, which it can't do for the whole disk, so outside this folder only the home-folder entries hold. A `.env` or a key in a knowledge-source folder elsewhere is readable to Codex's commands, the meeting-assistant's included. Claude Code and OpenCode deny those names anywhere. Keep secrets out of the folders your sources are in.
 - A file created after a command starts isn't denied to that command (Codex says so too).
+- On Linux, Codex looks for the files the patterns match 16 folders deep (`glob_scan_max_depth` in `.codex/config.toml`): a `.env` or a key deeper than that in this folder isn't denied (not tried).
 - The channel itself is not sandboxed: it reads `.env` and the data folder, as with every client. That is why `join_meeting` takes a brief or a script as text, never a path.
 - Permission profiles are a beta feature of Codex. `--sandbox` (`-s`) and `--dangerously-bypass-approvals-and-sandbox` replace the profile.
 - Commands in this folder have no network, yours included, even when your own config allows it.

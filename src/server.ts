@@ -77,8 +77,9 @@ const PAGE_SILENCE_MS = 4000
 // is read.
 const MAX_BODY_BYTES = 16_384 + 6 * (MAX_BRIEF_CHARS + MAX_SCRIPT_CHARS)
 // The most one websocket message may hold. The bot page sends 80 ms frames of audio (2,560 bytes) and short controls;
-// the channel's largest message is a brief (MAX_BRIEF_CHARS, under 100 KB however JSON writes it). ws would otherwise
-// take up to 100 MiB from one message, so one link could make the service hold that much at once.
+// a join from the channel carries a brief and a presentation script, at most 56,000 characters together
+// (MAX_BRIEF_CHARS + MAX_SCRIPT_CHARS), under 400 KB however JSON writes them. ws would otherwise take up to 100 MiB
+// from one message, so one link could make the service hold that much at once.
 const MAX_AUDIO_MESSAGE_BYTES = 64 * 1024
 const MAX_BRIDGE_MESSAGE_BYTES = 1024 * 1024
 // How often a meeting's events connection may be let in: Recall tries again 3 s apart, and one that holds the token

@@ -83,7 +83,7 @@ Presentations: ${NAME} can present a slide deck ${OWNER} prepared, saying only t
 Getting ahead of questions: add_to_brief adds facts to what ${NAME} answers from by itself, for that meeting only, in memory (the brief itself is unchanged). Use it during a meeting when you know what is likely to be asked next, so ${NAME} answers at once instead of handing the question to you: short plain sentences from your own sources, only what the brief's "may be shared" allows, never anything taken from the transcript or the questions. Every answer you give with reply is kept there automatically, chat detail included, as is what you post with post_chat, so a follow-up about it does not come back to you. That includes a reply that came too late to be said, while the meeting is on and nobody has asked ${NAME} to leave: the reply tool says whether it was kept. If it says ${NAME} was not waiting for that answer at all, and it may come up again, add it with add_to_brief. If it says nothing is kept, ${NAME} was asked to leave or the meeting is over: add nothing. While the meeting-assistant runs, it does this itself.`
 
 const mcp = new Server(
-  { name: 'zoom-meeting', version: '0.1.0' },
+  { name: 'zoom-meeting', version: '0.2.0' },
   {
     capabilities: { experimental: { 'claude/channel': {} }, tools: {} },
     instructions: INSTRUCTIONS,

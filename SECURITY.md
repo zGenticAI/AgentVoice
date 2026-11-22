@@ -21,6 +21,8 @@ Test only in meetings you run, with people who have agreed to it: the assistant 
 In scope, for example:
 - reaching the control side (joining meetings, the link to the coding session) as anyone but the owner's user on the owner's computer;
 - using the bot's audio stream without the page token and the key of a live meeting;
+- using the slides page or its link, or the share test's page or its link, without the token of a live share, or Recall's participant events (`/recall/`) without the token of a meeting joined with the speaker probe;
+- getting more of a deck through the slides link than the slide on screen and its neighbours;
 - a meeting participant getting the assistant, the owner's coding session (Claude Code, Codex or OpenCode) or its meeting-assistant agent to do anything but answer: read files it shouldn't, post, join meetings, or say what the profile says never to share;
 - a file the committed floor denies (`.claude/settings.json`, the permission profile in `.codex/config.toml`, the policies in `opencode.json`) read where that floor is meant to hold: [Codex](docs/codex.md#the-floor) and [OpenCode](docs/opencode.md#the-floor) say where that is;
 - the channel posting into any OpenCode session but the owner's, posting anything but a meeting's events, or revealing OpenCode's service password;

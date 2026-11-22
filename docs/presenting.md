@@ -24,7 +24,7 @@ Keep your PDFs in `decks/` in this folder, which is gitignored, or outside this 
 
 1. Export your deck as a PDF (below). The PDF keeps your fonts and layout exactly.
 2. `npm run slides -- prepare decks/q4-roadmap.pdf`. It makes one image per slide, and writes `decks/q4-roadmap.script.md` next to your PDF, with a section for each slide.
-3. Write what Alex should say in each section, or ask your Claude Code session to draft it, then read it yourself.
+3. Write what Alex should say in each section, or ask your coding session to draft it, then read it yourself.
 4. `npm run slides -- check decks/q4-roadmap.script.md`. It checks the script, estimates the time, and refreshes the contact sheet: every slide exactly as the meeting will see it.
 
 ## Exporting a PDF
@@ -144,8 +144,8 @@ exclude: yes
 - **Keys go directly under the heading. Then a blank line, then what Alex says.** A line such as `Note: ...` under a heading is an unknown key: an error, never spoken and never dropped.
 - **Paragraphs** are separated by blank lines. You can wrap a paragraph over several lines: Alex says it in whole sentences all the same.
 - **Write figures as they are spoken:** "twelve dollars", not "$12"; "eighteen percent", not "18%". Check warns about signs, figures and abbreviations, and about figures that aren't on the slide.
-- **Not speech, so refused:** lists, tables, links' addresses, URLs and HTML. Bold and italics are fine, and are dropped.
-- **Comments** (`<!-- like this -->`) are for you. They are stripped before the script is ever sent, so the voice service and the meeting never see them. Your Claude Code session does, whenever it reads the file. Keep presenter-only remarks ("don't quote discounts") in comments, never in the paragraphs.
+- **Not speech, so refused:** lists, tables, quotes, code blocks, images, URLs and HTML. A link is said as its words, without its address. Bold and italics are fine, and are dropped.
+- **Comments** (`<!-- like this -->`) are for you. They are stripped before the script is ever sent, so the voice service and the meeting never see them. Your coding session does, whenever it reads the file. Keep presenter-only remarks ("don't quote discounts") in comments, never in the paragraphs.
 
 | Key | Meaning |
 | --- | --- |
@@ -160,13 +160,13 @@ The skeleton prepare writes has each section ready: `check: yes`, then `TODO` wh
 
 Limits: 40,000 characters of script without its comments (about 45 minutes), 4,000 for one section, 400 for one sentence, and 100 sections.
 
-### Asking your Claude Code session to draft it
+### Asking your coding session to draft it
 
 Ask the session to draft the TODO sections from your slides: "draft the narration in decks/q4-roadmap.script.md from decks/q4-roadmap.pdf". It can read the PDF, and the slide text in the skeleton's comments. Ask it to write figures as words, to use only what is on the slides or in your words, and to leave `check: yes` on every section it drafts. Then read each section yourself, change what you want, and delete its `check: yes`. Nothing enforces that you have read a draft: check warns about every section still marked `check: yes`.
 
-The session sees the whole file, comments included, when it reads it, and the PDF when it drafts from it: that goes to Anthropic under your Claude account, as everything the session reads does.
+The session sees the whole file, comments included, when it reads it, and the PDF when it drafts from it: that goes to the provider of the model your session uses (for Claude Code, Anthropic, under your Claude account; for Codex or OpenCode, the one set there: see [Where meeting data goes](../README.md#where-meeting-data-goes)), as everything the session reads does.
 
-`npm run slides -- prepare` reads any PDF it is given and writes its text into `data/decks`, and `check` opens the file it is given itself (so your deny rules don't apply to it) and writes the deck's contact sheet. So both ask you before your session runs them, and the prompt shows you the path: don't allow `Bash(npm run slides:*)` or `Bash(npm run slides -- check:*)`. At most, allow `Bash(npm run slides -- list)`. The committed `.claude/settings.json` stops a session reading `data/decks` itself: it never needs to (see [Your Claude Code session](claude-code.md)).
+`npm run slides -- prepare` reads any PDF it is given and writes its text into `data/decks`, and `check` opens the file it is given itself (so your deny rules don't apply to it) and writes the deck's contact sheet. So in Claude Code both ask you before your session runs them, and the prompt shows you the path: don't allow `Bash(npm run slides:*)` or `Bash(npm run slides -- check:*)`. At most, allow `Bash(npm run slides -- list)` and `Bash(npm run slides -- status)`; leave `npm run slides -- control` to prompt. The committed `.claude/settings.json` stops a session reading `data/decks` itself: it never needs to (see [Your Claude Code session](claude-code.md)).
 
 ## Checking the script
 
@@ -174,8 +174,8 @@ The session sees the whole file, comments included, when it reads it, and the PD
 npm run slides -- check decks/q4-roadmap.script.md
 ```
 
-It needs no key and no network. It reads only a file named `<something>.script.md`, and never prints a line of it but the paragraphs' figures and abbreviations. It loads the script's deck, and prints:
-- **Errors**, which a script must not have: a missing or broken deck, a section for a page the deck doesn't have (or that was left out with `--exclude`), `TODO` or nothing to say (without `hold`), an unknown key, `check: changed`, a list, URL or HTML, the limits above, and no slide to present at all.
+It needs no key and no network. It reads only a file named `<something>.script.md`. Of its lines, it prints only its deck's id, its `minutes`, the page numbers in its headings, the figures and abbreviations in the paragraphs, a heading's title when that has some (as it will be said: "Back to <title>."), and the name of a key it doesn't know. It loads the script's deck, and prints:
+- **Errors**, which a script must not have: a missing or broken deck, a section for a page the deck doesn't have (or that was left out with `--exclude`), `TODO` or nothing to say (without `hold`), an unknown key, `check: changed`, a list, table, quote, code block, image, URL or HTML, the limits above, and no slide to present at all.
 - **Warnings**, which never stop it: sections marked `check: yes`; signs, figures and abbreviations the voice may read wrongly; figures that aren't on the slide; a section over two minutes, or one so short people can't read the slide (add `hold`); narration over 70% of your `minutes`; pages with no section ("page 9 has no section, so it won't be shown"); and what prepare noticed about the slides: small text, no text, bars, a document page, an image left out or not drawn, one line for each with its pages.
 - **The estimate:** how long the narration takes, from its length at about 150 words a minute, with the pauses around each slide. A section still `TODO` is not counted: it says how many are left to write. The real timing is known only in a meeting.
 
@@ -197,15 +197,17 @@ npm run join -- "<meeting link>" --slides decks/q4-roadmap.script.md --from 6   
 npm run join -- "<meeting link>" --slides decks/q4-roadmap.script.md --brief decks/acme.md
 ```
 
-Or ask your Claude Code session: "send Alex into this meeting with the Q4 slides: <link>". It reads the script with its own Read tool and passes its text to `join_meeting` as `slides` (and `slides_from` for `--from`): never a path.
+Or ask your coding session: "send Alex into this meeting with the Q4 slides: <link>". It reads the script itself and passes its text to `join_meeting` as `slides` (and `slides_from` for `--from`): never a path.
 
-Before anything is sent, `npm run join` (or the channel) checks the script as `check` does, against its prepared deck: any error refuses the join, `check: changed` included, so narration written for an old slide is never presented over a new one. Then it sends only the script's canonical text: the front matter, the headings, the keys and the paragraphs, with every comment taken out. Your comments, Marp notes and "On the slide" text never reach the voice service or the meeting; the service refuses a script that still has a comment in it. It checks the script again, reads the slides the script shows (and only those: an excluded slide's image never leaves `data/decks`), and refuses the join before any bot is created when the platform is not in `SLIDES_PLATFORMS`, the deck is gone or can't be used, or the script has an error. A service older than the command says it can't present slides: restart it.
+Before anything is sent, `npm run join` checks the script as `check` does, against its prepared deck (the channel checks the script on its own, and leaves the deck to the service): any error refuses the join, `check: changed` included, so narration written for an old slide is never presented over a new one. Then it sends only the script's canonical text: the front matter, the headings, the keys and the paragraphs, with every comment taken out. Your comments, Marp notes and "On the slide" text never reach the voice service or the meeting; the service refuses a script that still has a comment in it. It checks the script again, reads the slides the script shows (and only those: an excluded slide's image never leaves `data/decks`), and refuses the join before any bot is created when the platform is not in `SLIDES_PLATFORMS`, the deck is gone or can't be used, or the script has an error. A service older than the command says it can't present slides: restart it.
 
-What it prints:
+What it prints (after a line saying how many warnings the script has, if it has any):
 
 ```
 Alex is joining (bot 1f2e...).
+It answers from the shared brief (…/data/brief.md), read again at every answer.
 It has "Q4 roadmap": 9 slides to present, about 9 min of your 15 min. It starts when someone says "Alex, start the presentation", or when you start it (npm run slides -- control start, or slides_control in your coding session). Before then, make sure Alex may share its screen. Zoom: "Who can share?" set to "All participants" (in the meeting, the arrow beside Share, then Advanced sharing options). (npm run slides -- status and control take --meeting 1f2e... while it is in more than one meeting with slides.)
+Alex joins as a guest: if the meeting has a waiting room or lobby, someone in the meeting has to admit it.
 ```
 
 The meeting gets a chat notice that says Alex will present slides when asked, and how to pause them, and a consent line that says how to start them:
@@ -220,7 +222,7 @@ When someone says "Alex, start the presentation" (or you start it), Alex:
 1. says "I'm sharing my slides now. They can take a few seconds to appear.", and asks Recall to share its slides page as its screen;
 2. waits up to 20 seconds for the page to show the first slide;
 3. the first time in a meeting, and again on the next start after a "no", asks "Can everyone see my slides?". A "no" ("no", "not yet", "we can't see them", "I don't see anything", "it's just black") gets the setting the host needs to change, and the share stops. "Hold on" or "wait" gives it a moment: the slides may still be loading for them. A yes ("yes, we can see them") carries on at once, and so do a few seconds of quiet after the question has played; anything else is answered, then it carries on: a yes with a "but", or a question ("Looks good, but the chart is blank.", "Alex, what's the black bar at the top?"). A plain "no" said just as the script begins, without the name, still stops it. Anything that holds the slides before the question (a pause, a question, the camera page reconnecting) asks it once that is over;
-4. says your script, one sentence at a time, and changes slides only after the last sentence of a slide has played and the room is quiet for a moment. It talks about a slide only once the page has shown it.
+4. says your script, one sentence at a time, and changes slides only after the last sentence of a slide has played and the room is quiet for a moment. It waits up to 3 seconds for the page to show each slide before it talks about it. A slide the page doesn't confirm in time is talked about all the same, and its `Slides:` line in the transcript ends "(not confirmed)". Three in a row, and the share stops as stuck (see [When something goes wrong](#when-something-goes-wrong)).
 
 The slides fill the shared screen, exactly as on the contact sheet, with no badge or overlay. The page's own frames ("about to present", "Slides paused", ended) say that Alex is an AI. After the last slide it takes questions, with that slide still up. Two minutes in questions with nothing said to Alex by name: then, once the room is quiet, it says how to bring the slides back and stops sharing. The line is said once: "I'll stop sharing my slides for now. Say 'Alex, start the presentation' to bring them back." Anything said to Alex by name starts the two minutes again, "Thanks, Alex." and "Alex?" too, and so does a command. Said to Alex before the share has stopped, even over that line, it keeps the slides up. The share stops only once the room has heard the line to its end: if anyone talks over it (which stops it, as any talk over Alex does) or its voice fails, the room may not know how to bring the slides back, so they stay up, and the line is said again after two more minutes. While it can't hear the meeting or its camera page is away, nobody can be heard talking to it, so it doesn't stop for this (losing either while it says the line stops the line at once), and the two minutes start again once it can. "Alex, start the presentation" puts the slides back, on the last slide, for questions.
 
@@ -233,7 +235,7 @@ Anyone who says the name may start, pause, carry on, move between the slides you
 | "Alex, start the presentation" (or "begin the slides", "present your slides", "start presenting") | It starts, from where it stopped if it had started before. |
 | "Alex, next slide" | The next slide in order. |
 | "Alex, go back" | The slide before, out of order: "Here's slide 4.", and it waits there. "Next" and "go back" step over backup slides (`on-request: yes`): those come only when asked for by number. |
-| "Alex, go to slide 9" (or "show slide 9", "the last slide") | A slide behind, or a backup slide (`on-request: yes`), is shown out of order; one ahead is moved to, skipping the ones between. An excluded slide gets "I don't have slide 9 to show." |
+| "Alex, go to slide 9" (or "show slide 9", "go to the last slide") | A slide behind, or a backup slide (`on-request: yes`), is shown out of order; one ahead is moved to, skipping the ones between. An excluded slide gets "I don't have slide 9 to show." |
 | "Alex, go through that slide again" | The slide on screen, from its start. |
 | "Alex, pause" (or "wait", "hold on", "one moment") | It stops at that sentence, and waits. |
 | "Alex, carry on" (or "continue", "go on", "back to the slides") | It carries on from where it stopped: back on the slide it was presenting if it had shown another, with "Back to <title>." |
@@ -245,7 +247,7 @@ Slide commands are never questions: they are not in the minutes' "Asked of Alex"
 
 ### What you can do
 
-From your Claude Code session (`slides_status` and `slides_control`), or the terminal:
+From your coding session (`slides_status` and `slides_control`), or the terminal:
 
 ```bash
 npm run slides -- status
@@ -259,13 +261,13 @@ npm run slides -- control end --meeting <bot id>
 | `start` | As "Alex, start the presentation". |
 | `pause`, `resume` | Your pause is yours: only you can resume it. Someone saying "Alex, carry on", "yes" to "Shall I carry on?", or "start this slide again" gets "I'll wait for Sam on that." The room can still move between slides and stop sharing. A stop keeps your pause, so "Alex, start the presentation" then gets the same answer: use `start` (`resume` does nothing once the slides are stopped). |
 | `next`, `back`, `goto N`, `restart` | As the room's, at once, and said aloud ("Moving to slide 6.", or "Going through slide 6 again." for the slide it is presenting), since the meeting didn't hear you ask. |
-| `wrap_up` | "Let me jump to the last slide.", and the last slide in order. Yours only. |
+| `wrap_up` | "Let me jump to the last slide.", and the last slide in order. Yours only, though the room's "Alex, go to the last slide" moves to the same slide, without the line. |
 | `stop` | As "Alex, stop presenting", but said as "I'll stop sharing my slides now.", since nobody in the meeting asked. While it can't hear the meeting, the share just stops, with nothing said. |
 | `end` | Stops it for good in this meeting, with the same line: the room can't start it again. Yours only. |
 
 Without `--meeting` (or `meeting`), they act on the only meeting with slides, and are refused while there are several. `status` says where it stands: the state, the slide on screen, the slide it carries on from, and the share. Until Alex is in the meeting (it is joining, or in a waiting room), they say it has the slides but is not in yet.
 
-Your session also gets a `presentation` event when the presentation starts, finishes or stops, and when something goes wrong (below), never one per slide. A `stopped` event's note says why: someone in the meeting asked, you stopped or ended it, or two minutes in questions passed with nothing said to Alex, with how to share again (`start`, or "Alex, start the presentation" in the meeting). The service's log says the same. When the meeting ends, `meeting_ended` says how far it got (`presentation: {reached, of, finished}`), so you can join again with `--from`.
+Your session also gets a `presentation` event when the presentation starts, finishes or stops, and when something goes wrong (below), never one per slide. A `stopped` event's note says why: someone in the meeting asked, you stopped or ended it, or two minutes in questions passed with nothing said to Alex, with how to share again (`start`, or "Alex, start the presentation" in the meeting). The service's log says the same. When the meeting ends, `meeting_ended` says how far it got (`presentation: {reached, of, finished}`), so you can join again with `--from`. Codex gets none of these events: ask it how the presentation is going, and it calls `slides_status` (see [Codex](codex.md)).
 
 ### When something goes wrong
 
@@ -275,8 +277,8 @@ Your session also gets a `presentation` event when the presentation starts, fini
 | The page never showed the first slide | "My slides didn't load, so I've stopped sharing them." | `not_loading` | Check the tunnel; the log says how far it got. |
 | Someone said they can't see the slides | The host setting to change | `not_seen` | The host changes it ([The platform settings](#the-platform-settings)); then "Alex, start the presentation". |
 | The page stopped showing slides | "My slides seem stuck, so I've stopped sharing them." | `stuck` | Start it again. |
-| Someone else took the page's link, again and again | "My slides had a problem, so I've stopped sharing them." | `contested` | No more shares in that meeting. Two copies of the slides page in the bot's own browser would look the same: if it happens with nobody else holding the link, take the platform out of `SLIDES_PLATFORMS`. |
-| The camera page dropped just after a share started or stopped | Nothing more is shared in that meeting | `camera_suspect` | Take the platform out of `SLIDES_PLATFORMS` and run the share test again. |
+| Someone else took the page's link, again and again | "My slides had a problem, so I've stopped sharing them." | `contested` | No more shares in that meeting: a start after it gets "I'll leave the slides off for now." and `share_failed`. Two copies of the slides page in the bot's own browser would look the same: if it happens with nobody else holding the link, take the platform out of `SLIDES_PLATFORMS`. |
+| The camera page dropped just after a share started or stopped | Nothing. Slides already shared carry on once the page is back, but no new share is made in that meeting: a start after it gets "I'll leave the slides off for now." | `camera_suspect`, then `share_failed` for that start | Take the platform out of `SLIDES_PLATFORMS` and run the share test again. |
 | Shares asked for too often | "I'll leave the slides off for now." | `rate_limited` | Wait: at most one every 10 s, and 12 an hour. |
 | Speech recognition lost | At the end of the sentence it is saying (what was queued after it isn't played, and it carries on from there): "I can't hear the meeting right now, so I'll pause my slides." Once it hears again: "Shall I carry on?" | `deaf` | Nothing: Alex never talks on when it can't hear "please leave". Your `resume` or a move meanwhile changes the slide in silence, and it carries on once it hears again. |
 | ElevenLabs failed twice | "I'm having trouble with my voice; one moment." | `voice_failed` | "Alex, carry on", or `resume`. |
@@ -308,7 +310,7 @@ When Alex's camera page reconnects, the slides wait, and carry on two seconds af
 - **The voice service** gets your script without its comments, and the slides it shows, in memory only, until the bot is out of the call.
 - **Anthropic**, with each answer during the meeting: the outline (each slide's title and first sentence) and the slide on screen (your script for it and its text); with the minutes request, the presentation's title.
 - **ElevenLabs** speaks your script.
-- **Your Claude Code session** sees the script, comments included, when it reads it to send Alex in, and slide titles in its events, `slides_status` and the questions it is handed ("On screen: slide 6 (5th of 8 in this presentation), Pricing.").
+- **Your coding session** sees the script, comments included, when it reads it to send Alex in, and slide titles in its events (Codex gets none), `slides_status` and the questions it is handed ("On screen: slide 6 (5th of 8 in this presentation), Pricing.").
 - **The meeting**: anyone in it can screenshot or record what Alex shares.
 - **The transcript** has your script as Alex said it, and `Slides:` lines saying which slide was on screen, as Alex's own lines: a talk to a room where nobody spoke gets no minutes. The minutes mention the presentation in one sentence, and never take your script for decisions or actions.
 - "Alex, please leave" deletes the transcript as always, and blanks the slides before the goodbye. It doesn't delete the prepared deck: that is yours, on your computer before the meeting. `npm run slides -- delete` does.

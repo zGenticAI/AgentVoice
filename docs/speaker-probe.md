@@ -7,7 +7,7 @@ Today everyone but Alex is "Speaker" in the transcript and the minutes. Naming s
 ## Two keys
 
 1. `SPEAKER_PROBE=1` (or `true`) in `.env`, then restart the service. It says so at every start, `npm run check` shows `Speaker probe: on`, and the control `/health` has `"speaker_probe": true`. Unset or empty, it is off; any other value is off too, with a warning.
-2. Each test meeting asks for it: `npm run join -- "<link>" --speaker-probe`. A meeting joined without the flag, and every meeting your Claude Code session joins with `join_meeting`, has no probe. With `SPEAKER_PROBE` off, the flag is refused: "SPEAKER_PROBE is not set in .env". A service older than this command has no probe, and `npm run join` refuses rather than send Alex in without it.
+2. Each test meeting asks for it: `npm run join -- "<link>" --speaker-probe`. A meeting joined without the flag, and every meeting your coding session (Claude Code, Codex or OpenCode) joins with `join_meeting`, has no probe. With `SPEAKER_PROBE` off, the flag is refused: "SPEAKER_PROBE is not set in .env". A service older than this command has no probe, and `npm run join` refuses rather than send Alex in without it.
 
 Remove `SPEAKER_PROBE` from `.env` when the tests are done.
 
@@ -20,7 +20,7 @@ Remove `SPEAKER_PROBE` from `.env` when the tests are done.
 
 What it never does:
 - No name, id or word in a file or in the log. The log has the bot's id and the connection's states only.
-- Nothing new goes to Anthropic, Deepgram, ElevenLabs, your Claude Code session or the meeting chat. `meeting_ended` is the same.
+- Nothing new goes to Anthropic, Deepgram, ElevenLabs, your coding session or the meeting chat. `meeting_ended` is the same.
 - Nothing about what Alex says or does changes: the consent line, the chat notice and the goodbye are the same, and are heard in full.
 
 ## Deleting the measurements

@@ -11,7 +11,7 @@ It changes nothing: no setting, no meeting, and no file unless you pass `--json`
 ## What you need
 
 - `DEEPGRAM_API_KEY` in `.env`. Required.
-- `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` in `.env`, for the spoken clips. Without them the probe says so and runs only the noise clips, and the protocol checks with silence instead of speech.
+- `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` in `.env`, for the spoken clips. Without them the probe says so, skips the spoken clips and `--nonverbal`, and runs the protocol checks with silence instead of speech. The noise clips, and your own with `--mic` or `--files`, still run.
 - For `--mic`, and for WAV files that are not already 16 kHz mono 16-bit: ffmpeg. On macOS `brew install ffmpeg`, on Linux `sudo apt install ffmpeg` (or your distribution's package). Without it the probe says how to install it and skips those clips.
 - A network that lets websockets through to `api.deepgram.com`. `npm run check` shows whether the Flux stream opens.
 

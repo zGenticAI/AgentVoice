@@ -1,6 +1,6 @@
 # Meeting brief for Alex
 
-<!-- Your Claude Code session can write this for you with the set_brief tool:
+<!-- Your coding session (Claude Code, Codex or OpenCode) can write this for you with the set_brief tool:
      "Prepare Alex for my 2pm with <client>." It is saved to data/brief.md, the shared brief.
      Or keep a brief for one meeting (in briefs/, which is gitignored) and send Alex in with it:
      npm run join -- "<link>" --brief briefs/<client>.md, or give it to your session with the link.

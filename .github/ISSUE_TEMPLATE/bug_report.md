@@ -23,4 +23,5 @@ labels: bug
 - OS and version:
 - Node.js version:
 - Meeting platform (Zoom, Google Meet or Microsoft Teams):
+- Coding session (Claude Code, Codex or OpenCode) and its version, if the deep tier is involved:
 - agent-voice version or commit:

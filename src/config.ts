@@ -220,7 +220,8 @@ export const config = {
   recallRegion: optional('RECALL_REGION'),
   // How long transcripts and minutes are kept.
   retentionDays: Number(optional('TRANSCRIPT_RETENTION_DAYS', '30')),
-  // How long a prepared slide deck (data/decks) is kept after it was last used: prepared or checked.
+  // How long a prepared slide deck (data/decks) is kept after it was last used: prepared, checked or sent into a
+  // meeting.
   deckRetentionDays: cap('DECK_RETENTION_DAYS', optional('DECK_RETENTION_DAYS'), 30, { max: 3650 }),
   deepgramKeyterms: keyterms(optional('DEEPGRAM_KEYTERMS')),
   // ElevenLabs' zero retention mode (enterprise accounts only): the assistant's speech is not kept in its history.

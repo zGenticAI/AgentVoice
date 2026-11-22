@@ -44,7 +44,7 @@ npm run join -- "<meeting link>" --share-test --keep                            
 | `--keep` | Alex stays in the meeting when the test ends, or when you stop it. Say "Alex, please leave", or remove it, when you are done. |
 | `--brief <file>` | As for any join. |
 
-`--json` and `--keep` go only with `--share-test`, and `--share-test` doesn't go with `--speaker-probe`. Your Claude Code session's `join_meeting` can't start the test.
+`--json` and `--keep` go only with `--share-test`, and `--share-test` goes with neither `--speaker-probe` nor `--slides`. Your coding session's `join_meeting` can't start the test.
 
 It first says what will happen and which setting to check, then waits for Enter. Then it waits for Alex to be let in (as long as a waiting room can take, about 10 minutes) and for the consent line to finish. Progress and questions go to the terminal's error stream; the report goes to its output.
 

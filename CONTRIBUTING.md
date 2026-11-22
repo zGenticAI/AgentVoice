@@ -18,7 +18,7 @@ npm test
 npm run typecheck
 ```
 
-`npm test` needs no keys. It uses fakes for Recall.ai, Deepgram, ElevenLabs and Claude, and fixed settings, whatever your `.env` says. To try a change against the real services, run `npm run check`, then use a real meeting.
+`npm test` needs no keys. It uses fakes for Recall.ai, Deepgram, ElevenLabs and Claude, and fixed settings, whatever your `.env` says. It does need the optional `@napi-rs/canvas`, which the slides tests load, so don't install with `--omit=optional` where you run them. To try a change against the real services, run `npm run check`, then use a real meeting.
 
 ## Making a change
 
@@ -27,7 +27,8 @@ npm run typecheck
 - **The attention, leave and cancel rules** (`src/brain/attention.ts`, `src/brain/text.ts`): every line in `test/fixtures/name-corpus.json` must give exactly its recorded result. If your change is meant to change results, record them again with `npm run record-name-corpus`, and explain each changed line in the pull request. Leaving deletes a meeting's record, which can't be undone, so a change that makes the assistant leave on more lines needs a strong case.
 - **The consent wording** (`src/consent.ts`) stays: the AI disclosure, that it is transcribing, that it can't agree to anything, and how to make it leave. A change that weakens it won't be accepted.
 - **Meeting data:** nothing from a meeting is written anywhere but the transcript and the minutes, and, for a test meeting with the speaker probe (`SPEAKER_PROBE`), its file of counts and timings, which must stay free of names, ids and words (`test/speaker-probe.test.ts` walks it). Nothing said in a meeting is logged. If a change sends meeting data somewhere new, update [Where meeting data goes](README.md#where-meeting-data-goes) in the same pull request.
-- **Dependencies:** `@modelcontextprotocol/sdk` is pinned to an exact version. Claude Code doesn't register a channel server that negotiates MCP protocol revision 2026-07-28 (see [its channels documentation](https://code.claude.com/docs/en/channels)), so before you change the version, check that the channel still registers.
+- **The coding clients:** the meeting-assistant is one agent in `.claude/agents/`, `.codex/agents/` and `.opencode/agents/`, and the floors in `.claude/settings.json`, `.codex/config.toml` and `opencode.json` deny the same files: change them together (`test/agent-floor.test.ts` checks both). What the channel tells Claude Code is pinned in `test/fixtures/claude-code/`: if your change is meant to change it, update the fixture and say why in the pull request.
+- **Dependencies:** `@modelcontextprotocol/sdk` is pinned to an exact version. Claude Code doesn't register a channel server that negotiates MCP protocol revision 2026-07-28 (see [its channels documentation](https://code.claude.com/docs/en/channels)), so before you change the version, check that the channel still registers, and that it still works in Codex and OpenCode, with all 11 of its tools (see How to check it works in [Codex](docs/codex.md#how-to-check-it-works) and [OpenCode](docs/opencode.md#how-to-check-it-works)). `pdfjs-dist` and `@napi-rs/canvas` are pinned too: they read the PDFs `npm run slides -- prepare` is given, which can be hostile, so change them on purpose and run `npm test`, whose slides tests run the real converter.
 - Update the docs (`README.md`, `docs/`) and `CHANGELOG.md` in the same pull request.
 
 [Development](docs/development.md) has more about the tests and the layout of the code.
