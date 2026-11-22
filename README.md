@@ -6,7 +6,7 @@ A self-hosted AI meeting assistant. It joins your Zoom, Google Meet and Microsof
 
 It runs on your own computer, with your own accounts at the services it uses. Nothing is hosted for you.
 
-This is an early release (0.2): expect rough edges, and read [Responsible use](#responsible-use-consent-and-the-law) before you send it into a meeting.
+This is an early release (0.3): expect rough edges, and read [Responsible use](#responsible-use-consent-and-the-law) before you send it into a meeting.
 
 ## How it works
 

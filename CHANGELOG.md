@@ -2,7 +2,7 @@
 
 The notable changes in each version. The project follows [Semantic Versioning](https://semver.org/): until 1.0, a minor version may change settings or behaviour, and says so here.
 
-## Unreleased
+## 0.3.0
 
 ### Added
 
