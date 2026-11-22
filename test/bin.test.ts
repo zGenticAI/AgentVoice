@@ -1,8 +1,9 @@
 // bin/agentvoice.js, the command npm links into <prefix>/bin: it needs Node 24, runs the command from the folder it is
-// run in (never a stale INIT_CWD), and uses tsx's compile cache (<temp folder>/tsx-<uid>, whose entries tsx runs as they
-// are) only when that folder is a real folder of yours that nobody else can write. A planted entry proves both that the
-// cache is what runs and that the bin stops using it. Each case has a temp folder of its own as TMPDIR, so the cache
-// the rest of the tests use is never touched.
+// run in (never a stale INIT_CWD), and has tsx keep compiled code in memory only. tsx's own cache is two folders in the
+// temp folder: <tmp>/tsx-<uid>, whose entries it runs as they are, and <tmp>/tsx, an old one, which it deletes with
+// everything in it; on Linux that is /tmp, which other users can write. The control for each runs the same command
+// through tsx with its cache, as npm run does in a clone: a planted entry runs, and the old folder's files are deleted.
+// Each case has a temp folder of its own as TMPDIR, so the cache the rest of the tests use is never touched.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -20,15 +21,21 @@ function setup(t: Ctx) {
   const tmpdir = path.join(at.tmp, 'tsx-test')
   fs.mkdirSync(tmpdir)
   const cache = path.join(tmpdir, `tsx-${UID}`)
+  const env = (extra: Record<string, string | undefined> = {}) => envFor({ HOME: at.home, TMPDIR: tmpdir, TSX_DISABLE_CACHE: undefined, ...extra })
+  /** agentvoice --version, run by the bin. */
   const version = (extra: Record<string, string | undefined> = {}) => {
-    const run = agentvoice(at.pkg, ['--version'], envFor({ HOME: at.home, TMPDIR: tmpdir, TSX_DISABLE_CACHE: undefined, ...extra }), at.elsewhere)
+    const run = agentvoice(at.pkg, ['--version'], env(extra), at.elsewhere)
     assert.equal(run.stderr, '')
     return run.stdout
   }
-  return { at, tmpdir, cache, version }
+  /** The control: the same command run through tsx with its cache, as npm run runs a clone's commands. */
+  const withCache = () => {
+    const run = command(at.pkg, 'src/cli/agentvoice.ts', ['--version'], env(), at.elsewhere)
+    assert.equal(run.stderr, '')
+    return run.stdout
+  }
+  return { at, tmpdir, cache, version, withCache }
 }
-
-const mode = (file: string) => fs.statSync(file).mode & 0o777
 
 /** Rewrites the cache entry tsx compiled the command from (the one that says "Unknown command") to print PLANTED. */
 function plant(cache: string): void {
@@ -41,55 +48,53 @@ function plant(cache: string): void {
   }
 }
 
-test("the bin uses tsx's own cache folder, made 0700, and the cache is what runs: a planted entry runs", { timeout: 60_000 }, t => {
-  const { cache, version } = setup(t)
+test("the bin never runs what is in tsx's cache folder, nor makes one", { timeout: 60_000 }, t => {
+  const { tmpdir, cache, version, withCache } = setup(t)
   assert.equal(version(), '0.3.0\n')
-  assert.ok(fs.lstatSync(cache).isDirectory(), 'tsx-<uid>, the folder tsx itself uses')
-  assert.equal(mode(cache), 0o700)
-  assert.ok(fs.readdirSync(cache).length > 0, 'tsx wrote its entries there')
-  // The control: with the folder as the bin left it, what is in the cache runs.
+  assert.deepEqual(fs.readdirSync(tmpdir), [], 'nothing made in the temp folder')
+  // The control: run through tsx with its cache, the command fills tsx-<uid>, and a planted entry there runs.
+  assert.equal(withCache(), '0.3.0\n')
   plant(cache)
-  assert.equal(version(), 'PLANTED\n')
-  // Yours and only too readable: made 0700, and used.
-  fs.chmodSync(cache, 0o755)
-  assert.equal(version(), 'PLANTED\n')
-  assert.equal(mode(cache), 0o700)
-})
-
-test('a cache folder others can write, a link, or one that is not yours is not used: the command compiles without it', { timeout: 60_000 }, t => {
-  const { tmpdir, cache, version } = setup(t)
-  assert.equal(version(), '0.3.0\n')
-  plant(cache)
-  for (const loose of [0o777, 0o770, 0o722]) {
-    fs.chmodSync(cache, loose)
-    assert.equal(version(), '0.3.0\n', loose.toString(8))
-    assert.equal(mode(cache), loose, 'left as it is, never made safe: an entry may be planted already')
-  }
+  assert.equal(withCache(), 'PLANTED\n')
+  // The bin: the same folder, a folder of yours (0700) as tsx makes it, and the planted entry is not run.
   fs.chmodSync(cache, 0o700)
-  // A link to a folder holding the planted entry.
-  const real = path.join(tmpdir, 'elsewhere-cache')
-  fs.renameSync(cache, real)
-  fs.symlinkSync(real, cache)
-  assert.equal(version(), '0.3.0\n', 'a link')
-  fs.unlinkSync(cache)
-  fs.renameSync(real, cache)
-  assert.equal(version(), 'PLANTED\n', 'the same folder, in place again')
-  if (UID === 0) {
-    // Another user's folder (only root can make one here).
-    fs.chownSync(cache, 65534, 65534)
-    assert.equal(version(), '0.3.0\n', "another user's folder")
-    fs.chownSync(cache, 0, 0)
-  }
-  // A file in its place.
-  fs.rmSync(cache, { recursive: true })
-  fs.writeFileSync(cache, '')
-  assert.equal(version(), '0.3.0\n', 'a file')
+  const entries = fs.readdirSync(cache).sort()
+  assert.equal(version(), '0.3.0\n')
+  assert.deepEqual(fs.readdirSync(cache).sort(), entries, 'and nothing written there')
 })
 
-test('TSX_DISABLE_CACHE already set, or a temp folder that is not there, is no cache at all, and no error', t => {
-  const { tmpdir, cache, version } = setup(t)
-  assert.equal(version({ TSX_DISABLE_CACHE: '1' }), '0.3.0\n')
-  assert.ok(!fs.existsSync(cache), 'no folder made')
+test("tsx's old cache folder, <tmp>/tsx, which tsx deletes with what is in it: the bin leaves it as it is", { timeout: 60_000 }, t => {
+  const { tmpdir, cache, version, withCache } = setup(t)
+  const old = path.join(tmpdir, 'tsx')
+  /** <tmp>/tsx as another user would make it (here, a folder anyone can write, with a file and a folder in it). */
+  const make = () => {
+    fs.rmSync(old, { recursive: true, force: true })
+    fs.mkdirSync(path.join(old, 'sub'), { recursive: true })
+    fs.writeFileSync(path.join(old, 'a'), 'theirs\n')
+    fs.writeFileSync(path.join(old, 'sub/b'), 'theirs\n')
+    fs.chmodSync(old, 0o777)
+    fs.chmodSync(path.join(old, 'sub'), 0o777)
+    if (UID === 0) for (const p of [old, path.join(old, 'a'), path.join(old, 'sub'), path.join(old, 'sub/b')]) fs.chownSync(p, 65534, 65534)
+  }
+  // The control: a run through tsx that compiles (its cache is new) deletes it.
+  make()
+  assert.equal(withCache(), '0.3.0\n')
+  assert.ok(!fs.existsSync(path.join(old, 'a')) && !fs.existsSync(path.join(old, 'sub')), `tsx deleted what was in ${old}`)
+  // The bin, with the cache new as well: everything is still there.
+  make()
+  fs.rmSync(cache, { recursive: true, force: true })
+  assert.equal(version(), '0.3.0\n')
+  assert.equal(fs.readFileSync(path.join(old, 'a'), 'utf8'), 'theirs\n')
+  assert.equal(fs.readFileSync(path.join(old, 'sub/b'), 'utf8'), 'theirs\n')
+  assert.deepEqual(fs.readdirSync(tmpdir), ['tsx'], 'and nothing else made')
+})
+
+test('whatever TSX_DISABLE_CACHE was, the bin keeps compiled code in memory; a temp folder that is not there is no error', t => {
+  const { tmpdir, version } = setup(t)
+  for (const value of [undefined, '', '0', '1']) {
+    assert.equal(version({ TSX_DISABLE_CACHE: value }), '0.3.0\n', String(value))
+    assert.deepEqual(fs.readdirSync(tmpdir), [], `nothing made with TSX_DISABLE_CACHE=${value}`)
+  }
   assert.equal(version({ TMPDIR: path.join(tmpdir, 'gone') }), '0.3.0\n')
   assert.ok(!fs.existsSync(path.join(tmpdir, 'gone')))
   assert.deepEqual(fs.readdirSync(tmpdir), [])

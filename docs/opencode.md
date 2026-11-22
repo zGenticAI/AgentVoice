@@ -39,7 +39,7 @@ What is committed:
    ```bash
    mkdir -p ~/agentvoice-session && cd ~/agentvoice-session && agentvoice setup opencode --source ~/work/acme-docs --source ~/work/acme-website
    ```
-   It takes a folder that isn't there yet or is empty (or one it set up before for your AgentVoice folder), never your AgentVoice folder, your home folder or a project of yours. It checks your OpenCode (V2, 2.3.2 or later), makes the folder a Git repository of its own, and writes `opencode.json` and `.opencode/agents/meeting-assistant.md` from the package's. `--source` and `--no-sources` work as the script's do, in your own `.opencode/opencode.json`, which setup only adds to.
+   It takes a folder that isn't there yet or is empty (or one it set up before for your AgentVoice folder), never your AgentVoice folder, your home folder or a project of yours. It must be a folder of yours, in folders only you can change (never one another user made, or one in a folder others can write): anyone else who can change it could replace the floor and the configs setup writes there. It checks your OpenCode (V2, 2.3.2 or later), makes the folder a Git repository of its own, and writes `opencode.json` and `.opencode/agents/meeting-assistant.md` from the package's. `--source` and `--no-sources` work as the script's do, in your own `.opencode/opencode.json`, which setup only adds to.
 2. Then as above, in that folder: steps 2 to 4.
 
 The `opencode.json` it writes is the committed one with these changes:

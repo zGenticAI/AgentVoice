@@ -85,6 +85,11 @@ export const CLONE_SETUP =
   'scripts/install-channel.sh, scripts/install-codex.sh, scripts/install-opencode.sh)'
 /** Why a command only an installed package has (init, setup, service) refuses in a clone, and the clone's way instead. */
 export const cloneRefusal = (root: string): string => `This is a cloned folder (${root}): ${CLONE_SETUP}.`
+/** Why the agentvoice command won't run from a package installed under another name (aliasOf, src/home.ts). */
+export const aliasRefusal = (dir: string, name: string): string =>
+  `AgentVoice is installed here under another name, ${name} (${dir}), so it would take that folder for a clone and keep ` +
+  'your settings and data in it, where npm replaces them on every upgrade. Install it under its own name instead: ' +
+  `npm uninstall -g ${name} (if you installed it with -g), then npm install -g ${PACKAGE_NAME}.`
 export const INSTALL_FIRST = `Install AgentVoice first (npm install -g ${PACKAGE_NAME})`
 export const UPGRADE = `npm install -g ${PACKAGE_NAME}@latest`
 /** How to install the coding clients agentvoice setup checks for. */

@@ -10,7 +10,7 @@ import http from 'node:http'
 import path from 'node:path'
 import { JOIN_USAGE } from '../src/cli/join-args.ts'
 import { SLIDES_USAGE } from '../src/cli/slides-args.ts'
-import { DOCS_URL, README_URL, cloneRefusal } from '../src/commands.ts'
+import { DOCS_URL, README_URL, aliasRefusal, cloneRefusal } from '../src/commands.ts'
 import { ROOT } from '../src/config.ts'
 import { PACKAGE_NAME, PACKAGE_VERSION } from '../src/home.ts'
 import { CHECK_NAME_USAGE } from '../src/name-check.ts'
@@ -200,6 +200,31 @@ test("npm link's agentvoice (a link to the clone) runs the clone, in clone mode"
   assert.equal(init.status, 1)
   assert.equal(init.stderr, `${cloneRefusal(ROOT)}\n`)
   assert.ok(!fs.existsSync(path.join(tmp, '.agentvoice')))
+})
+
+test('installed under another name (an npm alias), nothing runs: every command says how to install it, and writes nothing', { timeout: 120_000 }, t => {
+  for (const name of ['av', '@other/agentvoice']) {
+    const at = installedPackage(t, '0.3.0', name)
+    // What a clone's advice would have led to: a .env in the package's folder, for start to read and put data/ beside.
+    fs.writeFileSync(path.join(at.pkg, '.env'), 'OWNER_NAME=Sam\nRECALL_REGION=us-east-1\n')
+    const before = snapshot(at.pkg)
+    const session = path.join(at.tmp, 'session')
+    for (const args of [['--version'], ['--help'], ['init'], ['start'], ['check'], ['channel'], ['setup', 'claude-code', session], ['service', 'print', 'systemd']]) {
+      const run = agentvoice(at.pkg, args, envFor({ HOME: at.home, TMPDIR: at.tmp }), at.elsewhere, '')
+      assert.equal(run.status, 1, `${name}: ${args.join(' ')}: ${run.stdout}${run.stderr}`)
+      assert.equal(run.stdout, '')
+      assert.equal(run.stderr, `${aliasRefusal(at.pkg, name)}\n`)
+    }
+    assert.equal(
+      aliasRefusal(at.pkg, name),
+      `AgentVoice is installed here under another name, ${name} (${at.pkg}), so it would take that folder for a clone and keep ` +
+        'your settings and data in it, where npm replaces them on every upgrade. Install it under its own name instead: ' +
+        `npm uninstall -g ${name} (if you installed it with -g), then npm install -g ${PACKAGE_NAME}.`,
+    )
+    assert.deepEqual(snapshot(at.pkg), before, 'nothing written into the package (no data/)')
+    assert.deepEqual(fs.readdirSync(at.home), [], 'nor into the home folder')
+    assert.ok(!fs.existsSync(session), 'nor a session folder')
+  }
 })
 
 test('installed, an AGENTVOICE_HOME that cannot be used is said in one line, for every command, with nothing on stdout', t => {

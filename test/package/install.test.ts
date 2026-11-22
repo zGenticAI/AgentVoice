@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { OPENCODE_TESTED } from '../../src/channel/push-opencode.ts'
@@ -376,37 +376,55 @@ test('npx runs the tarball too, and setup refuses there: a config can\'t point i
   assert.ok(!fs.existsSync(path.join(TMP, 'npx-session')))
 })
 
-test("tsx's compile cache: the bin uses tsx's own folder, 0700, and never one others can write or a link", { timeout: 120_000 }, () => {
+test("tsx's compile cache: the bin keeps it in memory, and leaves tsx's folders in the temp folder alone", { timeout: 120_000 }, () => {
   const tmpdir = path.join(TMP, 'tsx-test')
   fs.mkdirSync(tmpdir)
   const cache = path.join(tmpdir, `tsx-${UID}`)
+  const old = path.join(tmpdir, 'tsx')
   const version = () => {
     const r = agentvoice(['--version'], { TMPDIR: tmpdir })
     assert.equal(r.stderr, '')
     return r.stdout
   }
+  // The control: the package's own tsx, run with its cache (as a clone's npm scripts run it), fills <tmp>/tsx-<uid>,
+  // runs what is planted there, and deletes <tmp>/tsx with what is in it.
+  const loader = path.join(PKG, 'node_modules/tsx/dist/loader.mjs')
+  assert.ok(fs.existsSync(loader), loader)
+  const withCache = () => {
+    const r = spawnSync(process.execPath, ['--import', pathToFileURL(loader).href, path.join(PKG, 'src/cli/agentvoice.ts'), '--version'], { cwd: ELSEWHERE, env: env({ TMPDIR: tmpdir }), encoding: 'utf8', timeout: 120_000 })
+    assert.equal(r.stderr, '')
+    return r.stdout
+  }
+  const makeOld = () => {
+    fs.mkdirSync(path.join(old, 'sub'), { recursive: true })
+    fs.writeFileSync(path.join(old, 'sub/theirs'), '')
+    fs.chmodSync(old, 0o777)
+  }
   assert.equal(version(), `${VERSION}\n`)
-  assert.ok(fs.lstatSync(cache).isDirectory(), "tsx's own folder name")
-  assert.equal(mode(cache), 0o700)
-  assert.ok(fs.readdirSync(cache).length > 0, 'with entries in it')
-  // The control: an entry rewritten in a folder the bin trusts runs.
+  assert.deepEqual(fs.readdirSync(tmpdir), [], 'the bin made nothing in the temp folder')
+  makeOld()
+  assert.equal(withCache(), `${VERSION}\n`)
+  assert.ok(!fs.existsSync(path.join(old, 'sub/theirs')), 'the control: tsx deleted <tmp>/tsx')
   const entries = fs.readdirSync(cache).filter(name => fs.readFileSync(path.join(cache, name), 'utf8').includes('Unknown command'))
   assert.ok(entries.length > 0, fs.readdirSync(cache).join(', '))
   for (const name of entries) {
     const file = path.join(cache, name)
     fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), code: 'console.log("PLANTED")' }))
   }
-  assert.equal(version(), 'PLANTED\n')
-  fs.chmodSync(cache, 0o777)
-  assert.equal(version(), `${VERSION}\n`, 'a folder others can write')
+  assert.equal(withCache(), 'PLANTED\n', 'the control: a planted entry runs')
+  // The bin: the planted entry, in a folder of yours made 0700 (one a guard on the folder would trust), is not run, and
+  // <tmp>/tsx is left as it is, with the cache gone too (so tsx would compile, and delete it).
   fs.chmodSync(cache, 0o700)
-  const real = path.join(tmpdir, 'planted')
-  fs.renameSync(cache, real)
-  fs.symlinkSync(real, cache)
-  assert.equal(version(), `${VERSION}\n`, 'a link to a folder with the planted entry')
+  assert.equal(version(), `${VERSION}\n`, 'the bin does not run the planted entry')
+  fs.rmSync(cache, { recursive: true })
+  makeOld()
+  assert.equal(version(), `${VERSION}\n`)
+  assert.ok(fs.existsSync(path.join(old, 'sub/theirs')), 'the bin left <tmp>/tsx and what is in it')
+  assert.deepEqual(fs.readdirSync(tmpdir), ['tsx'])
 })
 
 test('nothing was written into the installed package, and its .env was never read', () => {
   assert.deepEqual(snapshot(PKG), BEFORE)
+  assert.deepEqual(fs.readdirSync(TMPDIR).filter(name => name.startsWith('tsx')), [], "and no command used tsx's folders in the temp folder")
   assert.ok(!fs.existsSync(path.join(PKG, 'data')))
 })

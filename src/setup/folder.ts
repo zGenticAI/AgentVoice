@@ -4,7 +4,9 @@
 // it: one that isn't there yet, an empty one, or one it set up before for this AgentVoice folder. Never your home
 // folder, your AgentVoice folder (Codex leaves placeholder files for the paths it may not read in the folders it may
 // write, and a placeholder local-token would stop the voice service), the package's folder, a clone, or a folder in
-// another Git repository (the client would take the whole repository as the project).
+// another Git repository (the client would take the whole repository as the project). And it must be yours, in folders
+// only you or root can change: anyone else who can change it could replace the floor and the configs setup writes there,
+// which the client loads when it starts in it (an empty one of yours is made 0700, as a new one is).
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -80,6 +82,15 @@ export function isAgentVoiceClone(folder: string): boolean {
   }
 }
 
+/**
+ * Who else could change what is in a folder: its owner, if that isn't you or root; and anyone, if its group or others
+ * may write it without the sticky bit (/tmp has it: there only an entry's owner may rename or delete it). null: no one.
+ */
+export function othersCanChange(stat: fs.Stats, uid: number): 'owner' | 'write' | null {
+  if (stat.uid !== uid && stat.uid !== 0) return 'owner'
+  return (stat.mode & 0o022) !== 0 && (stat.mode & 0o1000) === 0 ? 'write' : null
+}
+
 export interface FolderCheck {
   /** The session folder (links resolved). */
   folder: string
@@ -89,13 +100,15 @@ export interface FolderCheck {
   dataDir: string
   packageDir: string
   homeDir?: string
+  /** Your user id (process.geteuid's); undefined where there is none, and nothing is checked of owners and modes. */
+  uid?: number
 }
 
 /**
  * Checks the session folder as setup takes it, and throws SetupError saying why one can't be used. Returns whether it
  * is there, and the record of an earlier setup there for this AgentVoice folder.
  */
-export function checkSessionFolder({ folder, client, ownerDir, dataDir, packageDir, homeDir = os.homedir() }: FolderCheck): { exists: boolean; manifest: Manifest | null } {
+export function checkSessionFolder({ folder, client, ownerDir, dataDir, packageDir, homeDir = os.homedir(), uid = process.geteuid?.() }: FolderCheck): { exists: boolean; manifest: Manifest | null } {
   const shown = tildePath(folder, homeDir)
   const example = sessionExample(client)
   for (const [what, p] of [['The session folder', folder], ['Your AgentVoice folder', ownerDir], ['The data folder', dataDir]] as const) {
@@ -118,6 +131,30 @@ export function checkSessionFolder({ folder, client, ownerDir, dataDir, packageD
   if (isWithin(folder, packageDir)) {
     throw new SetupError(`${shown} is inside the installed package (${packageDir}), which npm replaces on every upgrade. Make a folder for your meeting sessions, for example: ${example}`)
   }
+  // The folder must be yours, and every folder it is in one that only you (or root) can change: whoever else can could
+  // rename yours away and put one of their own in its place, or change the floor and the configs setup writes in it,
+  // which your coding client loads when it starts there. (A clone's session folder is the clone itself.)
+  if (uid !== undefined) {
+    const own = fs.lstatSync(folder, { throwIfNoEntry: false })
+    if (own?.isDirectory() && own.uid !== uid) {
+      throw new SetupError(
+        `${shown} belongs to another user, who could change the floor and the client configs setup writes there. ` +
+          `Make a folder of your own for your meeting sessions, for example: ${example}`,
+      )
+    }
+    for (let dir = path.dirname(real); ; dir = path.dirname(dir)) {
+      const stat = fs.lstatSync(dir, { throwIfNoEntry: false })
+      const who = stat ? othersCanChange(stat, uid) : null
+      if (who) {
+        throw new SetupError(
+          `${shown} is in ${tildePath(dir, homeDir)}, which ${who === 'owner' ? 'belongs to another user' : 'others can write to'}, ` +
+            'so they could put a folder of their own in its place, with other client configs. Make the session folder ' +
+            `where only you can change it, for example: ${example}`,
+        )
+      }
+      if (path.dirname(dir) === dir) break
+    }
+  }
   if (isAgentVoiceClone(folder)) throw new SetupError(`${shown} is a clone of AgentVoice: ${CLONE_SETUP}.`)
   const top = gitTopLevel(folder)
   if (top !== null && !sameFolder(top, folder)) {
@@ -138,9 +175,26 @@ export function checkSessionFolder({ folder, client, ownerDir, dataDir, packageD
   const stat = fs.statSync(folder, { throwIfNoEntry: false })
   if (!stat) return { exists: false, manifest: null }
   if (!stat.isDirectory()) throw new SetupError(`${shown} is a file, not a folder. Make a folder for your meeting sessions, for example: ${example}`)
-  if (fs.readdirSync(folder).every(name => name === '.DS_Store')) return { exists: true, manifest: null }
+  const empty = () => fs.readdirSync(folder).every(name => name === '.DS_Store')
+  if (empty()) {
+    // An empty folder of yours (mkdir under a umask of 002 makes it group-writable): made 0700, as setup makes a new
+    // one, and looked at again, so that nothing put in it before then is taken.
+    if ((stat.mode & 0o077) !== 0) {
+      fs.chmodSync(folder, 0o700)
+      if (empty()) return { exists: true, manifest: null }
+    } else return { exists: true, manifest: null }
+  }
   const manifest = readManifest(folder)
-  if (manifest && sameFolder(manifest.home, ownerDir)) return { exists: true, manifest }
+  if (manifest && sameFolder(manifest.home, ownerDir)) {
+    if (uid !== undefined && othersCanChange(stat, uid)) {
+      throw new SetupError(
+        `${shown} can be written by others (its mode is ${(stat.mode & 0o777).toString(8)}), so the floor and the client ` +
+          `configs setup wrote there may have been changed. Check what is in it, then run chmod 700 ${JSON.stringify(folder)} ` +
+          `and this again; or set up a new, empty folder, for example: ${example}`,
+      )
+    }
+    return { exists: true, manifest }
+  }
   if (manifest) {
     throw new SetupError(
       `${shown} was set up for another AgentVoice folder, ${tildePath(manifest.home, homeDir)} (its ${MANIFEST}), not ${tildePath(ownerDir, homeDir)}. ` +

@@ -55,6 +55,23 @@ export function installModeOf(packageDir: string): InstallMode {
 }
 
 /**
+ * The name a package manager installed this package under, when that isn't PACKAGE_NAME (an alias: npm install -g
+ * av@npm:@zgentic/agentvoice puts it in node_modules/av), else null. installModeOf takes such a folder for a clone,
+ * whose .env and data/ would then be in the package's folder, which npm replaces: the agentvoice command refuses to run
+ * from it (src/cli/agentvoice.ts).
+ */
+export function aliasOf(packageDir: string): string | null {
+  if (installModeOf(packageDir) === 'installed') return null
+  const parts = realPath(packageDir).split(path.sep)
+  const name = parts.at(-1)
+  if (!name) return null
+  if (parts.at(-2) === 'node_modules') return name
+  const scope = parts.at(-2)
+  if (parts.at(-3) === 'node_modules' && scope?.startsWith('@')) return `${scope}/${name}`
+  return null
+}
+
+/**
  * The owner's folder: in a clone, the clone itself (AGENTVOICE_HOME is not read); installed, AGENTVOICE_HOME, or
  * ~/.agentvoice when it is unset or empty. Throws, saying why, on an AGENTVOICE_HOME that can't be used.
  */

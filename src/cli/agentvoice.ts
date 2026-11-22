@@ -19,8 +19,16 @@ try {
   console.error((err as Error).message)
   process.exit(1)
 }
-const { INSTALL_MODE, OWNER_DIR, PACKAGE_DIR, PACKAGE_VERSION, tildePath } = home
-const { README_URL, WORDS, cloneRefusal } = words
+const { INSTALL_MODE, OWNER_DIR, PACKAGE_DIR, PACKAGE_VERSION, aliasOf, tildePath } = home
+const { README_URL, WORDS, aliasRefusal, cloneRefusal } = words
+
+// Installed under another name, the package would run as a clone, with its .env and data/ in its own folder: nothing
+// runs from it, not even --help, whose last line would say so.
+const alias = aliasOf(PACKAGE_DIR)
+if (alias !== null) {
+  console.error(aliasRefusal(PACKAGE_DIR, alias))
+  process.exit(1)
+}
 
 /** Each command, and its module under src/. */
 const MODULES = {

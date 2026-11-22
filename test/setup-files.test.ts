@@ -342,6 +342,69 @@ test('setup refuses the disk, the home folder, the AgentVoice folder and its dat
   refused(path.join(p.tmp, 'session'), /Your AgentVoice folder \(.*\) has a control character/, { ownerDir: path.join(p.tmp, 'av\tx') })
 })
 
+test("setup takes only a folder of yours, in folders only you or root can change; an empty one of yours is made 0700", t => {
+  const p = place(t)
+  const refused = (dir: string, why: RegExp, more = {}) => assert.throws(() => p.check(dir, more), (err: Error) => err instanceof SetupError && why.test(err.message), dir)
+  const example = 'for example: mkdir -p ~/agentvoice-session && cd ~/agentvoice-session && agentvoice setup claude-code'
+  const mode = (dir: string) => fs.statSync(dir).mode & 0o7777
+  // An empty folder of yours that others could write (mkdir -m 777, or a umask of 002): made 0700, then taken.
+  const open = path.join(p.tmp, 'open')
+  fs.mkdirSync(open)
+  fs.chmodSync(open, 0o777)
+  assert.deepEqual(p.check(open), { exists: true, manifest: null })
+  assert.equal(mode(open), 0o700)
+  // In a folder others can write, without the sticky bit, made or not: they could rename it and put theirs in its place.
+  const shared = path.join(p.tmp, 'shared')
+  fs.mkdirSync(path.join(shared, 'session'), { recursive: true })
+  fs.chmodSync(shared, 0o777)
+  fs.chmodSync(path.join(shared, 'session'), 0o755)
+  const before = snapshot(p.tmp)
+  const inShared = new RegExp(
+    `^${path.join(shared, 'session').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is in ${shared.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, which others can write to, so they could put a folder of their own in its place, with other client configs\\. Make the session folder where only you can change it, ${example.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+  )
+  refused(path.join(shared, 'session'), inShared)
+  refused(path.join(shared, 'new/session'), /new\/session is in .*shared, which others can write to/)
+  fs.chmodSync(shared, 0o770)
+  refused(path.join(shared, 'session'), /which others can write to/)
+  assert.deepEqual(snapshot(p.tmp), before, 'nothing written')
+  assert.equal(mode(path.join(shared, 'session')), 0o755, 'nor its mode changed')
+  // With the sticky bit, as /tmp has it, only you can rename or remove what is yours there: taken.
+  fs.chmodSync(shared, 0o1777)
+  assert.deepEqual(p.check(path.join(shared, 'new/session')), { exists: false, manifest: null })
+  // A folder setup made before for this AgentVoice folder, that others can write now: refused until it is yours alone.
+  const earlier = path.join(p.tmp, 'earlier')
+  fs.mkdirSync(earlier)
+  fs.writeFileSync(path.join(earlier, MANIFEST), JSON.stringify(manifestFor(p.ownerDir)))
+  fs.chmodSync(earlier, 0o777)
+  refused(
+    earlier,
+    new RegExp(`earlier can be written by others \\(its mode is 777\\), so the floor and the client configs setup wrote there may have been changed\\. Check what is in it, then run chmod 700 ".*earlier" and this again; or set up a new, empty folder, for example: `),
+  )
+  assert.equal(mode(earlier), 0o777, 'left as it is')
+  fs.chmodSync(earlier, 0o700)
+  assert.deepEqual(p.check(earlier), { exists: true, manifest: manifestFor(p.ownerDir) })
+  // Another user's folder, as it looks to someone who isn't its owner (a uid that is neither yours nor root's): the
+  // folder itself, empty or not, is refused, and so is one in a folder of theirs.
+  const stranger = 54321
+  const empty = path.join(p.tmp, 'empty')
+  fs.mkdirSync(empty)
+  refused(empty, new RegExp(`empty belongs to another user, who could change the floor and the client configs setup writes there\\. Make a folder of your own for your meeting sessions, ${example.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`), { uid: stranger })
+  if (process.geteuid?.() !== 0) refused(path.join(p.tmp, 'new'), /new is in .*, which belongs to another user/, { uid: stranger })
+  if (process.geteuid?.() === 0) {
+    // Folders another user really owns (only root can make one here), checked as you.
+    const theirs = path.join(p.tmp, 'theirs')
+    fs.mkdirSync(path.join(theirs, 'sub'), { recursive: true })
+    fs.chownSync(theirs, 65534, 65534)
+    fs.chownSync(path.join(theirs, 'sub'), 65534, 65534)
+    refused(theirs, /theirs belongs to another user/)
+    refused(path.join(theirs, 'sub'), /theirs\/sub belongs to another user/)
+    refused(path.join(theirs, 'new'), /theirs\/new is in .*theirs, which belongs to another user/)
+    assert.equal(mode(theirs) & 0o777, 0o755, 'its mode unchanged')
+  }
+  // No uid (a platform without one): nothing is checked of owners and modes.
+  assert.deepEqual(p.check(empty, { uid: undefined }), { exists: true, manifest: null })
+})
+
 // --- Writing -------------------------------------------------------------------------------------------------------
 /** applySetup for a client's files into folder, as the command calls it. */
 function apply(folder: string, files: SetupFile[], more: Partial<Apply> = {}) {

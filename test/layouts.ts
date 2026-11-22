@@ -56,15 +56,18 @@ export interface Installed {
   elsewhere: string
 }
 
-/** An installed package, a home folder and a folder to run from, in a temp folder. version: written into its package.json. */
-export function installedPackage(t: Ctx, version?: string): Installed {
+/**
+ * An installed package, a home folder and a folder to run from, in a temp folder. version: written into its
+ * package.json. name: the name it is installed under (an npm alias), when not its own.
+ */
+export function installedPackage(t: Ctx, version?: string, name: string = PACKAGE_NAME): Installed {
   const tmp = tempDir(t, 'av-installed-')
-  const pkg = path.join(tmp, 'prefix/lib/node_modules', PACKAGE_NAME)
+  const pkg = path.join(tmp, 'prefix/lib/node_modules', name)
   fs.mkdirSync(pkg, { recursive: true })
   copyPackage(pkg, version)
   const binDir = path.join(tmp, 'prefix/bin')
   fs.mkdirSync(binDir)
-  fs.symlinkSync(path.join('../lib/node_modules', PACKAGE_NAME, 'bin/agentvoice.js'), path.join(binDir, 'agentvoice'))
+  fs.symlinkSync(path.join('../lib/node_modules', name, 'bin/agentvoice.js'), path.join(binDir, 'agentvoice'))
   const home = path.join(tmp, 'home')
   const elsewhere = path.join(tmp, 'elsewhere')
   fs.mkdirSync(home)

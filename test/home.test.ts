@@ -8,7 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { INSTALL_MODE, OWNER_DIR, PACKAGE_DIR, ROOT } from '../src/config.ts'
 import {
-  PACKAGE_NAME, PACKAGE_VERSION, insidePackage, installModeOf, isWithin, ownerDirFor, packagePathError, realPath, tildePath,
+  PACKAGE_NAME, PACKAGE_VERSION, aliasOf, insidePackage, installModeOf, isWithin, ownerDirFor, packagePathError, realPath, tildePath,
 } from '../src/home.ts'
 import { prepareOwnerDir } from '../src/local-token.ts'
 
@@ -63,6 +63,35 @@ test('installed means the package folder, links resolved, is <anything>/node_mod
   const viaLink = path.join(dir, 'shortcut')
   fs.symlinkSync(path.join(dir, `prefix/lib/node_modules/${PACKAGE_NAME}`), viaLink)
   assert.equal(installModeOf(viaLink), 'installed')
+})
+
+test('a package installed under another name (an npm alias) is found: the agentvoice command refuses to run from it', t => {
+  const dir = tempDir(t)
+  // npm i -g av@npm:<the package> (or av@file:<tarball>), yarn's and bun's aliases: a folder of its own in node_modules,
+  // which installModeOf takes for a clone (its .env and data/ would be the package folder's).
+  for (const [folder, name] of [
+    ['prefix/lib/node_modules/av', 'av'],
+    ['project/node_modules/agentvoice', 'agentvoice'],
+    ['p/node_modules/@other/agentvoice', '@other/agentvoice'],
+    [`p/node_modules/${SCOPE}/agent-voice`, `${SCOPE}/agent-voice`],
+  ]) {
+    const at = mkdir(path.join(dir, folder))
+    assert.equal(installModeOf(at), 'clone', folder)
+    assert.equal(aliasOf(at), name, folder)
+  }
+  // Not an alias: the package under its own name, a clone, a copy, a folder inside a package, npm link (the link leads
+  // to the clone), and pnpm's alias, whose link leads to the store, where the package has its own name.
+  for (const folder of [`prefix/lib/node_modules/${PACKAGE_NAME}`, 'AgentVoice', 'copy/agentvoice', `p/node_modules/${PACKAGE_NAME}/x`, `p/${PACKAGE_NAME}`]) {
+    assert.equal(aliasOf(mkdir(path.join(dir, folder))), null, folder)
+  }
+  assert.equal(aliasOf(ROOT), null)
+  const linked = path.join(mkdir(path.join(dir, 'prefix2/lib/node_modules')), 'av')
+  fs.symlinkSync(path.join(dir, 'AgentVoice'), linked)
+  assert.equal(aliasOf(linked), null, 'npm link')
+  const store = mkdir(path.join(dir, `project2/node_modules/.pnpm/${PACKAGE_NAME.replace('/', '+')}@0.3.0/node_modules/${PACKAGE_NAME}`))
+  fs.symlinkSync(store, path.join(dir, 'project2/node_modules/av'))
+  assert.equal(aliasOf(path.join(dir, 'project2/node_modules/av')), null, "pnpm's alias")
+  assert.equal(installModeOf(path.join(dir, 'project2/node_modules/av')), 'installed')
 })
 
 test("a clone's owner folder is the clone itself, and AGENTVOICE_HOME is not read", () => {
