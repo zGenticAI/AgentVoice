@@ -1,6 +1,6 @@
 {
   "name": "@zgentic/agentvoice",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A self-hosted AI meeting assistant: a Claude voice agent that joins your Zoom, Google Meet and Teams meetings through Recall.ai",
   "keywords": [
     "meeting-assistant",
