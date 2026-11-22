@@ -12,10 +12,8 @@
 // Prints to stdout; changes nothing. A usage error goes to stderr, with exit status 2.
 import { WORDS } from '../commands.ts'
 import { DEFAULT_NAME, fold, nameList, readIdentity } from '../identity.ts'
-import { checkName, checkOwner, describeName } from '../name-check.ts'
+import { CHECK_NAME_USAGE as USAGE, checkName, checkOwner, describeName } from '../name-check.ts'
 import { compareCorpus, loadCorpus, reportDifferences } from '../name-corpus.ts'
-
-const USAGE = `Usage: ${WORDS.run('check-name', '[<name> [--variants a,b] [--misheard c,d]] [--all]')}`
 
 function usage(problem: string): never {
   process.stderr.write(`${problem}\n${USAGE}\n`)

@@ -1,9 +1,9 @@
 // Folders laid out as AgentVoice is found on a computer, in a temp folder, for the tests of the two modes
-// (test/installed-mode.test.ts, test/clone-mode.test.ts): an installed package
-// (<tmp>/prefix/lib/node_modules/<the package name>, as npm install -g makes it) and a copy of the clone. Each holds
-// what the package ships (src/, public/, the corpus, the templates, package.json), with node_modules linked to the
-// repository's, and runs through the repository's tsx, as the bin does. Nothing here touches the repository's own .env
-// or data/.
+// (test/installed-mode.test.ts, test/clone-mode.test.ts, the agentvoice command's tests): an installed package
+// (<tmp>/prefix/lib/node_modules/<the package name>, with the <tmp>/prefix/bin/agentvoice link, as npm install -g makes
+// them) and a copy of the clone. Each holds what the package ships (bin/, src/, public/, the corpus, the templates,
+// package.json), with node_modules linked to the repository's, and runs through the repository's tsx, as the bin does.
+// Nothing here touches the repository's own .env or data/.
 import { spawn, spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -18,7 +18,7 @@ export const TSX = path.join(ROOT, 'node_modules/.bin/tsx')
 const TSX_LOADER = import.meta.resolve('tsx')
 const tsx = (file: string, args: string[] = []) => [process.execPath, ['--import', TSX_LOADER, file, ...args]] as const
 const TMP = fs.existsSync('/tmp') ? '/tmp' : os.tmpdir()
-const SHIPPED = ['src', 'public', 'package.json', 'test/fixtures/name-corpus.json', '.env.example', 'profile.example.md', 'brief.example.md']
+const SHIPPED = ['bin', 'src', 'public', 'package.json', 'test/fixtures/name-corpus.json', '.env.example', 'profile.example.md', 'brief.example.md']
 
 type Ctx = { after: (fn: () => unknown) => void }
 
@@ -42,6 +42,8 @@ export interface Installed {
   tmp: string
   /** The installed package's folder. */
   pkg: string
+  /** The prefix's bin folder, with the agentvoice link npm makes there (to the package's bin/agentvoice.js). */
+  binDir: string
   /** HOME for the commands run here: its ~/.agentvoice is the default AgentVoice folder. */
   home: string
   /** A folder of no importance, to run the commands from. */
@@ -54,11 +56,14 @@ export function installedPackage(t: Ctx, version?: string): Installed {
   const pkg = path.join(tmp, 'prefix/lib/node_modules', PACKAGE_NAME)
   fs.mkdirSync(pkg, { recursive: true })
   copyPackage(pkg, version)
+  const binDir = path.join(tmp, 'prefix/bin')
+  fs.mkdirSync(binDir)
+  fs.symlinkSync(path.join('../lib/node_modules', PACKAGE_NAME, 'bin/agentvoice.js'), path.join(binDir, 'agentvoice'))
   const home = path.join(tmp, 'home')
   const elsewhere = path.join(tmp, 'elsewhere')
   fs.mkdirSync(home)
   fs.mkdirSync(elsewhere)
-  return { tmp, pkg, home, elsewhere }
+  return { tmp, pkg, binDir, home, elsewhere }
 }
 
 /** A copy of the clone, as a source zip or a cp -r makes one (no .git), in a temp folder. */
@@ -144,6 +149,11 @@ export function probe(t: Ctx, pkg: string, what: 'paths' | 'writers', env: Recor
   const run = spawnSync(node, argv, { env, cwd, encoding: 'utf8', timeout: 60_000 })
   if (run.status !== 0) return { ok: false as const, status: run.status, stderr: run.stderr }
   return { ok: true as const, value: JSON.parse(run.stdout.trim().split('\n').at(-1) as string) }
+}
+
+/** Runs the package's agentvoice command, as its bin (node <pkg>/bin/agentvoice.js), to its end. */
+export function agentvoice(pkg: string, args: string[], env: Record<string, string>, cwd: string, input?: string) {
+  return spawnSync(process.execPath, [path.join(pkg, 'bin/agentvoice.js'), ...args], { env, cwd, input, encoding: 'utf8', timeout: 120_000 })
 }
 
 /** Runs one of the package's commands (a module under src/) through tsx, to its end. */

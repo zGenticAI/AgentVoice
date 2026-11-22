@@ -5,6 +5,9 @@
   "description": "A self-hosted AI meeting assistant: a Claude voice agent that joins your Zoom, Google Meet and Teams meetings through Recall.ai",
   "license": "Apache-2.0",
   "type": "module",
+  "bin": {
+    "agentvoice": "bin/agentvoice.js"
+  },
   "engines": {
     "node": ">=24"
   },

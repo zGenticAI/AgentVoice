@@ -31,6 +31,8 @@ import {
   WAKE_WORDS, defaultBotName, fold, hasWord, identity, stripAccents,
 } from './identity.ts'
 
+/** What check-name takes (src/cli/check-name.ts, and agentvoice help check-name). */
+export const CHECK_NAME_USAGE = `Usage: ${WORDS.run('check-name', '[<name> [--variants a,b] [--misheard c,d]] [--all]')}`
 export const MIN_LETTERS = 3
 export const MAX_LETTERS = 20
 /** The longest OWNER_NAME, OWNER_FULL_NAME or COMPANY_NAME may be, in characters. */

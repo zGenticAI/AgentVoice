@@ -10,6 +10,8 @@ import { GRID, gridConfigs, gridKey, quantile } from './probe.ts'
 
 // A file larger than this is not one the probe wrote (a meeting's is about 30 KB at most).
 const MAX_FILE_BYTES = 4 * 1024 * 1024
+/** What speaker-report takes (src/cli/speaker-report.ts, and agentvoice help speaker-report). */
+export const SPEAKER_REPORT_USAGE = `Usage: ${WORDS.run('speaker-report')} ${WORDS.optional('--json')}`
 /** How many scored normal turns a platform needs before its settings say anything. */
 export const ENOUGH_TURNS = 40
 /** The least share right that a setting must have to be listed. */

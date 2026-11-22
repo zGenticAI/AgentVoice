@@ -1,14 +1,13 @@
 // What the speaker probe measured, pooled by platform: npm run speaker-report [-- --json]
 // Reads data/speaker-probe/*.json and changes nothing. docs/speaker-probe.md says how to read it. To clear the
 // measurements: rm -r data/speaker-probe
-import { WORDS } from '../commands.ts'
-import { formatReport, pool, readProbeFiles } from '../speakers/report.ts'
+import { SPEAKER_REPORT_USAGE, formatReport, pool, readProbeFiles } from '../speakers/report.ts'
 import { PROBE_DIR } from '../transcript.ts'
 
 const args = process.argv.slice(2)
 const unknown = args.filter(arg => arg !== '--json')
 if (unknown.length) {
-  console.error(`Unknown option ${unknown[0]}.\nUsage: ${WORDS.run('speaker-report')} ${WORDS.optional('--json')}`)
+  console.error(`Unknown option ${unknown[0]}.\n${SPEAKER_REPORT_USAGE}`)
   process.exit(1)
 }
 const { files, skipped } = readProbeFiles(PROBE_DIR)

@@ -39,6 +39,8 @@ export interface CommandWords {
 
 /** The repository's files on GitHub, by tag: <DOCS_URL>/v<version>/docs/<page>.md. */
 export const DOCS_URL = 'https://github.com/zGenticAI/AgentVoice/blob'
+/** The README on GitHub, the package's homepage: where agentvoice --help sends you. */
+export const README_URL = `${DOCS_URL.slice(0, -'/blob'.length)}#readme`
 
 export function commandWords(mode: InstallMode, ownerDir: string, version = PACKAGE_VERSION, home = os.homedir()): CommandWords {
   const shown = (rel: string) => tildePath(path.join(ownerDir, rel), home)
@@ -81,6 +83,8 @@ export const PROFILE_HERE = WORDS.profileHere
 export const CLONE_SETUP =
   'set it up as its README says (cp .env.example .env, scripts/install-service.sh, ' +
   'scripts/install-channel.sh, scripts/install-codex.sh, scripts/install-opencode.sh)'
+/** Why a command only an installed package has (init, setup, service) refuses in a clone, and the clone's way instead. */
+export const cloneRefusal = (root: string): string => `This is a cloned folder (${root}): ${CLONE_SETUP}.`
 export const INSTALL_FIRST = `Install AgentVoice first (npm install -g ${PACKAGE_NAME})`
 export const UPGRADE = `npm install -g ${PACKAGE_NAME}@latest`
 /** What the slide converter needs, when the optional native canvas is missing. */
