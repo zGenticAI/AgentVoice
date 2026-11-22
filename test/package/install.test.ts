@@ -30,15 +30,30 @@ const UID = process.geteuid?.() ?? 0
 // Everything in one folder of its own, outside /tmp on Linux: setup codex refuses a home folder there (Codex leaves
 // placeholder files in the folders its commands may write). Not inside the repository either, so nothing the package
 // needs can be found in the repository's node_modules.
+// And short enough for the service's control socket, whose longest path here is the default AgentVoice folder's
+// (SOCKET_TAIL): a Unix socket's path may hold at most 103 bytes on macOS and 107 on Linux, and the service refuses a
+// longer one, as it should. A Mac's own temporary folder (/var/folders/…/T) leaves too little room, so there /tmp is
+// taken instead. The first folder of the list that leaves room is used.
+const SOCKET_TAIL = '/av-package-XXXXXX/home/.agentvoice/data/control.sock'
+const SOCKET_ROOM = process.platform === 'linux' ? 107 : 103
 function base(): string {
-  if (process.env.RUNNER_TEMP) return process.env.RUNNER_TEMP
-  if (process.platform !== 'linux') return os.tmpdir()
-  try {
-    fs.accessSync('/var/tmp', fs.constants.W_OK)
-    return '/var/tmp'
-  } catch {
-    return assert.fail('test:package needs a folder outside /tmp to work in on Linux: /var/tmp, or RUNNER_TEMP')
+  const linux = process.platform === 'linux'
+  const tried: string[] = []
+  for (const dir of linux ? [process.env.RUNNER_TEMP, '/var/tmp'] : [process.env.RUNNER_TEMP, os.tmpdir(), '/tmp']) {
+    if (!dir) continue
+    try {
+      const real = fs.realpathSync(dir)
+      fs.accessSync(real, fs.constants.W_OK)
+      if (Buffer.byteLength(real + SOCKET_TAIL) <= SOCKET_ROOM) return dir
+      tried.push(`${dir} (too long)`)
+    } catch {
+      tried.push(`${dir} (not there, or not yours to write)`)
+    }
   }
+  return assert.fail(
+    `test:package needs a folder to work in${linux ? ' outside /tmp' : ''} whose path leaves room for the control ` +
+      `socket (${SOCKET_ROOM} bytes): tried ${tried.join(', ') || 'none'}. Set RUNNER_TEMP to a short folder of yours.`,
+  )
 }
 const TMP = fs.realpathSync(fs.mkdtempSync(path.join(base(), 'av-package-')))
 after(() => fs.rmSync(TMP, { recursive: true, force: true }))
