@@ -79,6 +79,7 @@ function runStep(script: string, o: { cwd: string; env: NodeJS.ProcessEnv; bin?:
 }
 
 test('release.yml runs when a GitHub release is published, in three jobs: pack, then test, then publish', () => {
+  assert.deepEqual(Object.keys(RELEASE), ['name', 'on', 'permissions', 'concurrency', 'jobs'])
   assert.deepEqual(RELEASE.on, { release: { types: ['published'] } })
   assert.deepEqual(RELEASE.permissions, { contents: 'read' })
   // One release at a time, and never one cut off half way.
@@ -93,6 +94,22 @@ test('release.yml runs when a GitHub release is published, in three jobs: pack, 
   assert.equal((PKG.repository as { url: string }).url, REPOSITORY_URL)
   assert.equal(job('publish').if, "needs.pack.outputs.published == 'no'")
   for (const name of Object.keys(JOBS)) assert.equal(job(name)['runs-on'], 'ubuntu-latest', name)
+  // Each job's keys, and each step's: no job or step is let fail unnoticed (continue-on-error), and only pack and publish
+  // have a condition of their own, the ones above.
+  assert.deepEqual(Object.keys(job('pack')), ['name', 'if', 'runs-on', 'permissions', 'outputs', 'steps'])
+  assert.deepEqual(Object.keys(job('test')), ['name', 'needs', 'runs-on', 'permissions', 'env', 'steps'])
+  assert.deepEqual(Object.keys(job('publish')), ['name', 'needs', 'if', 'runs-on', 'environment', 'permissions', 'env', 'steps'])
+  for (const name of Object.keys(JOBS)) {
+    for (const step of steps(name)) {
+      const keys = Object.keys(step).filter(key => !['name', 'id', 'uses', 'with', 'env', 'run', 'if'].includes(key))
+      assert.deepEqual(keys, [], `${name}: ${step.name ?? step.uses ?? step.run}`)
+    }
+  }
+  // The one step with a condition: the notice, when the version is on npm already.
+  assert.deepEqual(
+    Object.keys(JOBS).flatMap(name => steps(name).filter(step => step.if !== undefined).map(step => [name, step.name, step.if])),
+    [['pack', 'Already on npm', "steps.release.outputs.published == 'yes'"]],
+  )
 })
 
 test('only the publish job can get an OIDC token, in the npm environment, and it runs no code from the repository or its dependencies', () => {
@@ -163,30 +180,44 @@ test('every action is pinned to a full commit, with its version beside it; check
 })
 
 test("CI: the tests on Linux and macOS with Node 24 and 26, and the package job's file lists (this npm and npm 12) and install test", () => {
+  // On every push to main and every pull request, and nothing else at the top that could change what runs.
+  assert.deepEqual(Object.keys(CI), ['name', 'on', 'permissions', 'jobs'])
+  assert.deepEqual(CI.on, { push: { branches: ['main'] }, pull_request: null })
   const ciJob = (name: string) => (CI.jobs as YamlMap)[name] as YamlMap
   const ciSteps = (name: string) => ciJob(name).steps as Step[]
-  const matrix = { 'fail-fast': false, matrix: { os: ['ubuntu-latest', 'macos-latest'], node: [24, 26] } }
-  for (const name of ['test', 'package']) {
-    assert.equal(ciJob(name)['runs-on'], '${{ matrix.os }}', name)
-    assert.deepEqual(ciJob(name).strategy, matrix, name)
-    const [checkout, node] = ciSteps(name)
-    assert.match(checkout.uses ?? '', /^actions\/checkout@[0-9a-f]{40}$/, name)
-    assert.deepEqual(checkout.with, { 'persist-credentials': false }, name)
-    assert.match(node.uses ?? '', /^actions\/setup-node@[0-9a-f]{40}$/, name)
-    assert.deepEqual(node.with, { 'node-version': '${{ matrix.node }}', cache: 'npm' }, name)
-    assert.equal(ciSteps(name).length, 2 + ciSteps(name).filter(step => step.run !== undefined).length, `${name}: every step after the two is a run step`)
+  // Each job whole, every key of it and of each step: so none is switched off or let fail unnoticed (an if: false on
+  // the job or a step, a continue-on-error: true), and none is dropped or added. The two actions are checked out and
+  // set up by the commits release.yml uses too (pinned above).
+  const pinned = (name: string, action: string) => {
+    const uses = ciSteps(name).find(step => step.uses?.startsWith(`${action}@`))?.uses ?? ''
+    assert.match(uses, new RegExp(`^${action.replace('/', '\\/')}@[0-9a-f]{40}$`), `${name}: ${action}`)
+    return uses
   }
-  const ciRuns = (name: string) => ciSteps(name).flatMap(step => (step.run === undefined ? [] : [step.run.trim()]))
-  assert.deepEqual(ciRuns('test'), ['npm ci', 'npm run typecheck', 'npm test'])
+  const jobOf = (name: string, title: string, runs: Step[]) => ({
+    name: title,
+    'runs-on': '${{ matrix.os }}',
+    strategy: { 'fail-fast': false, matrix: { os: ['ubuntu-latest', 'macos-latest'], node: [24, 26] } },
+    steps: [
+      { uses: pinned(name, 'actions/checkout'), with: { 'persist-credentials': false } },
+      { uses: pinned(name, 'actions/setup-node'), with: { 'node-version': '${{ matrix.node }}', cache: 'npm' } },
+      ...runs,
+    ],
+  })
+  assert.deepEqual(ciJob('test'), jobOf('test', 'Node ${{ matrix.node }} on ${{ matrix.os }}', [{ run: 'npm ci' }, { run: 'npm run typecheck' }, { run: 'npm test' }]))
   // The package job: the file list with the npm Node bundles (npm 11 for both), then with npm 12, npm's latest, which
   // packs some lists differently (it once left .env.example out), then the tarball installed and run.
-  assert.deepEqual(ciRuns('package'), [
-    'npm ci',
-    'npm run check-package',
-    'npx --yes npm@12 pack --dry-run --json --ignore-scripts > "$RUNNER_TEMP/pack-npm12.json"\nnpm run check-package -- --pack-json "$RUNNER_TEMP/pack-npm12.json"',
-    'npm run test:package',
-  ])
-  assert.equal(ciSteps('package').find(step => step.run?.includes('npm@12'))?.name, 'The same file list with npm 12')
+  assert.deepEqual(
+    ciJob('package'),
+    jobOf('package', 'Package on Node ${{ matrix.node }} on ${{ matrix.os }}', [
+      { run: 'npm ci' },
+      { run: 'npm run check-package' },
+      {
+        name: 'The same file list with npm 12',
+        run: 'npx --yes npm@12 pack --dry-run --json --ignore-scripts > "$RUNNER_TEMP/pack-npm12.json"\nnpm run check-package -- --pack-json "$RUNNER_TEMP/pack-npm12.json"\n',
+      },
+      { run: 'npm run test:package' },
+    ]),
+  )
   // The scripts those steps run are package.json's.
   assert.equal(PKG.scripts['check-package'], 'tsx test/package/check-package.ts')
   assert.equal(PKG.scripts['test:package'], 'node --import tsx --test test/package/*.test.ts')

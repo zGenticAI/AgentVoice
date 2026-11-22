@@ -3,6 +3,7 @@
 // refreshes its own files and never replaces one you changed (or one it didn't make) without your say: it stops, shows
 // the difference, and with --replace-changed keeps yours as a backup first. Two files are yours to add to, and setup
 // only merges into them: Claude Code's .claude/settings.local.json and OpenCode's .opencode/opencode.json.
+import { spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -16,6 +17,97 @@ export const MANIFEST = '.agentvoice-setup.json'
 
 /** A refusal: setup says why and stops (exit 1). */
 export class SetupError extends Error {}
+
+/** The way setup says to make a session folder, for this client. */
+export const sessionExample = (client: Client): string => `mkdir -p ~/agentvoice-session && cd ~/agentvoice-session && agentvoice setup ${client}`
+
+/** You, as setup checks who else could change a folder: your user id, and whether a group is yours alone. */
+export interface You {
+  uid: number
+  /** Whether no one but you is in this group, so that its being able to write a folder lets no one else change it. */
+  groupOfYours: (gid: number) => boolean
+}
+
+/** The user lists' lines for these getent arguments (group <gid>, passwd), or null where they can't be read. */
+export type Getent = (args: string[]) => string | null
+
+const runGetent: Getent = args => {
+  const run = spawnSync('getent', args, { encoding: 'utf8', timeout: 10_000, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+  return run.status === 0 ? run.stdout : null
+}
+
+/**
+ * Whether a group is yours alone: your own primary group, named as you are (the group of your own that Debian, Ubuntu
+ * and Fedora give each user, which is why their umask, 002, lets the group write what you make), with no one else in
+ * it, as a member or as their own primary group. Read from the system's lists with getent; false wherever they can't
+ * be read (macOS has no getent, and there every user's primary group is staff).
+ */
+export function groupOfYoursAlone(gid: number, user?: { username: string; gid: number }, getent: Getent = runGetent): boolean {
+  let me = user
+  if (!me) {
+    try {
+      me = os.userInfo()
+    } catch {
+      return false
+    }
+  }
+  if (gid !== me.gid) return false
+  const group = getent(['group', String(gid)])?.split('\n').filter(Boolean)
+  if (group?.length !== 1) return false
+  const [name, , id, members = ''] = group[0].split(':')
+  if (name !== me.username || id !== String(gid)) return false
+  if (members.split(',').some(member => member !== '' && member !== me.username)) return false
+  const users = getent(['passwd'])
+  if (users === null) return false
+  return users
+    .split('\n')
+    .filter(Boolean)
+    .every(line => {
+      const [user, , , primary] = line.split(':')
+      return primary !== String(gid) || user === me.username
+    })
+}
+
+/**
+ * You, for setup's checks: the uid given (else this process's), with groupOfYoursAlone asked once per group. null: no
+ * uid (a platform without one), and nothing is checked of owners and modes.
+ */
+export function youAre(uid?: number | null, groupOfYours?: (gid: number) => boolean): You | null {
+  const id = uid === undefined ? process.geteuid?.() : uid
+  if (id === undefined || id === null) return null
+  const asked = new Map<number, boolean>()
+  const alone = groupOfYours ?? ((gid: number) => groupOfYoursAlone(gid))
+  return {
+    uid: id,
+    groupOfYours: gid => {
+      if (!asked.has(gid)) asked.set(gid, alone(gid))
+      return asked.get(gid) as boolean
+    },
+  }
+}
+
+/**
+ * Who else could change what is in a folder: its owner, if that isn't you or root; and anyone who may write it, if
+ * that is others, or a group that isn't yours alone, without the sticky bit (/tmp has it: there only an entry's owner
+ * may rename or delete it). null: no one.
+ */
+export function othersCanChange(stat: fs.Stats, you: You): 'owner' | 'write' | null {
+  if (stat.uid !== you.uid && stat.uid !== 0) return 'owner'
+  if ((stat.mode & 0o1000) !== 0) return null
+  if ((stat.mode & 0o002) !== 0) return 'write'
+  return (stat.mode & 0o020) !== 0 && !you.groupOfYours(stat.gid) ? 'write' : null
+}
+
+/**
+ * Why a folder others could change can't hold the session folder: who they are, and, for a folder of yours, the chmod
+ * that makes it yours alone.
+ */
+export function othersRefusal(dir: string, stat: fs.Stats, you: You, who: 'owner' | 'write', homeDir: string = os.homedir()): string {
+  if (who === 'owner') return `${tildePath(dir, homeDir)}, which belongs to another user`
+  const mode = (stat.mode & 0o7777).toString(8)
+  const fix = stat.uid === you.uid ? `; to make it yours alone, run chmod go-w ${JSON.stringify(dir)} and this again` : ''
+  return `${tildePath(dir, homeDir)}, which its group or others can write to (its mode is ${mode}${fix})`
+}
 
 export interface Manifest {
   package: string
@@ -85,19 +177,48 @@ export function parseManifest(text: string): Manifest | null {
   return m as Manifest
 }
 
-/** Makes a folder and any missing parent, each new one 0700 (whatever the umask); one that is there is left as it is. */
-export function makeFolder(dir: string): void {
+export interface Make {
+  /** You, for the check of each folder a new one is made in (null: none is checked, on a platform without user ids). */
+  you?: You | null
+  /** The folder itself must be made here: if it is there by now, something other than setup made it after the checks. */
+  fresh?: boolean
+  /** How setup says to make a session folder, for a refusal. */
+  example?: string
+}
+
+/**
+ * Makes a folder and any missing parent, each new one 0700 (whatever the umask); one that is there is left as it is.
+ * Each is made only in a folder no one else can change, checked as it is made, and must be made here (mkdir fails if
+ * it appears in between): so a missing folder another user makes after setup's checks, in /tmp say, is never used.
+ */
+export function makeFolder(dir: string, { you = youAre(), fresh = false, example }: Make = {}): void {
   const missing: string[] = []
   for (let at = path.resolve(dir); !fs.existsSync(at); at = path.dirname(at)) missing.unshift(at)
+  const stop = (why: string) => new SetupError(`${why}${example ? ` Make the session folder where only you can change it, for example: ${example}` : ''}`)
+  const appeared = (folder: string) =>
+    stop(`${tildePath(folder)} was made while setup ran, after its checks, by something other than setup, so setup stopped: it takes only a folder it makes, or one that was there when it checked.`)
+  if (fresh && !missing.length) throw appeared(dir)
   for (const folder of missing) {
-    fs.mkdirSync(folder, { mode: 0o700 })
+    const parent = path.dirname(folder)
+    if (you) {
+      const stat = fs.lstatSync(parent, { throwIfNoEntry: false })
+      if (!stat?.isDirectory()) throw stop(`${tildePath(parent)}, where setup was to make ${tildePath(folder)}, is not a folder now, so setup stopped.`)
+      const who = othersCanChange(stat, you)
+      if (who) throw stop(`Setup was to make ${tildePath(folder)} in ${othersRefusal(parent, stat, you, who)}, and stopped: they could put a folder of their own in its place.`)
+    }
+    try {
+      fs.mkdirSync(folder, { mode: 0o700 })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') throw appeared(folder)
+      throw err
+    }
     fs.chmodSync(folder, 0o700)
   }
 }
 
 /** Writes a file whole or not at all: <file>.<pid>.tmp (0600), then a rename over it. Its folder is made 0700 if missing. */
-export function writeAtomic(file: string, content: string | Buffer): void {
-  makeFolder(path.dirname(file))
+export function writeAtomic(file: string, content: string | Buffer, you?: You | null): void {
+  makeFolder(path.dirname(file), { you })
   const temp = `${file}.${process.pid}.tmp`
   fs.rmSync(temp, { force: true })
   try {
@@ -303,6 +424,8 @@ export interface Apply {
   again: string
   /** Makes the folder a Git repository of its own, once it is there; returns whether it made one. */
   makeRepo?: (folder: string) => boolean
+  /** You, for the checks of each folder setup makes (youAre's, unless given; null: none). */
+  you?: You | null
   now?: Date
   log?: (line: string) => void
 }
@@ -336,7 +459,10 @@ export function applySetup(a: Apply): { made: boolean; repo: boolean; backups: s
     )
   }
   const made = !a.exists
-  if (made) makeFolder(a.folder)
+  const you = a.you === undefined ? youAre() : a.you
+  // A folder that wasn't there at the checks is made here, with each missing one above it, each in a folder no one else
+  // can change as it is made: one another user makes in between, in /tmp say, stops setup.
+  if (made) makeFolder(a.folder, { you, fresh: true, example: sessionExample(a.client) })
   const repo = a.makeRepo?.(a.folder) ?? false
   const backups: string[] = []
   for (const file of changed) {
@@ -346,7 +472,7 @@ export function applySetup(a: Apply): { made: boolean; repo: boolean; backups: s
   }
   for (const file of planned) {
     if (file.state === 'same' || (file.state === 'merged' && file.current === file.content)) continue
-    writeAtomic(path.join(a.folder, file.rel), file.content)
+    writeAtomic(path.join(a.folder, file.rel), file.content, you)
   }
   const owned = Object.fromEntries(planned.filter(file => !file.merged).map(file => [file.rel, sha256(file.content)]))
   const manifest: Manifest = {
@@ -356,6 +482,6 @@ export function applySetup(a: Apply): { made: boolean; repo: boolean; backups: s
     command: a.command,
     clients: { ...a.manifest?.clients, [a.client]: { files: owned } },
   }
-  writeAtomic(path.join(a.folder, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`)
+  writeAtomic(path.join(a.folder, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, you)
   return { made, repo, backups }
 }

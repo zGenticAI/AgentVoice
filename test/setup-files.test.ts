@@ -12,7 +12,7 @@ import { CLONE_SETUP } from '../src/commands.ts'
 import { PACKAGE_NAME } from '../src/home.ts'
 import { CLAUDE_AGENT, CLAUDE_CHANNEL_TOOLS, CLAUDE_LOCAL, CLAUDE_SETTINGS, renderClaudeCode } from '../src/setup/claude-code.ts'
 import { CODEX_AGENT, CODEX_CONFIG, HOME_ENV_NAMES, renderCodex } from '../src/setup/codex.ts'
-import { type Apply, MANIFEST, type Manifest, SetupError, type SetupFile, applySetup, parseManifest, sha256, staleReasons, unifiedDiff } from '../src/setup/files.ts'
+import { type Apply, type Getent, MANIFEST, type Manifest, SetupError, type SetupFile, applySetup, groupOfYoursAlone, parseManifest, sha256, staleReasons, unifiedDiff, youAre } from '../src/setup/files.ts'
 import { checkSessionFolder, sessionFolder } from '../src/setup/folder.ts'
 import { OPENCODE_AGENT, OPENCODE_CONFIG, OPENCODE_LOCAL, renderOpenCode, sourceFolders } from '../src/setup/opencode.ts'
 import { snapshot, tempDir } from './layouts.ts'
@@ -235,7 +235,10 @@ test("OpenCode: --source refuses a folder it can't find, a file, the whole disk,
 })
 
 // --- The folder ----------------------------------------------------------------------------------------------------
-/** A temp place: a home folder with its AgentVoice folder, and a package folder; refusals are checked to write nothing. */
+/**
+ * A temp place: a home folder with its AgentVoice folder, and a package folder; refusals are checked to write nothing.
+ * No group is yours alone here unless a test says so, whatever this computer's lists say (root's group is, here).
+ */
 function place(t: Ctx) {
   const tmp = tempDir(t, 'av-setup-')
   const homeDir = path.join(tmp, 'home')
@@ -245,7 +248,7 @@ function place(t: Ctx) {
   fs.mkdirSync(packageDir, { recursive: true })
   fs.writeFileSync(path.join(ownerDir, '.env'), 'OWNER_NAME=Sam\n')
   const check = (folder: string, more: Partial<Parameters<typeof checkSessionFolder>[0]> = {}) =>
-    checkSessionFolder({ folder: sessionFolder(folder, tmp, homeDir), client: 'claude-code', ownerDir, dataDir: path.join(ownerDir, 'data'), packageDir, homeDir, ...more })
+    checkSessionFolder({ folder: sessionFolder(folder, tmp, homeDir), client: 'claude-code', ownerDir, dataDir: path.join(ownerDir, 'data'), packageDir, homeDir, groupOfYours: () => false, ...more })
   return { tmp, homeDir, ownerDir, packageDir, check }
 }
 
@@ -347,6 +350,7 @@ test("setup takes only a folder of yours, in folders only you or root can change
   const refused = (dir: string, why: RegExp, more = {}) => assert.throws(() => p.check(dir, more), (err: Error) => err instanceof SetupError && why.test(err.message), dir)
   const example = 'for example: mkdir -p ~/agentvoice-session && cd ~/agentvoice-session && agentvoice setup claude-code'
   const mode = (dir: string) => fs.statSync(dir).mode & 0o7777
+  const esc = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   // An empty folder of yours that others could write (mkdir -m 777, or a umask of 002): made 0700, then taken.
   const open = path.join(p.tmp, 'open')
   fs.mkdirSync(open)
@@ -359,13 +363,15 @@ test("setup takes only a folder of yours, in folders only you or root can change
   fs.chmodSync(shared, 0o777)
   fs.chmodSync(path.join(shared, 'session'), 0o755)
   const before = snapshot(p.tmp)
+  // It names the folder, its mode, and the chmod that makes a folder of yours yours alone.
   const inShared = new RegExp(
-    `^${path.join(shared, 'session').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is in ${shared.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, which others can write to, so they could put a folder of their own in its place, with other client configs\\. Make the session folder where only you can change it, ${example.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+    `^${esc(path.join(shared, 'session'))} is in ${esc(shared)}, which its group or others can write to \\(its mode is 777; to make it yours alone, run chmod go-w ${esc(JSON.stringify(shared))} and this again\\), so they could put a folder of their own in its place, with other client configs\\. Make the session folder where only you can change it, ${esc(example)}$`,
   )
   refused(path.join(shared, 'session'), inShared)
-  refused(path.join(shared, 'new/session'), /new\/session is in .*shared, which others can write to/)
+  refused(path.join(shared, 'new/session'), /new\/session is in .*shared, which its group or others can write to \(its mode is 777; /)
+  // Its group only: refused while that group isn't yours alone.
   fs.chmodSync(shared, 0o770)
-  refused(path.join(shared, 'session'), /which others can write to/)
+  refused(path.join(shared, 'session'), /which its group or others can write to \(its mode is 770; to make it yours alone, run chmod go-w /)
   assert.deepEqual(snapshot(p.tmp), before, 'nothing written')
   assert.equal(mode(path.join(shared, 'session')), 0o755, 'nor its mode changed')
   // With the sticky bit, as /tmp has it, only you can rename or remove what is yours there: taken.
@@ -378,7 +384,7 @@ test("setup takes only a folder of yours, in folders only you or root can change
   fs.chmodSync(earlier, 0o777)
   refused(
     earlier,
-    new RegExp(`earlier can be written by others \\(its mode is 777\\), so the floor and the client configs setup wrote there may have been changed\\. Check what is in it, then run chmod 700 ".*earlier" and this again; or set up a new, empty folder, for example: `),
+    new RegExp(`earlier can be written by its group or others \\(its mode is 777\\), so the floor and the client configs setup wrote there may have been changed\\. Check what is in it, then run chmod 700 ".*earlier" and this again; or set up a new, empty folder, for example: `),
   )
   assert.equal(mode(earlier), 0o777, 'left as it is')
   fs.chmodSync(earlier, 0o700)
@@ -401,8 +407,95 @@ test("setup takes only a folder of yours, in folders only you or root can change
     refused(path.join(theirs, 'new'), /theirs\/new is in .*theirs, which belongs to another user/)
     assert.equal(mode(theirs) & 0o777, 0o755, 'its mode unchanged')
   }
-  // No uid (a platform without one): nothing is checked of owners and modes.
-  assert.deepEqual(p.check(empty, { uid: undefined }), { exists: true, manifest: null })
+  // No uid (null: a platform without one): nothing is checked of owners and modes, so a folder in one others can
+  // write, which the checks refuse, is taken.
+  const loose = path.join(p.tmp, 'loose')
+  fs.mkdirSync(path.join(loose, 'session'), { recursive: true })
+  fs.chmodSync(loose, 0o777)
+  refused(path.join(loose, 'session'), /loose\/session is in .*loose, which its group or others can write to/)
+  assert.deepEqual(p.check(path.join(loose, 'session'), { uid: null }), { exists: true, manifest: null })
+  // Left out, or undefined, it is this process's: checked.
+  refused(path.join(loose, 'session'), /which its group or others can write to/, { uid: undefined })
+  assert.equal(youAre(null), null)
+  assert.equal(youAre()?.uid, process.geteuid?.())
+})
+
+test('a folder only your group can write is yours alone when no one else is in that group, as Ubuntu and Fedora make one for each user', t => {
+  const p = place(t)
+  const esc = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const refused = (dir: string, why: RegExp, more = {}) => assert.throws(() => p.check(dir, more), (err: Error) => err instanceof SetupError && why.test(err.message), dir)
+  // mkdir -p ~/work under a umask of 002: 0775, with your own group.
+  const work = path.join(p.tmp, 'work')
+  fs.mkdirSync(work)
+  fs.chmodSync(work, 0o775)
+  const gid = fs.statSync(work).gid
+  const yours = { groupOfYours: (g: number) => g === gid }
+  assert.equal(fs.statSync(p.tmp).gid, gid, 'the folders here have one group')
+  assert.deepEqual(p.check(path.join(work, 'meetings/session'), yours), { exists: false, manifest: null })
+  fs.mkdirSync(path.join(work, 'meetings/session'), { recursive: true })
+  fs.chmodSync(path.join(work, 'meetings'), 0o775)
+  fs.chmodSync(path.join(work, 'meetings/session'), 0o775)
+  assert.deepEqual(p.check(path.join(work, 'meetings/session'), yours), { exists: true, manifest: null })
+  assert.equal(fs.statSync(path.join(work, 'meetings/session')).mode & 0o777, 0o700, 'the empty session folder itself is made 0700')
+  // A group someone else is in: refused, with the folder, its mode and the chmod.
+  refused(
+    path.join(work, 'meetings/session'),
+    new RegExp(`^${esc(path.join(work, 'meetings/session'))} is in ${esc(path.join(work, 'meetings'))}, which its group or others can write to \\(its mode is 775; to make it yours alone, run chmod go-w ${esc(JSON.stringify(path.join(work, 'meetings')))} and this again\\), so they could put a folder of their own in its place`),
+  )
+  // Others' write is never yours alone, whatever the group.
+  fs.chmodSync(work, 0o777)
+  refused(path.join(work, 'meetings/session'), /work, which its group or others can write to \(its mode is 777; /, yours)
+  fs.chmodSync(work, 0o775)
+  // A folder setup made before, that your own group can write: taken; another group: refused.
+  const earlier = path.join(p.tmp, 'earlier')
+  fs.mkdirSync(earlier)
+  fs.writeFileSync(path.join(earlier, MANIFEST), JSON.stringify(manifestFor(p.ownerDir)))
+  fs.chmodSync(earlier, 0o770)
+  assert.deepEqual(p.check(earlier, yours), { exists: true, manifest: manifestFor(p.ownerDir) })
+  refused(earlier, /earlier can be written by its group or others \(its mode is 770\)/)
+  if (process.geteuid?.() === 0) {
+    // A folder of root's, as another user sees it: no chmod to suggest, since it isn't theirs to change.
+    refused(path.join(work, 'meetings/new'), new RegExp(`is in ${esc(path.join(work, 'meetings'))}, which its group or others can write to \\(its mode is 775\\), so they could`), { uid: 54321 })
+  }
+})
+
+test("whether a group is yours alone: your primary group, named as you are, with no one else in it as a member or as their own", () => {
+  const sam = { username: 'sam', gid: 1000 }
+  const lists = (group: string | null, passwd: string | null, gid = '1000'): Getent => args => (args[0] === 'group' ? (args[1] === gid ? group : null) : passwd)
+  const users = 'root:x:0:0:root:/root:/bin/bash\nsam:x:1000:1000:Sam:/home/sam:/bin/bash\nkim:x:1001:1001:Kim:/home/kim:/bin/bash\n'
+  assert.equal(groupOfYoursAlone(1000, sam, lists('sam:x:1000:\n', users)), true)
+  assert.equal(groupOfYoursAlone(1000, sam, lists('sam:x:1000:sam\n', users)), true, 'you, listed as a member too')
+  assert.equal(groupOfYoursAlone(1000, sam, lists('sam:x:1000:sam,kim\n', users)), false, 'someone else a member')
+  assert.equal(groupOfYoursAlone(1000, sam, lists('sam:x:1000:kim\n', users)), false)
+  assert.equal(groupOfYoursAlone(1000, sam, lists('sam:x:1000:\n', `${users}lee:x:1002:1000::/home/lee:/bin/sh\n`)), false, "someone else's primary group")
+  assert.equal(groupOfYoursAlone(1000, sam, lists('users:x:1000:\n', users)), false, 'not named as you are')
+  assert.equal(groupOfYoursAlone(1001, sam, lists('kim:x:1001:\n', users, '1001')), false, 'not your primary group')
+  assert.equal(groupOfYoursAlone(1005, sam, lists('sam:x:1005:\n', users, '1005')), false, 'named as you are, but not your primary group')
+  assert.equal(groupOfYoursAlone(1000, sam, lists(null, users)), false, "the group lists can't be read (no getent, as on macOS)")
+  assert.equal(groupOfYoursAlone(1000, sam, lists('sam:x:1000:\n', null)), false, "the user lists can't be read")
+  assert.equal(groupOfYoursAlone(1000, sam, lists('sam:x:1000:\nsam:x:1000:kim\n', users)), false, 'two answers')
+  // Asked once per group in a check.
+  let asked = 0
+  const you = youAre(1000, () => (asked++, true))
+  assert.ok(you?.groupOfYours(5) && you.groupOfYours(5))
+  assert.equal(asked, 1)
+})
+
+test('an empty folder of yours made 0700 is looked at again: what was put in it while others could write it makes it a folder that holds files', t => {
+  const p = place(t)
+  const late = path.join(p.tmp, 'late')
+  fs.mkdirSync(late)
+  fs.chmodSync(late, 0o775)
+  // Someone puts a file in it between setup's first look and the chmod that shuts them out.
+  const chmod = fs.chmodSync
+  const mocked = t.mock.method(fs, 'chmodSync', ((file: fs.PathLike, mode: fs.Mode) => {
+    if (String(file) === late) fs.writeFileSync(path.join(late, 'settings.json'), '{}')
+    return chmod(file, mode)
+  }) as typeof fs.chmodSync)
+  assert.throws(() => p.check(late), (err: Error) => err instanceof SetupError && /late already holds files that agentvoice setup didn't make/.test(err.message))
+  assert.equal(mocked.mock.callCount(), 1)
+  mocked.mock.restore()
+  assert.equal(fs.statSync(late).mode & 0o777, 0o700, 'shut, and refused')
 })
 
 // --- Writing -------------------------------------------------------------------------------------------------------
@@ -536,6 +629,54 @@ test("Codex's meeting-assistant with its shell switched off is setup's own: setu
   fs.writeFileSync(file, on)
   apply(folder, codex(on), { client: 'codex' })
   assert.equal(fs.readFileSync(file, 'utf8'), on)
+})
+
+test('a folder setup makes after its checks is made only in a folder no one else can change, and only by setup', t => {
+  const p = place(t)
+  const example = /Make the session folder where only you can change it, for example: mkdir -p ~\/agentvoice-session && cd ~\/agentvoice-session && agentvoice setup claude-code$/
+  const refused = (folder: string, why: RegExp, more: Partial<Apply> = {}) => {
+    const before = snapshot(p.tmp)
+    assert.throws(() => apply(folder, claudeFiles(), more), (err: Error) => err instanceof SetupError && why.test(err.message) && example.test(err.message), folder)
+    assert.deepEqual(snapshot(p.tmp), before, `${folder}: nothing made or written`)
+  }
+  // A missing parent, made by another user (open to all) between the checks and setup's own mkdir: in /tmp, say.
+  const session = path.join(p.tmp, 'x/session')
+  assert.deepEqual(p.check(session), { exists: false, manifest: null })
+  const x = path.join(p.tmp, 'x')
+  fs.mkdirSync(x)
+  fs.chmodSync(x, 0o777)
+  // Another user's, as root can make it; or, run as someone else, a folder of yours seen as a stranger's.
+  const asRoot = process.geteuid?.() === 0
+  if (asRoot) fs.chownSync(x, 65534, 65534)
+  const stranger = asRoot ? {} : { you: { uid: 54321, groupOfYours: () => false } }
+  refused(session, /^Setup was to make .*x\/session in .*x, which belongs to another user, and stopped: they could put a folder of their own in its place\. /, stranger)
+  // The same folder of yours, open to all: refused too, with the chmod.
+  if (asRoot) fs.chownSync(x, 0, 0)
+  refused(session, /^Setup was to make .*x\/session in .*x, which its group or others can write to \(its mode is 777; to make it yours alone, run chmod go-w ".*x" and this again\), and stopped: /, asRoot ? {} : { you: youAre(undefined, () => false) })
+  // Once it is yours alone, setup goes on.
+  fs.chmodSync(x, 0o700)
+  assert.equal(apply(session, claudeFiles()).made, true)
+
+  // The session folder itself, made by something else after the checks: setup takes only a folder it makes.
+  const late = path.join(p.tmp, 'late')
+  assert.deepEqual(p.check(late), { exists: false, manifest: null })
+  fs.mkdirSync(late)
+  refused(late, /^.*late was made while setup ran, after its checks, by something other than setup, so setup stopped: it takes only a folder it makes, or one that was there when it checked\. /, { exists: false })
+  assert.deepEqual(fs.readdirSync(late), [])
+
+  // Or one made in the instant between setup's look and its mkdir: mkdir fails, and setup stops.
+  const race = path.join(p.tmp, 'race')
+  const mkdir = fs.mkdirSync
+  const mocked = t.mock.method(fs, 'mkdirSync', ((dir: fs.PathLike, options?: fs.MakeDirectoryOptions) => {
+    if (String(dir) === race && !fs.existsSync(race)) mkdir(race)
+    return mkdir(dir, options)
+  }) as typeof fs.mkdirSync)
+  try {
+    assert.throws(() => apply(path.join(race, 'session'), claudeFiles()), (err: Error) => err instanceof SetupError && /^.*race was made while setup ran, after its checks, by something other than setup, so setup stopped/.test(err.message) && example.test(err.message))
+  } finally {
+    mocked.mock.restore()
+  }
+  assert.deepEqual(fs.readdirSync(race), [], 'nothing made in it')
 })
 
 test('setup never writes outside the folder: a link in it that leads out, or a folder where a file goes, stops it', t => {
