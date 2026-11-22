@@ -9,6 +9,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ROOT } from '../src/config.ts'
+import { alwaysAsk } from '../src/channel/push-opencode.ts'
+import { PACKAGE_NAME } from '../src/home.ts'
+import { renderOpenCode } from '../src/setup/opencode.ts'
 import { openCodeMatch } from './client-floors.ts'
 
 type Rule = { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' }
@@ -291,4 +294,49 @@ test('your own .opencode/opencode.json is never committed; the shared config and
   assert.ok(ignored('.opencode/opencode.jsonc'))
   assert.ok(!ignored('.opencode/agents/meeting-assistant.md'))
   assert.ok(!ignored('opencode.json'))
+})
+
+// --- Installed from npm: what agentvoice setup opencode writes ---------------------------------------------------
+const INSTALLED_NODE = '/home/sam/.nvm/versions/node/v24.22.1/bin/node'
+const INSTALLED_BIN = `/home/sam/.nvm/versions/node/v24.22.1/lib/node_modules/${PACKAGE_NAME}/bin/agentvoice.js`
+const AV_DATA = '/home/sam/.agentvoice/data'
+const INSTALLED = JSON.parse(renderOpenCode({ packageDir: ROOT, home: '/home/sam/.agentvoice', dataDir: AV_DATA, node: INSTALLED_NODE, bin: INSTALLED_BIN })[0].content)
+
+test('installed, agentvoice slides asks however it is run: by name, through npx, by its path, and as the command opencode.json starts the channel with', () => {
+  const rules = [...BASE, ...(INSTALLED.permissions as Rule[])]
+  const [node, bin, channel] = INSTALLED.mcp.servers['zoom-meeting'].command as string[]
+  assert.equal(channel, 'channel')
+  for (const command of [
+    'agentvoice slides prepare deck.pdf',
+    'agentvoice slides',
+    `npx ${PACKAGE_NAME} slides prepare deck.pdf`,
+    '/home/sam/.nvm/versions/node/v24.22.1/bin/agentvoice slides check deck.script.md',
+    `${node} ${bin} slides prepare deck.pdf`,
+  ]) {
+    assert.equal(evaluate('shell', command, rules), 'ask', command)
+  }
+  // The draft's rule missed the last form: the bin's file name runs on to ".js".
+  assert.ok(!match(`${node} ${bin} slides prepare deck.pdf`, '*agentvoice slides *'))
+  assert.equal(evaluate('shell', 'npm test', rules), 'allow')
+  // The channel's check for saved "Allow always" approvals covers that same form (alwaysAsk('installed')), and every
+  // shell command it covers asks under this file.
+  const asks = alwaysAsk('installed', () => [node, bin])
+  assert.equal(asks.at(-1)?.resource, `${node} ${bin} slides prepare deck.pdf`)
+  for (const ask of asks.filter(a => a.action === 'shell')) assert.equal(evaluate('shell', ask.resource, rules), 'ask', ask.resource)
+})
+
+test('installed, the meeting-assistant may read the transcripts and minutes folders outside the session folder, and nothing else there', () => {
+  const agent: Rule[] = INSTALLED.agents['meeting-assistant'].permissions
+  assert.deepEqual(agent.slice(0, AGENT_RULES.length), AGENT_RULES, "the package's rules first, as they were")
+  assert.deepEqual(agent.slice(AGENT_RULES.length), [
+    { action: 'external_directory', resource: `${AV_DATA}/transcripts/*`, effect: 'allow' },
+    { action: 'external_directory', resource: `${AV_DATA}/minutes/*`, effect: 'allow' },
+  ])
+  const rules = [...BASE, ...(INSTALLED.permissions as Rule[]), ...agent]
+  for (const dir of [`${AV_DATA}/transcripts/*`, `${AV_DATA}/minutes/*`, `${AV_DATA}/transcripts/2026/*`]) assert.equal(evaluate('external_directory', dir, rules), 'allow', dir)
+  for (const dir of [`${AV_DATA}/*`, '/home/sam/.agentvoice/*', `${AV_DATA}/decks/*`, '/home/sam/*', '/home/sam/work/acme-docs/*']) assert.equal(evaluate('external_directory', dir, rules), 'deny', dir)
+  // The floor is the committed one, and still denies the AgentVoice folder's keys there.
+  assert.deepEqual(INSTALLED.policies, POLICIES)
+  for (const file of ['/home/sam/.agentvoice/.env', `${AV_DATA}/local-token`, `${AV_DATA}/decks/a1/deck.pdf`]) assert.ok(policyDenies('read', file), file)
+  assert.deepEqual(INSTALLED.mcp.servers['zoom-meeting'].environment, { AGENTVOICE_CLIENT: 'opencode', AGENTVOICE_HOME: '/home/sam/.agentvoice' })
 })

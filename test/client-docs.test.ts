@@ -12,6 +12,7 @@ import { OPENCODE_TESTED } from '../src/channel/push-opencode.ts'
 import { EVENT_HEADER, plainEvent } from '../src/channel/sink.ts'
 import { REPORT_END as FLUX_REPORT_END } from '../src/probe/flux-report.ts'
 import { REPORT_END as SHARE_REPORT_END } from '../src/sharetest/report.ts'
+import { CODEX_TESTED } from '../src/setup/codex.ts'
 import { slidesNote } from '../src/slides/platforms.ts'
 import { CODEX_CONFIG, OPENCODE_CONFIG, type OpenCodeRule } from './client-floors.ts'
 import type { TomlTable } from './toml.ts'
@@ -24,6 +25,8 @@ const README = read('README.md')
 test('the pages name the versions the setup scripts and the channel check', () => {
   const codex = /^TESTED=(\d+\.\d+\.\d+)$/m.exec(read('scripts/install-codex.sh'))?.[1]
   assert.ok(codex)
+  // agentvoice setup codex checks the same version as the clone's script.
+  assert.equal(codex, CODEX_TESTED)
   assert.ok(CODEX.includes(`Tested with Codex CLI ${codex}`))
   assert.ok(CODEX.includes(`Codex CLI ${codex} or later`))
   assert.ok(README.includes(`**Codex CLI** ${codex} or later`))

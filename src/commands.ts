@@ -87,6 +87,9 @@ export const CLONE_SETUP =
 export const cloneRefusal = (root: string): string => `This is a cloned folder (${root}): ${CLONE_SETUP}.`
 export const INSTALL_FIRST = `Install AgentVoice first (npm install -g ${PACKAGE_NAME})`
 export const UPGRADE = `npm install -g ${PACKAGE_NAME}@latest`
+/** How to install the coding clients agentvoice setup checks for. */
+export const CODEX_INSTALL = 'npm install -g @openai/codex'
+export const OPENCODE_INSTALL = 'npm install -g @opencode/cli'
 /** What the slide converter needs, when the optional native canvas is missing. */
 export const CANVAS_MISSING =
   INSTALL_MODE === 'clone'

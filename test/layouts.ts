@@ -1,8 +1,9 @@
 // Folders laid out as AgentVoice is found on a computer, in a temp folder, for the tests of the two modes
 // (test/installed-mode.test.ts, test/clone-mode.test.ts, the agentvoice command's tests): an installed package
 // (<tmp>/prefix/lib/node_modules/<the package name>, with the <tmp>/prefix/bin/agentvoice link, as npm install -g makes
-// them) and a copy of the clone. Each holds what the package ships (bin/, src/, public/, the corpus, the templates,
-// package.json), with node_modules linked to the repository's, and runs through the repository's tsx, as the bin does.
+// them) and a copy of the clone. Each holds what the package ships (bin/, src/, public/, the corpus, the examples, the
+// client templates, package.json), with node_modules linked to the repository's, and runs through the repository's
+// tsx, as the bin does.
 // Nothing here touches the repository's own .env or data/.
 import { spawn, spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -18,7 +19,12 @@ export const TSX = path.join(ROOT, 'node_modules/.bin/tsx')
 const TSX_LOADER = import.meta.resolve('tsx')
 const tsx = (file: string, args: string[] = []) => [process.execPath, ['--import', TSX_LOADER, file, ...args]] as const
 const TMP = fs.existsSync('/tmp') ? '/tmp' : os.tmpdir()
-const SHIPPED = ['bin', 'src', 'public', 'package.json', 'test/fixtures/name-corpus.json', '.env.example', 'profile.example.md', 'brief.example.md']
+const SHIPPED = [
+  'bin', 'src', 'public', 'package.json', 'test/fixtures/name-corpus.json', '.env.example', 'profile.example.md', 'brief.example.md',
+  // The client templates agentvoice setup copies.
+  '.claude/settings.json', '.claude/agents/meeting-assistant.md', '.codex/config.toml', '.codex/agents/meeting-assistant.toml', 'opencode.json',
+  '.opencode/agents/meeting-assistant.md',
+]
 
 type Ctx = { after: (fn: () => unknown) => void }
 

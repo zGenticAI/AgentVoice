@@ -120,11 +120,7 @@ async function usage(command: Command | 'help' | 'version'): Promise<string> {
         '       agentvoice service uninstall',
       ].join('\n')
     case 'setup':
-      return [
-        'Usage: agentvoice setup claude-code [<folder>] [--replace-changed]',
-        '       agentvoice setup codex [<folder>] [--replace-changed]',
-        '       agentvoice setup opencode [<folder>] [--source <dir>]... [--no-sources] [--replace-changed]',
-      ].join('\n')
+      return (await import('./setup.ts')).SETUP_USAGE
     case 'help':
       return 'Usage: agentvoice help [<command>]'
     case 'version':

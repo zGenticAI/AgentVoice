@@ -8,8 +8,12 @@ import Anthropic from '@anthropic-ai/sdk'
 import WebSocket from 'ws'
 import { spokenThinking, systemPrompt } from '../brain/brain.ts'
 import { WORDS } from '../commands.ts'
-import { INSTALL_MODE, OWNER_DIR, config, publicUrlProblem, recallRegionProblem } from '../config.ts'
-import { tildePath } from '../home.ts'
+import { INSTALL_MODE, OWNER_DIR, PACKAGE_DIR, config, publicUrlProblem, recallRegionProblem } from '../config.ts'
+import { HOME_SETTING } from '../env.ts'
+import { PACKAGE_VERSION, tildePath } from '../home.ts'
+import { serviceKind } from '../service/units.ts'
+import { agentvoiceCommand } from '../setup/node-path.ts'
+import { cloneHomeNote, folderReport } from './check-folders.ts'
 import { JOIN_LINE, SLIDES_LINES, joinChatMessage } from '../consent.ts'
 import { IDENTITY_WARNINGS, identity } from '../identity.ts'
 import { checkName, checkOwner, describeName } from '../name-check.ts'
@@ -77,6 +81,29 @@ const checks: [string, string[], () => Promise<string>][] = [
   ['Deepgram', ['DEEPGRAM_API_KEY'], checkDeepgram],
   ['ElevenLabs', ['ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID'], checkElevenLabs],
 ]
+
+// Installed from npm: where everything is, first, and what to fix there (warnings). A clone ignores AGENTVOICE_HOME,
+// which is said only when it is set.
+if (INSTALL_MODE === 'installed') {
+  const [node, bin] = agentvoiceCommand()
+  const report = folderReport({
+    home: OWNER_DIR,
+    fromSetting: Boolean(HOME_SETTING.value?.trim()),
+    dataDir: config.dataDir,
+    packageDir: PACKAGE_DIR,
+    version: PACKAGE_VERSION,
+    profileFile: PROFILE.file,
+    cwd: process.cwd(),
+    node,
+    bin,
+    label: config.serviceLabel,
+    kind: serviceKind(),
+  })
+  console.log(`${report.join('\n')}\n`)
+} else {
+  const note = cloneHomeNote(HOME_SETTING.value)
+  if (note) console.log(note)
+}
 
 let failed = 0
 // The name first: the service won't start with one that has errors.
