@@ -12,8 +12,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { ROOT } from '../src/config.ts'
 import {
-  GENERIC_TERMS, PUBLIC_ADDRESSES, NO_LIST_NOTE, decode, findTerms, loadPrivateTerms, offenders, parseList, parseTermList, privateTermsFile,
-  trackedFiles,
+  GENERIC_TERMS, PUBLIC_ADDRESSES, PUBLIC_NAMES, NO_LIST_NOTE, decode, findTerms, loadPrivateTerms, offenders, parseList, parseTermList,
+  privateTermsFile, textOffenders, trackedFiles,
 } from './private-terms.ts'
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'av-terms-'))
@@ -191,6 +191,33 @@ test('every published address is still in use, so the list never keeps one nobod
   for (const address of PUBLIC_ADDRESSES) assert.ok(text.includes(address), address)
 })
 
+test("the project's own public names pass your terms exactly as written, and only those: every other mention is still checked", () => {
+  const [pkg, repo] = PUBLIC_NAMES
+  // A list that names what they are named after: the npm scope, and the GitHub account, in any case and inside words.
+  const scope = pkg.slice(1, pkg.indexOf('/'))
+  const list = parseList(`/${scope}/\n${repo.slice(0, repo.indexOf('/'))}`, 'list.txt')
+  const hits = (line: string) => findTerms(line, list.terms, [], PUBLIC_NAMES)
+  for (const line of [`npm install -g ${pkg}`, `"name": "${pkg}",`, `npm install -g ${pkg}@latest`, `git clone https://github.com/${repo}.git`, `"url": "git+https://github.com/${repo}.git"`, `${pkg} ${repo}`]) {
+    assert.deepEqual(hits(line), [], line)
+  }
+  for (const line of [`${scope} Ltd's pricing`, `${pkg.toUpperCase()}`, `${pkg} is by ${scope}`, `https://${scope}.internal/${repo}`, `https://github.com/${repo.toLowerCase()}`, `@${scope}/other`]) {
+    assert.notDeepEqual(hits(line), [], line)
+  }
+  assert.notDeepEqual(findTerms(`npm install -g ${pkg}`, list.terms), [], 'only when passed')
+  // In a file's text: passed on its lines, and a name wrapped across two lines still found.
+  const wrapped = parseList(`/${scope}/\nMega Corp`, 'list.txt')
+  assert.deepEqual(textOffenders('README.md', { where: '', text: `see ${pkg}\nask Mega\nCorp, or ${scope}` }, wrapped.terms, [], PUBLIC_NAMES), [
+    `README.md:3 "${scope}": Corp, or ${scope}`,
+    'README.md:2 "Mega Corp": across lines',
+  ])
+})
+
+test('every public name is still in use, so the pass never keeps one the project no longer has', { skip: FILES ? false : 'not a git checkout' }, () => {
+  const text = (FILES ?? []).filter(file => file !== 'test/private-terms.ts').map(file => fs.readFileSync(path.join(ROOT, file), 'utf8')).join('\n')
+  for (const name of PUBLIC_NAMES) assert.ok(text.includes(name), name)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).name, PUBLIC_NAMES[0], "the first is the package's name")
+})
+
 test('the list is PRIVATE_TERMS_FILE, else private-terms.txt here, which git ignores; a named list that is missing fails', () => {
   assert.deepEqual(privateTermsFile({}), { file: path.join(ROOT, 'private-terms.txt'), named: false })
   assert.deepEqual(privateTermsFile({ PRIVATE_TERMS_FILE: '~/x/terms.txt' }), { file: path.join(os.homedir(), 'x/terms.txt'), named: true })
@@ -242,5 +269,5 @@ test('no file names a term from your private list', { skip: LIST.terms || LIST.p
   const list = real(LIST.file)
   assert.ok(!(FILES ?? []).some(file => real(path.join(ROOT, file)) === list),
     `${LIST.file} is a file git would commit: keep your list outside the repository, or in the gitignored private-terms.txt`)
-  assert.deepEqual(offenders(FILES ?? [], LIST.terms ?? [], LIST.allowed), [])
+  assert.deepEqual(offenders(FILES ?? [], LIST.terms ?? [], LIST.allowed, ROOT, process.env, PUBLIC_NAMES), [])
 })

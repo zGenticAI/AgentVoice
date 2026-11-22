@@ -114,11 +114,7 @@ async function usage(command: Command | 'help' | 'version'): Promise<string> {
     case 'channel':
       return `Usage: agentvoice ${command}`
     case 'service':
-      return [
-        'Usage: agentvoice service install [--replace]',
-        '       agentvoice service print [launchd|systemd]',
-        '       agentvoice service uninstall',
-      ].join('\n')
+      return (await import('./service.ts')).SERVICE_USAGE
     case 'setup':
       return (await import('./setup.ts')).SETUP_USAGE
     case 'help':

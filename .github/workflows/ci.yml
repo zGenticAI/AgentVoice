@@ -28,3 +28,29 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+
+  # What npm users get: the package's file list (with this npm and with npm 12, npm's latest, which packs some lists
+  # differently), then the tarball installed fresh from the registry into a prefix of its own, and run.
+  package:
+    name: Package on Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check-package
+      - name: The same file list with npm 12
+        run: |
+          npx --yes npm@12 pack --dry-run --json --ignore-scripts > "$RUNNER_TEMP/pack-npm12.json"
+          npm run check-package -- --pack-json "$RUNNER_TEMP/pack-npm12.json"
+      - run: npm run test:package

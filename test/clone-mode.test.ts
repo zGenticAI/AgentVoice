@@ -201,7 +201,7 @@ See docs/presenting.md.`,
   assert.deepEqual(warned, ['[identity] ALEX_BOT_NAME is now called AGENT_BOT_NAME. It still works for now: rename it in .env.'])
 })
 
-test("package.json's scripts are 0.2.0's, with AGENTVOICE_HOME cleared for the tests like the other settings", () => {
+test("package.json's scripts are 0.2.0's, with AGENTVOICE_HOME cleared for the tests like the other settings, and the package checks", () => {
   const scripts = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).scripts
   const test020 =
     'AGENT_NAME=Alex AGENT_NAME_VARIANTS= AGENT_NAME_MISHEARD= AGENT_BOT_NAME= ALEX_BOT_NAME= OWNER_NAME=Sam OWNER_FULL_NAME= COMPANY_NAME= ' +
@@ -219,5 +219,24 @@ test("package.json's scripts are 0.2.0's, with AGENTVOICE_HOME cleared for the t
     slides: 'tsx src/cli/slides.ts',
     test: test020.replace('AGENTVOICE_CLIENT= ', 'AGENTVOICE_CLIENT= AGENTVOICE_HOME= '),
     typecheck: 'tsc --noEmit',
+    'check-package': 'tsx test/package/check-package.ts',
+    'test:package': 'node --import tsx --test test/package/*.test.ts',
+    prepublishOnly: 'tsx test/package/check-package.ts --release',
   })
+})
+
+test("package.json's runtime dependencies are exact versions, each the one package-lock.json installs, so npm users run what a clone tested", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
+  const lock = JSON.parse(fs.readFileSync(path.join(ROOT, 'package-lock.json'), 'utf8'))
+  assert.deepEqual(Object.keys(pkg.dependencies).sort(), ['@anthropic-ai/sdk', '@modelcontextprotocol/sdk', 'dotenv', 'pdfjs-dist', 'tsx', 'ws'])
+  for (const [name, version] of Object.entries(pkg.dependencies)) {
+    assert.match(version as string, /^\d+\.\d+\.\d+$/, name)
+    assert.equal(lock.packages[`node_modules/${name}`].version, version, `${name}: the version the lock installs`)
+  }
+  assert.deepEqual(lock.packages[''].dependencies, pkg.dependencies, 'the lock records the same pins')
+  // The development and optional ones as they were.
+  assert.deepEqual(pkg.devDependencies, { '@types/node': '^24.19.2', '@types/ws': '^8.18.2', typescript: '^7.0.2' })
+  assert.deepEqual(pkg.optionalDependencies, { '@napi-rs/canvas': '1.1.1' })
+  // The lock's own names follow the package's; its version is the package's (0.2.0 until the release PR).
+  assert.deepEqual([lock.name, lock.version, lock.packages[''].name, lock.packages[''].version], [pkg.name, pkg.version, pkg.name, pkg.version])
 })

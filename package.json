@@ -1,15 +1,77 @@
 {
-  "name": "agent-voice",
+  "name": "@zgentic/agentvoice",
   "version": "0.2.0",
-  "private": true,
   "description": "A self-hosted AI meeting assistant: a Claude voice agent that joins your Zoom, Google Meet and Teams meetings through Recall.ai",
+  "keywords": [
+    "meeting-assistant",
+    "voice-agent",
+    "zoom",
+    "google-meet",
+    "microsoft-teams",
+    "recall-ai",
+    "mcp",
+    "claude-code",
+    "codex",
+    "opencode"
+  ],
+  "homepage": "https://github.com/zGenticAI/AgentVoice#readme",
+  "bugs": {
+    "url": "https://github.com/zGenticAI/AgentVoice/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zGenticAI/AgentVoice.git"
+  },
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "agentvoice": "bin/agentvoice.js"
   },
+  "files": [
+    "/bin/agentvoice.js",
+    "/src/**/*.ts",
+    "!/src/cli/record-name-corpus.ts",
+    "/public/agent.html",
+    "/public/agent.js",
+    "/public/pcm-worklet.js",
+    "/public/slides.html",
+    "/public/slides.js",
+    "/public/share-test.html",
+    "/test/fixtures/name-corpus.json",
+    "/.claude/settings.json",
+    "/.claude/agents/meeting-assistant.md",
+    "/.codex/config.toml",
+    "/.codex/agents/meeting-assistant.toml",
+    "/opencode.json",
+    "/.opencode/agents/meeting-assistant.md",
+    "/.env.example",
+    "/profile.example.md",
+    "/brief.example.md",
+    "/docs/*.md",
+    "/CHANGELOG.md",
+    "/NOTICE",
+    "/SECURITY.md",
+    "!**/*.pem",
+    "!**/*.key",
+    "!**/*.p12",
+    "!**/*.pfx",
+    "!**/*.log",
+    "!**/local-token",
+    "!**/data/**",
+    "!**/decks/**",
+    "!**/briefs/**",
+    "!**/*.pdf",
+    "!**/*.script.md"
+  ],
   "engines": {
     "node": ">=24"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "start": "tsx src/server.ts",
@@ -22,15 +84,18 @@
     "flux-probe": "tsx src/cli/flux-probe.ts",
     "slides": "tsx src/cli/slides.ts",
     "test": "AGENT_NAME=Alex AGENT_NAME_VARIANTS= AGENT_NAME_MISHEARD= AGENT_BOT_NAME= ALEX_BOT_NAME= OWNER_NAME=Sam OWNER_FULL_NAME= COMPANY_NAME= PROFILE_FILE=test/fixtures/no-profile.md AGENT_PAGE_FILE= SERVICE_LABEL= RECALL_REGION=us-east-1 DEEPGRAM_KEYTERMS= ZOOM_JOIN_TELEGRAM_CHATS= AGENTVOICE_CLIENT= AGENTVOICE_HOME= SPEAKER_PROBE= SLIDES_PLATFORMS= ALEX_DATA_DIR=$(mktemp -d) node --import tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check-package": "tsx test/package/check-package.ts",
+    "test:package": "node --import tsx --test test/package/*.test.ts",
+    "prepublishOnly": "tsx test/package/check-package.ts --release"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.0.0",
+    "@anthropic-ai/sdk": "1.0.0",
     "@modelcontextprotocol/sdk": "1.32.1",
-    "dotenv": "^18.0.8",
+    "dotenv": "18.0.8",
     "pdfjs-dist": "6.5.438",
-    "tsx": "^4.23.15",
-    "ws": "^8.22.0"
+    "tsx": "4.23.15",
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
