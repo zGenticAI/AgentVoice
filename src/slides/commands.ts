@@ -1,10 +1,13 @@
 // What the room may tell the assistant about its slides, by name: start, next, back, go to slide N, start this slide
 // again, pause, carry on, stop presenting. A closed list of phrases, read the way the leave rule reads "please leave"
 // (saidAfterName in src/brain/attention.ts): the name comes first, and the command is the whole rest of its sentence,
-// with only "please", "thanks" or "now" after it. So "Next slide, Alex.", "Alex stopped at slide four.", "I asked Alex
-// to go back.", "Alex, wait until Sarah joins." and "Alex, next slide, and what does SSO cost?" are not commands: they
-// go to the attention rules as any other line. In a window the assistant opened ("Shall I carry on?"), a line is also
-// read without the name. "Alex, stop." stays today's cancel, which the session checks first.
+// with only "please", "thanks" or "now" after it. Fillers don't count, wherever they are, as the leave rule skips them
+// ("Alex, uh, start the presentation."), and when only fillers or lead words follow the name before a full stop, the
+// next sentence is read too ("Alex, um. Start the presentation."). So "Next slide, Alex.", "Alex stopped at slide
+// four.", "I asked Alex to go back.", "Alex, wait until Sarah joins.", "Alex, next slide, and what does SSO cost?" and
+// "What do you think, Alex? Um. Next slide." (see readOn) are not commands: they go to the attention rules as any
+// other line. In a window the assistant opened ("Shall I carry on?"), a line is also read without the name. "Alex,
+// stop." stays today's cancel, which the session checks first.
 //
 // windowReply reads the answer to the assistant's own questions in a window. "Shall I carry on?" takes a closed list of
 // yes and no. "Can everyone see my slides?" is answered in sentences ("Yes, we can see them.", "I don't see anything.",
@@ -14,7 +17,7 @@
 //
 // Only in a meeting with slides: the session runs the commands after the leave and cancel checks and before attention,
 // so "please leave" always wins, and a meeting without slides reads every line exactly as before.
-import { makeAttention } from '../brain/attention.ts'
+import { type ReadOn, makeAttention } from '../brain/attention.ts'
 import { type AgentName, identity } from '../identity.ts'
 
 export type SlideCommand =
@@ -32,7 +35,10 @@ const NUMBER_WORDS: Record<string, number> = {
 const NUMBER = `(\\d{1,3}|${Object.keys(NUMBER_WORDS).filter(w => w !== 'first').join('|')})`
 
 // Before the command: polite words, and "can you". After it: "please", "thanks" or "now", and the end of the sentence.
-const LEAD = String.raw`^[,.:;!?\s\-–—]*(?:(?:please|ok|okay|so|now|right)[,\s]+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?`
+// A lead word may end a sentence of its own ("Alex, okay. Start the presentation.": see readOn below). "Oh", "well" and
+// "actually" are words, not the sounds of FILLER below: like "okay" and "so", they are taken only before the command.
+const LEAD_WORDS = ['please', 'ok', 'okay', 'so', 'now', 'right', 'oh', 'well', 'actually']
+const LEAD = String.raw`^[,.:;!?\s\-–—]*(?:(?:${LEAD_WORDS.join('|')})[,.\s]+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?`
 const TAIL = String.raw`(?:[,\s]+(?:please|now|thanks|thank\s+you))*\s*[.!?]*\s*$`
 const THE = String.raw`(?:the\s+|your\s+|my\s+)?`
 const SLIDE_WORD = String.raw`(?:slide|page)`
@@ -131,10 +137,34 @@ const RULES: readonly [CommandKind, RegExp][] = [
 
 const COMPILED = RULES.map(([kind, re]) => [kind, new RegExp(`${LEAD}(?:${re.source})${TAIL}`, 'i')] as const)
 
+// The sounds of someone thinking, as the attention rules know them (FILLER in src/brain/attention.ts): um, uh, er, erm,
+// hmm and ah, drawn out or not. None carries meaning in a command, so they are dropped wherever they are, with the
+// commas, dashes and dots around them: "Alex, uh, start the presentation.", "Alex, start the, um, presentation.",
+// "Alex, go to slide, er, five.", "Alex, next slide, um, please." A word joined to them stays whole ("uh-huh"). A run
+// of dots ("...", or "…") is taken whole, so that a long one with no filler after it costs no more than a short one.
+const FILLER = String.raw`(?:u+h*m+|u+h+|e+r+m*|h+m+|a+h+)`
+const SOFT = String.raw`(?:[\s,;:\-–—]|\.{2,}(?!\.))`
+const FILLERS = new RegExp(String.raw`${SOFT}*(?<![\p{L}\p{N}'’\-])${FILLER}(?![\p{L}\p{N}'’\-])${SOFT}*`, 'giu')
+
+/** The words to match, without fillers. */
+function commandWords(said: string): string {
+  // Accents are no part of these phrases, and curly apostrophes are written as Flux writes them. In NFKC "…" is "...".
+  return said.normalize('NFKC').replace(FILLERS, ' ')
+}
+
+// Nothing yet: what follows the name is only fillers, lead words, commas and full stops. Then the next sentence is read
+// too: "Alex, um. Start the presentation.", "Alex, okay. Next slide." (saidAfterName's readOn). Not past a question
+// mark or an exclamation mark after a filler or a lead word: "Alex, okay? Next slide." and "Alex, um? Next slide." stay
+// a question to it. The name's own mark, right after it, is read as a full stop when it asks nothing: an exclamation
+// mark ("Hello, Alex! Um. Start the presentation."), or a question mark when only openers come before the name, so
+// that it only calls it ("Alex? Um. Next slide.", as "Alex? Next slide.", and "Okay, Alex? Um. Next slide."). After
+// other words, the question mark ends a question to it, which is answered: "What do you think, Alex? Okay. Next slide."
+const NOTHING_YET = new RegExp(String.raw`^(?:[\s,.:;\-–—]|\b(?:${LEAD_WORDS.join('|')})\b)*$`, 'i')
+const readOn: ReadOn = (said, first) => NOTHING_YET.test(commandWords(said.replace(first ? /^\s*[?!]+/ : /^\s*!+/, '')))
+
 /** A command in words said to the assistant (after its name, or the whole line in a window), or null. */
 function readCommand(said: string): SlideCommand | null {
-  // Accents are no part of these phrases, and curly apostrophes are written as Flux writes them.
-  const plain = said.normalize('NFKC')
+  const plain = commandWords(said)
   for (const [kind, re] of COMPILED) {
     const m = re.exec(plain)
     if (!m) continue
@@ -257,7 +287,7 @@ export function makeSlideCommands(agent: AgentName): SlideCommands {
   const seeLine = (plain: string) => plain.replace(/[‘’]/g, "'").replace(lead, '')
   return {
     command(text, opts = {}) {
-      for (const said of saidAfterName(text)) {
+      for (const said of saidAfterName(text, readOn)) {
         const command = readCommand(said)
         if (command) return command
       }

@@ -928,6 +928,9 @@ export class MeetingSession {
       this.slidesWindow = false
       this.calledDuringConsent = this.greeting !== null
     }
+    // Said to Alex by name, though nothing is asked ("Thanks, Alex.", "Alex?"): in questions after the last slide, the
+    // slides stay up, as they do for a question (hold, below).
+    if (!filler && (how === 'called' || how === 'nothing_asked')) this.presenter?.addressed()
     // Not for Alex: with its verdict.
     if (!addressed) return void verdict(filler ? 'filler' : how)
     // For Alex: its verdict follows what comes of it, to the end of the turn.

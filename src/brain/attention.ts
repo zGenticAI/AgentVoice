@@ -46,10 +46,15 @@
 //   "who else?" or "can we start?" counts only as the whole question: "Thanks Alex, can we start invoicing in
 //   March?", "Thanks Alex, who else uses this product?" and "Alex? Who's next on the agenda?" are for Alex.
 // - When the name opens a sentence that asks nothing, the address carries into the next sentence if that one is a
-//   question or a request: "Alex, quick question. How much is it?", "Alex, Sarah thinks March. Do you agree?".
-//   Not after a greeting, thanks or praise ("Thanks Alex. Did everyone get the deck?"), nor once Alex is told to
-//   wait or never mind, or is put off ("Alex, hold on. Go ahead, Sarah.", "Alex, no. What do you think, Sarah?"),
-//   nor when the next sentence is for someone else or the room ("Can we start without her?").
+//   question or a request: "Alex, quick question. How much is it?", "Alex, Sarah thinks March. Do you agree?". So
+//   it does after a hello or an apology, which open an exchange: "Hi, Alex. Can you tell me about pricing?", "Sorry,
+//   Alex. Can you repeat that?". Not after thanks, praise, "yes" or a goodbye ("Thanks Alex. Did everyone get the
+//   deck?"), nor once Alex is told to wait or never mind, or is put off ("Alex, hold on. Go ahead, Sarah.", "Alex,
+//   no. What do you think, Sarah?"), nor when the next sentence is for someone else or the room ("Hi Alex. Sarah,
+//   can you share your screen?", "Hi Alex. Can we start?", "Can we start without her?"). After a hello, a word on
+//   its own is the next speaker called on, as in one sentence ("Hi Alex. Sarah?", "Hi Alex, Sarah?"), but a question
+//   word ("Hi Alex. Why?"). The cost: after a hello, a question meant for the room that isn't one of the room's
+//   questions above is answered ("Hi Alex. Is the API ready?").
 // - A line that only calls Alex ("Alex?", "Hey Alex.", "Okay, Alex.") or only announces a question ("Alex, quick
 //   question.", "Alex, I have two questions.", "Alex, I wanted to ask about pricing.", "Alex, sorry.") is a call:
 //   Alex says nothing, but the next thing said goes to it. After thanks or praise an announcement is the host moving
@@ -79,9 +84,10 @@
 //   marks the name: "cheers alex what do you think sarah" is answered.
 // - Carrying the address into the next sentence needs the full stop that ends the first one, so unpunctuated
 //   "alex sarah thinks march do you agree" is missed.
-// - After a thanks or a greeting, the next sentence is not carried: "Thanks Alex. Can you also check the budget?"
-//   is missed. "Thanks Alex, can you also check the budget?", in one sentence, is answered. Nor after "Alex,
-//   wait.": "Alex, wait. What did you say about pricing?" is missed; "Alex, wait, what did you ...?" is answered.
+// - After thanks, praise, "yes" or a goodbye, the next sentence is not carried: "Thanks Alex. Can you also check the
+//   budget?" is missed. "Thanks Alex, can you also check the budget?", in one sentence, is answered. Nor after
+//   "Alex, wait.": "Alex, wait. What did you say about pricing?" is missed; "Alex, wait, what did you ...?" is
+//   answered. (After a hello it is carried: see the rules above.)
 // - Unpunctuated, a new question after a stop word is found only where the stop clearly ends ("alex forget that
 //   whats the launch date", "alex enough about pricing whats the timeline"), so "alex no need to check with sam
 //   whats the launch date" is missed. And the new question has to start like one (a question word, "is it", "can
@@ -864,11 +870,17 @@ function auxiliaryAsks(words: Word[], at: number, leaveRule: boolean): boolean {
   return false
 }
 
-/** True when the next sentence carries on an address to Alex: a question or request, not for anyone else. */
-function carriesInto(sentence: Word[]): boolean {
+/**
+ * True when the next sentence carries on an address to Alex: a question or request, not for anyone else. `greeted`:
+ * the name came with a hello or an apology ("Hi Alex."). Then a word on its own is the next speaker called on ("Hi
+ * Alex. Sarah?"), as it is in one sentence ("Hi Alex, Sarah?", forSomeoneElse()): starting the sentence, a name can't
+ * be told from a thing ("Pricing?"), so any one word is, but a question word or "anything" ("Hi Alex. Why?").
+ */
+function carriesInto(sentence: Word[], greeted = false): boolean {
   const o = opening(sentence)
   const said = sentence.slice(o.end)
   if (o.greets || !asks(said, endsOnMark(sentence), true, true)) return false
+  if (greeted && said.length === 1 && !QUESTION_WORDS.has(said[0].text) && !ANY.has(said[0].text)) return false
   // Without a question mark, only a clear request carries: "Alex, one more thing. Tell us about security."
   const [first, second] = said.map(w => w.text)
   const toYou = (AUXILIARIES.has(first) || MODALS.has(first)) && second === 'you'
@@ -879,6 +891,8 @@ interface Use {
   how: 'asked' | 'called' | 'nothing_asked' | 'mentioned'
   /** The address can carry into the next sentence: "Alex, quick question. How much is it?". */
   carries: boolean
+  /** With a hello or an apology: what carries into the next sentence is read as after one (see carriesInto()). */
+  greets?: boolean
   /** The last word this use took in: the name said again right after it ("Alex? Alex?") needn't be looked at again. */
   through?: number
 }
@@ -940,6 +954,8 @@ function nameUse(sentence: Word[], at: number): Use {
     const post = opening(rest)
     const said = rest.slice(post.end)
     const greets = lead.greets || post.greets
+    // Thanks, praise, "yes" or a goodbye: a greeting that is not a hello.
+    const acknowledges = lead.acknowledges || post.acknowledges
     const announces = lead.announces || post.announces
     // After a greeting, or in a new sentence ("Hey Alex. Did everyone get the deck?"), a question to the room isn't Alex's.
     if (asks(said, question, true, greets || /[.!?]/.test(name.after), greets)) return { how: 'asked', carries: false }
@@ -949,15 +965,18 @@ function nameUse(sentence: Word[], at: number): Use {
     // After thanks or praise, "Thanks Alex, next question." is the host moving on, not a call. "Thanks Alex, I have
     // another question." still is, and so is an announcement said to Alex before the name: "Great, one more
     // question, Alex.".
-    const movingOn = (lead.acknowledges || post.acknowledges) && post.announces && !post.ownQuestion
+    const movingOn = acknowledges && post.announces && !post.ownQuestion
     const called = said.length === 0 && !movingOn && (announces || (post.apologises && !greets))
     // Otherwise the address carries on only when the name was clearly said to Alex ("Alex, Sarah thinks March."),
-    // not after "Alex just answered that." or a greeting, a compliment or "stop", nor once Alex is told to wait
-    // or is put off ("Alex, hold on.", "Alex, we'll come back to you.", "Alex, no."): the floor goes elsewhere.
+    // not after "Alex just answered that." or thanks, praise, "yes", a goodbye or "stop", nor once Alex is told to
+    // wait or is put off ("Alex, hold on.", "Alex, we'll come back to you.", "Alex, no."): the floor goes elsewhere.
+    // A hello or an apology still carries ("Hi, Alex. Can you tell me about pricing?", "Sorry, Alex. Can you repeat
+    // that?"): it opens an exchange, and the question after it is usually for Alex. carriesInto() still refuses a
+    // next sentence that is for the room or someone else ("Hi Alex. Can we start?").
     const line = textOf(said)
     const quiet = STOP.test(line) || PLEASANTRY.test(line) || HOLD.test(line) || PUT_OFF.test(line) || POLITE_HOLD.test(line) ||
       lead.holds || post.holds
-    return { how: called ? 'called' : 'nothing_asked', carries: called || (setOff && !greets && !quiet), through: at + post.end }
+    return { how: called ? 'called' : 'nothing_asked', carries: called || (setOff && !acknowledges && !quiet), greets: greets && !called, through: at + post.end }
   }
   // Otherwise the name has to be set off by a comma before it and punctuation after it, or end the sentence:
   // "So what do you think, Alex?", "Before we start, Alex, introduce yourself.". In "By the way, Alex is recording
@@ -996,7 +1015,7 @@ function attentionOf(text: string, sets: NameSets): Attention {
       const use = nameUse(sentence, i)
       if (use.how === 'asked') return 'asked'
       // "Alex, quick question. How much is it?": the question is in the next sentence.
-      if (use.carries && next && carriesInto(next)) return 'asked'
+      if (use.carries && next && carriesInto(next, use.greets)) return 'asked'
       if (use.how === 'called') calledLast = true
       if (use.how !== 'mentioned') quiet = 'nothing_asked'
       i = Math.max(i, use.through ?? i)
@@ -1032,8 +1051,13 @@ function spokenTo(sentence: Word[], at: number): boolean {
  * said to it, up to the end of the sentence, or through the next sentence when the name ends its own ("Thanks,
  * Alex. Please leave."). Leaving deletes the meeting record, so only the exact name and the mishearings that count
  * for leaving ("Ionics", as the first word) do, not the spellings Alec, Alexa or Aleks, which are also real names.
+ *
+ * readOn, for the slide commands (src/slides/commands.ts) only: while it is true of what was said so far, the next
+ * sentence is read too ("Alex, um. Start the presentation."). Its `first` is true when only openers come before the
+ * name in its sentence ("Alex?", "Okay, Alex?", "Hello, Alex!"), as spokenTo() reads them, and false when other words
+ * do ("What do you think, Alex?"). The leave rule passes none, so it reads as it always did.
  */
-function saidAfterNameOf(text: string, sets: NameSets): string[] {
+function saidAfterNameOf(text: string, sets: NameSets, readOn?: ReadOn): string[] {
   const sentences = sentencesOf(wordsOf(text, sets))
   const said: string[] = []
   const words = (sentence: Word[] = []) => sentence.map(w => w.raw + w.after).join('')
@@ -1042,7 +1066,11 @@ function saidAfterNameOf(text: string, sets: NameSets): string[] {
       if (!sets.leave.has(foldWord(word.text))) return
       if (!word.name || !spokenTo(sentence, i)) return
       const last = i === sentence.length - 1
-      said.push(word.after + words(sentence.slice(i + 1)) + (last ? words(sentences[s + 1]) : ''))
+      let next = last ? s + 2 : s + 1
+      let after = word.after + words(sentence.slice(i + 1)) + (last ? words(sentences[s + 1]) : '')
+      const first = readOn !== undefined && opening(sentence.slice(0, i), true, true).end === i
+      while (readOn && next < sentences.length && readOn(after, first)) after += words(sentences[next++])
+      said.push(after)
     })
   })
   return said
@@ -1087,12 +1115,21 @@ function wordsThatCountOf(text: string, sets: NameSets, partial: boolean): numbe
   return count
 }
 
+/**
+ * For the slide commands: whether to read on into the next sentence, given what was said after the name so far, and
+ * whether only openers came before the name in its sentence (see saidAfterNameOf()).
+ */
+export type ReadOn = (said: string, first: boolean) => boolean
+
 /** The attention rules for one assistant's names. */
 export interface AttentionRules {
   /** Whether a line is for the assistant, and if not, why not. */
   attention(text: string): Attention
-  /** For the leave rule (text.ts): what was said to the assistant right after its name, each time it was said to it. */
-  saidAfterName(text: string): string[]
+  /**
+   * For the leave rule (text.ts): what was said to the assistant right after its name, each time it was said to it.
+   * readOn: for the slide commands, read on into the next sentence while it is true (see saidAfterNameOf()).
+   */
+  saidAfterName(text: string, readOn?: ReadOn): string[]
   /** For talking over the assistant (session.ts): how many words count as taking the floor (see wordsThatCountOf()). */
   wordsThatCount(text: string, partial?: boolean): number
 }
@@ -1102,7 +1139,7 @@ export function makeAttention(agent: AgentName): AttentionRules {
   const sets = nameSets(agent)
   return {
     attention: text => attentionOf(text, sets),
-    saidAfterName: text => saidAfterNameOf(text, sets),
+    saidAfterName: (text, readOn) => saidAfterNameOf(text, sets, readOn),
     wordsThatCount: (text, partial = false) => wordsThatCountOf(text, sets, partial),
   }
 }

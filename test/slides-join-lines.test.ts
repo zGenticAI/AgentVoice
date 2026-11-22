@@ -101,6 +101,7 @@ test('the fixed lines of a meeting with slides: as written, named for another as
       shallCarryOn: 'Shall I carry on?',
       carryOn: "I'll carry on.",
       stopped: "Sure, I'll stop sharing my slides.",
+      idleStop: 'I\'ll stop sharing my slides for now. Say "Alex, start the presentation" to bring them back.',
       stoppedForOwner: "I'll stop sharing my slides now.",
       shareFailed: "I couldn't share my slides.",
       notLoading: "My slides didn't load, so I've stopped sharing them.",
@@ -121,7 +122,7 @@ test('the fixed lines of a meeting with slides: as written, named for another as
     microsoft_teams:
       'It looks like I can\'t share my screen here. The organizer can make me a presenter from the participant list; then say "Alex, start the presentation" again.',
   })
-  assert.equal(SLIDES_FIXED_LINES.length, 19)
+  assert.equal(SLIDES_FIXED_LINES.length, 20)
   assert.equal(new Set(SLIDES_FIXED_LINES).size, SLIDES_FIXED_LINES.length)
   for (const line of SLIDES_FIXED_LINES) {
     assert.doesNotMatch(line, /Back to|Here's slide|Moving to slide|don't have slide/, 'said live: they would put deck content on disk')
@@ -131,6 +132,9 @@ test('the fixed lines of a meeting with slides: as written, named for another as
   for (const line of slidesFixedLines(nova)) assert.doesNotMatch(line, /Alex|Sam|Acme/, line)
   assert.match(nova.join, /^Hello, I'm Nova, Priya's AI assistant\. .*say "Nova, start the presentation"/)
   assert.equal(nova.waitForOwner, "I'll wait for Priya on that.")
+  // The line before the idle stop in questions teaches the phrase that starts the slides, with the name: it is one.
+  assert.equal(nova.idleStop, 'I\'ll stop sharing my slides for now. Say "Nova, start the presentation" to bring them back.')
+  assert.equal(slideCommand(/"([^"]+)"/.exec(SLIDES_LINES.idleStop)![1])?.kind, 'start')
   assert.match(joinChatMessage(PRIYA, 14, { slides: true }), /^Nova \(Priya's AI assistant\) has joined\. .*slides Priya prepared.*"Nova, pause".*"Nova, please leave" or remove me\.$/)
   // The consent line's leave phrase is the same as today's.
   assert.ok(nova.join.endsWith(consentLines(PRIYA).join.slice(consentLines(PRIYA).join.indexOf('If you'))))

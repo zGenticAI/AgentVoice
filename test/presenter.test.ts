@@ -188,6 +188,8 @@ interface Options {
   paced?: Set<string>
   /** Recall's chat post: at once unless given. */
   chat?: (text: string) => Promise<void>
+  /** How long the window after "Alex?" stays open (ms): the session's own unless given. */
+  calledWindowMs?: number
 }
 
 function start(opts: Options = {}) {
@@ -201,6 +203,8 @@ function start(opts: Options = {}) {
   const asked: any[] = []
   const minutes: any[] = []
   const spoken: string[] = []
+  /** When each spoken line started to go out, by its place in spoken. */
+  const spokenAt: number[] = []
   const notified: ToSession[] = []
   const events: PresentationEvent[] = []
   const slides: SessionSlides | undefined =
@@ -224,6 +228,7 @@ function start(opts: Options = {}) {
     flux: () => flux as any,
     speak: async function* (text: string) {
       spoken.push(text)
+      spokenAt.push(Date.now())
       if (opts.failing?.has(text)) throw new Error('voice failed')
       if (opts.latency) await wait(opts.latency)
       if (opts.delay?.[text]) await wait(opts.delay[text])
@@ -252,6 +257,7 @@ function start(opts: Options = {}) {
     leaveDelayMs: 0,
     pauseMaxMs: 60_000,
     reconnectMs: 60_000,
+    ...(opts.calledWindowMs === undefined ? {} : { calledWindowMs: opts.calledWindowMs }),
     slides,
   })
   session.presenter?.onEvent(e => void events.push(e))
@@ -265,7 +271,7 @@ function start(opts: Options = {}) {
   const after = (line: string) => spoken.slice(spoken.lastIndexOf(line) + 1)
   /** The line said after `line`, once both have been said. */
   const next = (line: string): string | undefined => (spoken.includes(line) ? after(line)[0] : undefined)
-  return { ws, flux, surface, session, answered, inputs, asked, minutes, spoken, notified, events, said, alex, markers, after, next, presenter: session.presenter! }
+  return { ws, flux, surface, session, answered, inputs, asked, minutes, spoken, spokenAt, notified, events, said, alex, markers, after, next, presenter: session.presenter! }
 }
 
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -379,6 +385,37 @@ test('a share Recall refused, or that never loaded: the line, back to ready, and
     assert.ok(!s.spoken.includes(SLIDES_LINES.canSee))
     done(s)
   }
+})
+
+test('a filler after the name keeps the start: the slide command verdict, the share, and no answer', async () => {
+  for (const line of ['Alex, uh, start the presentation.', 'Alex, um. Start the presentation.', 'Hello, Alex. Um, start the presentation.']) {
+    const s = start()
+    await until(() => s.session.consentDone, 'the consent line')
+    assert.equal(s.presenter.current, 'ready')
+    s.said(line)
+    await until(() => s.presenter.current === 'checking', `${line}: checking`)
+    assert.deepEqual(s.surface.calls, ['start 0'], line)
+    const why = s.session.whyNotAnswered(5).lines!
+    assert.deepEqual(why.map(l => [l.line, l.read, l.did]), [[line, 'slides', 'slide_command']], line)
+    assert.equal(s.answered.length, 0, `${line}: no brain call`)
+    done(s)
+  }
+})
+
+test('before the presentation starts, the brain is told it has not; once it has, not', async () => {
+  const s = start({ answers: [[{ kind: 'say', text: 'It is the Q4 plan.' }], [{ kind: 'say', text: 'It is per user.' }]] })
+  await until(() => s.session.consentDone, 'the consent line')
+  s.said('Alex, what is this meeting about?')
+  await until(() => s.inputs.length === 1)
+  assert.equal(s.inputs[0].slides.notStarted, true)
+  assert.equal(s.inputs[0].slides.current, null)
+  await until(() => s.alex().includes('It is the Q4 plan.'))
+  s.said('Alex, start the presentation.')
+  await until(() => s.presenter.current === 'narrating', 'narration')
+  s.said('Alex, is that per month?')
+  await until(() => s.inputs.length === 2)
+  assert.equal(s.inputs[1].slides.notStarted, false)
+  done(s)
 })
 
 /** The consent line said, then the room's start: until the share is up and the presentation is checking. */
@@ -1285,27 +1322,310 @@ test("the owner's notes and lines read plainly: no doubled refusal or full stop,
   done(qa)
 })
 
-test('after the last slide, questions; two quiet minutes (short here) stop the share quietly, with a marker', async () => {
-  const s = start()
+/** The deck presented to its last slide: questions now, with it on screen. When questions began. */
+async function questions(s: ReturnType<typeof start>): Promise<number> {
   await narrating(s)
   await until(() => s.presenter.current === 'qa', 'questions', 5000)
-  const lines = s.spoken.length
-  await until(() => s.surface.calls.includes('stop'), 'the quiet stop')
-  assert.equal(s.spoken.length, lines, 'quiet: nothing said')
+  return Date.now()
+}
+
+/** What the share was asked to do, with the lines said before each call. */
+function stopsAfter(s: ReturnType<typeof start>): { said: string[]; at: number }[] {
+  const stops: { said: string[]; at: number }[] = []
+  const stop = s.surface.stop.bind(s.surface)
+  s.surface.stop = () => {
+    stops.push({ said: [...s.spoken], at: Date.now() })
+    return stop()
+  }
+  return stops
+}
+
+test('after the last slide, questions; two minutes (short here) with nothing said to it: once the room is quiet, its line, once, then the share stops', async () => {
+  const s = start({ voice: { [SLIDES_LINES.idleStop]: 200 } })
+  const stops = stopsAfter(s)
+  await questions(s)
+  // The room talks among itself past the two minutes: nothing is said over it, and the share stays up.
+  s.flux.turn('StartOfTurn', '')
+  await wait(FAST.qaIdleMs! + 200)
+  assert.ok(!s.spoken.includes(SLIDES_LINES.idleStop), 'not while someone is talking')
+  assert.equal(stops.length, 0)
+  s.flux.turn('EndOfTurn', "Let's give the others a minute to think.")
+  const quietFrom = Date.now()
+  await until(() => s.surface.calls.includes('stop'), 'the idle stop')
+  const at = s.spokenAt[s.spoken.indexOf(SLIDES_LINES.idleStop)]
+  assert.ok(at - quietFrom >= FAST.talkQuietMs! - 5, `said once the room was quiet (${at - quietFrom} ms)`)
+  assert.equal(stops.length, 1)
+  assert.equal(stops[0].said.at(-1), SLIDES_LINES.idleStop, 'the line, then the stop')
+  assert.ok(stops[0].at - at >= 200 - 10, `the share stops once the line has played (${stops[0].at - at} ms)`)
+  assert.equal(SLIDES_LINES.idleStop, 'I\'ll stop sharing my slides for now. Say "Alex, start the presentation" to bring them back.')
+  await wait(FAST.qaIdleMs! + 100)
+  assert.equal(s.spoken.filter(l => l === SLIDES_LINES.idleStop).length, 1, 'said once')
   assert.equal(s.presenter.current, 'stopped')
   assert.ok(s.markers().includes('stopped sharing the slides'))
   assert.deepEqual(s.presenter.summary(), { reached: 5, of: 4, finished: true })
+  assert.deepEqual(s.answered, [])
+  // The phrase it teaches brings the slides back, on the last slide, for questions.
+  s.said('Alex, start the presentation.')
+  await until(() => s.presenter.current === 'qa' && s.surface.calls.filter(c => c.startsWith('start')).length === 2, 'back, for questions')
+  // And the two minutes run again from there: the stop that ended is not still under way.
+  const back = Date.now()
+  await until(() => s.surface.calls.filter(c => c === 'stop').length === 2, 'the idle stop again, after the restart')
+  assert.ok(Date.now() - back >= FAST.qaIdleMs! - 10, `${Date.now() - back} ms after it was back in questions`)
+  assert.equal(s.spoken.filter(l => l === SLIDES_LINES.idleStop).length, 2, 'its line again, before that stop')
   done(s)
 })
 
-test('after the last slide, the quiet stop needs no hearing: with speech recognition lost, the share still stops', async () => {
+test('in questions, a line said to Alex by name keeps the slides up: "Thanks, Alex." every 200 ms, and it stops qaIdleMs after the last', async () => {
   const s = start()
-  await narrating(s)
-  await until(() => s.presenter.current === 'qa', 'questions', 5000)
-  s.flux.emit('lost', 'test')
-  await until(() => s.surface.calls.includes('stop'), 'the quiet stop', 1500)
-  assert.equal(s.presenter.current, 'stopped')
+  await questions(s)
+  for (let n = 0; n < 5; n++) {
+    await wait(200)
+    s.said('Thanks, Alex.')
+  }
+  const last = Date.now()
+  assert.ok(!s.surface.calls.includes('stop'), 'kept up a second into questions, over three times qaIdleMs')
+  assert.ok(!s.spoken.includes(SLIDES_LINES.idleStop))
+  await until(() => s.surface.calls.includes('stop'), 'the idle stop')
+  const after = Date.now() - last
+  assert.ok(after >= FAST.qaIdleMs! - 10 && after < FAST.qaIdleMs! + 400, `${after} ms after the last line said to it`)
+  assert.ok(s.spoken.includes(SLIDES_LINES.idleStop))
+  const why = s.session.whyNotAnswered(10).lines!.filter(l => l.line === 'Thanks, Alex.')
+  assert.equal(why.length, 5)
+  assert.ok(why.every(l => l.read === 'nothing_asked' && l.did === 'nothing'), 'still read as asking nothing, and not answered')
+  assert.deepEqual(s.answered, [])
   done(s)
+})
+
+test('in questions, a call ("Alex?") or "Alex, never mind." keeps the slides up too; talk not to Alex does not', async () => {
+  for (const line of ['Alex?', 'Alex, never mind.']) {
+    // Each call's window closes before the next: each is a call, not the reply to one.
+    const s = start({ calledWindowMs: 50 })
+    await questions(s)
+    for (let n = 0; n < 3; n++) {
+      await wait(200)
+      s.said(line)
+    }
+    assert.ok(!s.surface.calls.includes('stop'), `${line}: kept up`)
+    await until(() => s.surface.calls.includes('stop'), `${line}: the idle stop`)
+    assert.deepEqual(s.answered, [], line)
+    done(s)
+  }
+  // Said in the room, not to Alex: the share stops qaIdleMs after questions began, whatever the room says meanwhile.
+  const s = start()
+  const began = await questions(s)
+  const talk = setInterval(() => s.said('Thanks, everyone, good questions so far.'), 150)
+  try {
+    await until(() => s.surface.calls.includes('stop'), 'the idle stop')
+    const after = Date.now() - began
+    assert.ok(after < FAST.qaIdleMs! + 300, `${after} ms after questions began`)
+    assert.ok(s.spoken.includes(SLIDES_LINES.idleStop))
+  } finally {
+    clearInterval(talk)
+  }
+  done(s)
+})
+
+test('in questions, the idle line waits for what Alex is still playing and for a window still open, as it waits for quiet', async () => {
+  // An answer whose turn has ended (all of it went out) but which the page still plays.
+  const answer = 'The Business plan is twenty-nine dollars a user, billed yearly.'
+  const s = start({ answers: [[{ kind: 'say', text: answer }]], voice: { [answer]: 600 } })
+  await questions(s)
+  s.said('Alex, what does the Business plan cost?')
+  await until(() => s.surface.calls.includes('stop'), 'the idle stop')
+  const played = s.spokenAt[s.spoken.indexOf(answer)] + 600
+  assert.ok(s.spokenAt[s.spoken.indexOf(SLIDES_LINES.idleStop)] >= played - 10, 'not over the end of the answer')
+  done(s)
+  // "Alex?" opens a window for the next line: the stop waits for it to close.
+  const call = start({ calledWindowMs: 600 })
+  await questions(call)
+  call.said('Alex?')
+  const called = Date.now()
+  await until(() => call.surface.calls.includes('stop'), 'the idle stop')
+  assert.ok(call.spokenAt[call.spoken.indexOf(SLIDES_LINES.idleStop)] - called >= 600 - 10, 'not while the window is open')
+  done(call)
+})
+
+test('the idle stop is told apart: its log line and its stopped note give the reason, unlike a room stop and an owner stop', async () => {
+  const logs: string[] = []
+  const log = console.log
+  console.log = (...args: unknown[]) => void logs.push(args.map(String).join(' '))
+  const notes: Record<string, string> = {}
+  try {
+    const cases: [string, (s: ReturnType<typeof start>) => unknown][] = [
+      ['idle', () => {}],
+      ['room', s => s.said('Alex, stop presenting.')],
+      ['owner', s => s.presenter.owner('stop')],
+    ]
+    for (const [why, stop] of cases) {
+      const s = start()
+      await questions(s)
+      stop(s)
+      await until(() => s.events.some(e => e.event === 'stopped'), `${why}: stopped`)
+      const event = s.events.find(e => e.event === 'stopped')!
+      notes[why] = event.note
+      // The owner's session gets the same note.
+      const told = s.notified.find(n => n.type === 'presentation' && n.event === 'stopped') as Extract<ToSession, { type: 'presentation' }>
+      assert.equal(told.note, event.note, why)
+      const bot = `bot ${s.session.opts.botId}:`
+      const line = logs.find(l => l.includes(bot) && l.includes('stopped (stopped)'))
+      assert.equal(line, `[slides] ${bot} stopped (stopped): ${event.note}`, `${why}: the log line gives the reason`)
+      // Notes are fixed text: the log has no slide's title or sentence.
+      for (const l of logs.filter(l => l.includes(bot))) assert.doesNotMatch(l, /Welcome|Pricing|Security|Next steps|twelve dollars|ship in March/, l)
+      assert.equal(s.spoken.includes(SLIDES_LINES.idleStop), why === 'idle', `${why}: the idle line only for the idle stop`)
+      done(s)
+    }
+  } finally {
+    console.log = log
+  }
+  assert.equal(new Set(Object.values(notes)).size, 3, JSON.stringify(notes))
+  assert.equal(
+    notes.idle,
+    'Nothing was said to Alex by name for 300 milliseconds in questions after the last slide, so Alex said how to bring the slides back and stopped sharing them. To share them again: slides_control start, or "Alex, start the presentation" in the meeting.',
+  )
+  assert.equal(notes.room, 'Someone in the meeting asked Alex to stop presenting, so the slides were stopped; the bookmark is kept.')
+  assert.equal(notes.owner, 'The owner stopped the slides; the bookmark is kept.')
+})
+
+test('a line said to Alex while the idle stop waits for quiet, or over its line, calls it off; so does other talk over the line, which the room may not have heard', async () => {
+  const voice = { [SLIDES_LINES.idleStop]: 1000 }
+  // Waiting for the room to be quiet.
+  const waiting = start()
+  await questions(waiting)
+  waiting.flux.turn('StartOfTurn', '')
+  await wait(FAST.qaIdleMs! + 100)
+  waiting.flux.turn('EndOfTurn', 'Thanks, Alex.')
+  await wait(FAST.qaIdleMs! - 100)
+  assert.ok(!waiting.spoken.includes(SLIDES_LINES.idleStop), 'called off before its line')
+  assert.ok(!waiting.surface.calls.includes('stop'))
+  await until(() => waiting.surface.calls.includes('stop'), 'stopped after two more minutes')
+  done(waiting)
+  // Over its line, by name: the line stops, the share stays up, and the clock starts again.
+  const over = start({ voice })
+  await questions(over)
+  await until(() => over.spoken.includes(SLIDES_LINES.idleStop), 'the line')
+  await wait(200)
+  over.flux.turn('StartOfTurn', '')
+  over.flux.turn('EndOfTurn', 'Thanks, Alex.')
+  await wait(FAST.qaIdleMs! - 100)
+  assert.ok(!over.surface.calls.includes('stop'), 'called off over its line')
+  assert.equal(over.presenter.current, 'qa')
+  assert.ok(over.alex().some(l => l.endsWith('(cut off)')), 'the line was stopped')
+  await until(() => over.surface.calls.includes('stop'), 'stopped after two more minutes')
+  assert.equal(over.spoken.filter(l => l === SLIDES_LINES.idleStop).length, 2, 'said again, before that stop')
+  done(over)
+  // Over its line, not to Alex: the line stops as usual. The room may not have heard how to bring the slides back, so
+  // they stay up, and the line is said again after two more minutes; the share stops once it has been heard.
+  for (const when of ['partway through', 'as it begins']) {
+    const begins = when === 'as it begins'
+    const talk = start(begins ? { voice, paced: new Set([SLIDES_LINES.idleStop]) } : { voice })
+    const stops = stopsAfter(talk)
+    await questions(talk)
+    await until(() => talk.spoken.includes(SLIDES_LINES.idleStop), 'the line')
+    if (!begins) await wait(200)
+    talk.flux.turn('StartOfTurn', begins ? 'So about the budget' : '')
+    const cut = Date.now()
+    talk.flux.turn('EndOfTurn', "So about the budget, let's look at it next.")
+    await wait(FAST.qaIdleMs! - 100)
+    assert.equal(stops.length, 0, `${when}: the share stays up`)
+    assert.equal(talk.presenter.current, 'qa', when)
+    assert.ok(!talk.events.some(e => e.event === 'stopped'), `${when}: no stopped note`)
+    if (!begins) assert.ok(talk.alex().some(l => l.endsWith('(cut off)')), 'the line was stopped')
+    else assert.ok(!talk.alex().some(l => l.startsWith("I'll stop sharing")), 'none of the line was heard')
+    await until(() => stops.length > 0, `${when}: stopped after two more minutes`)
+    assert.ok(stops[0].at - cut >= FAST.qaIdleMs!, `${when}: ${stops[0].at - cut} ms after the talk`)
+    assert.equal(stops[0].said.filter(l => l === SLIDES_LINES.idleStop).length, 2, `${when}: said again, and heard, before the stop`)
+    assert.ok(talk.alex().some(l => l === SLIDES_LINES.idleStop), `${when}: heard to its end the second time`)
+    done(talk)
+  }
+  // Talk that starts as the line ends, after the room heard it, is not over it: the share stops once that talk ends,
+  // unless it was said to Alex. A slide command that keeps it in questions ("Alex, next slide." on the last slide) is.
+  for (const line of ["Okay, let's look at the budget next.", 'Alex, next slide.']) {
+    const command = line.startsWith('Alex')
+    const after = start({ voice: { [SLIDES_LINES.idleStop]: 300 } })
+    const stops = stopsAfter(after)
+    await questions(after)
+    await until(() => after.spoken.includes(SLIDES_LINES.idleStop), 'the line')
+    // Someone who starts in the line's last moment (TAIL_MS in the session) lets it finish: the room heard it.
+    await wait(150)
+    after.flux.turn('StartOfTurn', '')
+    await wait(300)
+    assert.equal(stops.length, 0, `${line}: not while they talk`)
+    after.flux.turn('EndOfTurn', line)
+    const ended = Date.now()
+    assert.ok(after.alex().includes(SLIDES_LINES.idleStop), `${line}: the line was heard to its end`)
+    if (!command) {
+      await until(() => stops.length > 0, 'the share stops once that talk ends')
+      assert.ok(stops[0].at - ended < 200, `${line}: at once (${stops[0].at - ended} ms)`)
+    } else {
+      await wait(FAST.qaIdleMs! - 100)
+      assert.equal(stops.length, 0, `${line}: called off`)
+      assert.equal(after.presenter.current, 'qa')
+      assert.deepEqual(after.session.whyNotAnswered(3).lines!.filter(l => l.line === line).map(l => l.did), ['slide_command'])
+      await until(() => stops.length > 0, `${line}: stopped after two more minutes`)
+      assert.equal(stops[0].said.filter(l => l === SLIDES_LINES.idleStop).length, 2)
+    }
+    done(after)
+  }
+})
+
+test('in questions, an idle line whose voice fails is not a stop: the slides stay up, and it is tried again after two more minutes', async () => {
+  const s = start({ failing: new Set([SLIDES_LINES.idleStop]) })
+  const stops = stopsAfter(s)
+  await questions(s)
+  await until(() => s.spoken.filter(l => l === SLIDES_LINES.idleStop).length === 2, 'tried twice', 3000)
+  const [first, second] = s.spokenAt.filter((_, i) => s.spoken[i] === SLIDES_LINES.idleStop)
+  assert.ok(second - first >= FAST.qaIdleMs!, `${second - first} ms between the tries`)
+  assert.equal(stops.length, 0, 'the room was never told how to bring them back, so they stay up')
+  assert.equal(s.presenter.current, 'qa')
+  assert.ok(!s.events.some(e => e.event === 'stopped'))
+  done(s)
+})
+
+test('in questions, no idle stop while it can\'t hear or its page is away: nothing is said, and the two minutes start again once it can', async () => {
+  type S = ReturnType<typeof start>
+  const cases: [string, (s: S) => unknown, (s: S) => unknown][] = [
+    ['hearing lost', s => s.flux.emit('lost', 'test'), s => s.flux.emit('open')],
+    ['the page away', s => s.ws.drop(), s => s.session.attach(new FakeSocket() as any, {})],
+    ['the page away during its line', s => s.ws.drop(), s => s.session.attach(new FakeSocket() as any, {})],
+    ['hearing lost during its line', s => s.flux.emit('lost', 'test'), s => s.flux.emit('open')],
+    // The line heard, and someone who started as it ended still talks: the stop waits for them, and hearing goes.
+    ['hearing lost after its line', s => s.flux.emit('lost', 'test'), s => s.flux.emit('open')],
+  ]
+  for (const [what, lose, back] of cases) {
+    const during = what.endsWith('during its line')
+    const afterLine = what.endsWith('after its line')
+    const s = start(during ? { voice: { [SLIDES_LINES.idleStop]: 500 } } : afterLine ? { voice: { [SLIDES_LINES.idleStop]: 300 } } : {})
+    await questions(s)
+    if (during || afterLine) {
+      await until(() => s.spoken.includes(SLIDES_LINES.idleStop), 'the line')
+      if (afterLine) {
+        await wait(150)
+        s.flux.turn('StartOfTurn', '')
+        await wait(300)
+        assert.ok(s.alex().includes(SLIDES_LINES.idleStop), `${what}: heard to its end`)
+        assert.ok(!s.surface.calls.includes('stop'), `${what}: not while they talk`)
+      } else await wait(100)
+      s.spoken.length = 0
+      s.spokenAt.length = 0
+    }
+    const controls = s.ws.controls.length
+    lose(s)
+    // It never talks on while it can't hear: the line stops at once.
+    if (what === 'hearing lost during its line') {
+      assert.ok(s.ws.controls.slice(controls).some(c => c.type === 'clear'), `${what}: the page is cleared`)
+      await until(() => s.alex().some(l => l.endsWith('(cut off)')), `${what}: the line cut off`)
+    }
+    await wait(FAST.qaIdleMs! * 3)
+    assert.ok(!s.spoken.includes(SLIDES_LINES.idleStop), `${what}: nothing said`)
+    assert.ok(!s.surface.calls.includes('stop'), `${what}: the share stays up`)
+    assert.equal(s.presenter.current, 'qa', what)
+    back(s)
+    const from = Date.now()
+    await until(() => s.surface.calls.includes('stop'), `${what}: the idle stop once it can`)
+    assert.ok(Date.now() - from >= FAST.qaIdleMs! - 10, `${what}: the two minutes start again (${Date.now() - from} ms)`)
+    assert.ok(s.spoken.includes(SLIDES_LINES.idleStop), `${what}: its line first`)
+    done(s)
+  }
 })
 
 test('"please leave" mid-deck: the share closes at once (no stop), then the goodbye; nothing is kept', async () => {
@@ -1537,6 +1857,7 @@ test('a question mid-deck: the brain gets the outline and the slide on screen, a
   s.flux.turn('EndOfTurn', 'Alex, is that per month?')
   await until(() => s.inputs.length === 1)
   const { slides, transcript } = s.inputs[0]
+  assert.equal(slides.notStarted, false)
   assert.deepEqual(
     slides.outline.map((o: any) => [o.page, o.title, o.first, o.onRequest]),
     [[1, 'Welcome', 'Hello everyone.', false], [2, 'Pricing', 'Team is twelve dollars.', false], [4, 'Security', 'Here are the security details.', true], [5, 'Next steps', 'We ship in March.', false]],
