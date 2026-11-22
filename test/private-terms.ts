@@ -19,6 +19,9 @@
 //   your terms (the always-on patterns still apply). Every other line still is, so with "/zorblax/" and
 //   "!Copyright 2026 Zorblax Ltd", that copyright line passes, but "Zorblax Ltd's pricing" and "Copyright 2026
 //   Zorblax Ltd, London" don't.
+// The project's own public names, its npm package and its GitHub repository (PUBLIC_NAMES), pass wherever they are,
+// exactly as written, as a "!" line passes a whole line: your list may well name the company or account they are named
+// after, and every other mention of it is still checked (the always-on patterns check them too).
 // With no list, the check of your terms is skipped, with a note saying how to add one.
 //
 // What is checked: every file git would commit (tracked, or new and not ignored), and its name; a symbolic link's
@@ -108,14 +111,27 @@ export function parseTermList(text: string, source: string): Term[] {
 }
 
 /**
+ * The project's own names, which it publishes on purpose: its npm package and its GitHub repository (owner/name, as
+ * every link to it has it). Your terms are not looked for in them, exactly as written (case included), wherever they
+ * are; every other mention of what they are named after still is. test/private-terms.test.ts checks each is still in
+ * use, and test/package/check-package.ts that the package is named the first.
+ */
+export const PUBLIC_NAMES: readonly string[] = Object.freeze(['@zgentic/agentvoice', 'zGenticAI/AgentVoice'])
+
+/** Text with each of these names, exactly as written, as spaces: what a term is looked for in. */
+function without(text: string, passed: readonly string[]): string {
+  return passed.reduce((rest, name) => rest.replaceAll(name, ' '.repeat(name.length)), text)
+}
+
+/**
  * What the terms find in this line: the first match of each term that matches, in the line as asChecked() gives it,
  * with its invisible characters read as spaces, or with its \uXXXX escapes decoded. Nothing, when the whole line is
- * one the list allows.
+ * one the list allows. `passed` (PUBLIC_NAMES, for your list) are not looked in.
  */
-export function findTerms(line: string, terms: readonly Term[], allowed: readonly string[] = []): string[] {
+export function findTerms(line: string, terms: readonly Term[], allowed: readonly string[] = [], passed: readonly string[] = []): string[] {
   const text = asChecked(line)
   if (allowed.length && allowed.includes(asAllowed(text))) return []
-  const readings = [...new Set([text, spaced(line), asChecked(unescaped(line))])]
+  const readings = [...new Set([text, spaced(line), asChecked(unescaped(line))].map(reading => without(reading, passed)))]
   return terms.flatMap(term => {
     for (const reading of readings) {
       const hit = term.pattern.exec(reading)?.[0]
@@ -316,37 +332,60 @@ export function fileTexts(file: string, root = ROOT, state: GitState = gitState(
 const LINE_MARK = /^[ \t]*(?:\/\/+|#+|\*+|>+|--|;+)?[ \t]*/
 
 /**
+ * Where these terms are in one text of a file (its `where`, as FileText has it): on a line ("file:line "match": the
+ * line"), or across two lines, as a wrapped name is ("file:line "match": across lines"). Lines the list allows are not
+ * checked for the terms, and `passed` are not looked in.
+ */
+export function textOffenders(
+  file: string,
+  { where, text }: FileText,
+  terms: readonly Term[],
+  allowed: readonly string[] = [],
+  passed: readonly string[] = [],
+): string[] {
+  const found: string[] = []
+  const lines = text.split('\n')
+  lines.forEach((line, i) => {
+    for (const hit of findTerms(line, terms, allowed, passed)) found.push(`${file}${where}:${i + 1} "${hit}": ${line.trim().slice(0, 100)}`)
+  })
+  // A binary's runs are one per line, but two runs side by side are not one sentence wrapped.
+  if (where.endsWith('(text in a binary)')) return found
+  // Across lines: a match that still spans a line break once the spaces at its ends are trimmed. Lines counted as
+  // the matches go, from the last one.
+  const whole = lines.map(line => without(asChecked(line), passed).replace(LINE_MARK, '')).join('\n')
+  for (const term of terms) {
+    let at = 0
+    let line = 1
+    for (const match of whole.matchAll(new RegExp(term.pattern.source, `${term.pattern.flags.replace('g', '')}g`))) {
+      const hit = match[0].trim()
+      if (!hit.includes('\n')) continue
+      const start = match.index + match[0].indexOf(hit)
+      for (; at < start; at++) if (whole[at] === '\n') line++
+      found.push(`${file}${where}:${line} "${hit.replace(/\s+/g, ' ')}": across lines`)
+    }
+  }
+  return found
+}
+
+/**
  * Where these terms are in these files: in a file's name ("file (its name) "match""), on a line ("file:line "match":
  * the line"), or across two lines, as a wrapped name is ("file:line "match": across lines"). Lines the list allows are
- * not checked for the terms. `env` is the environment git runs in.
+ * not checked for the terms, and `passed` (PUBLIC_NAMES, for your list) are not looked in. `env` is the environment
+ * git runs in.
  */
-export function offenders(files: readonly string[], terms: readonly Term[], allowed: readonly string[] = [], root = ROOT, env: Env = process.env): string[] {
+export function offenders(
+  files: readonly string[],
+  terms: readonly Term[],
+  allowed: readonly string[] = [],
+  root = ROOT,
+  env: Env = process.env,
+  passed: readonly string[] = [],
+): string[] {
   const found: string[] = []
   const state = gitState(root, env)
   for (const file of files) {
-    for (const hit of findTerms(file, terms)) found.push(`${file} (its name) "${hit}"`)
-    for (const { where, text } of fileTexts(file, root, state)) {
-      const lines = text.split('\n')
-      lines.forEach((line, i) => {
-        for (const hit of findTerms(line, terms, allowed)) found.push(`${file}${where}:${i + 1} "${hit}": ${line.trim().slice(0, 100)}`)
-      })
-      // A binary's runs are one per line, but two runs side by side are not one sentence wrapped.
-      if (where.endsWith('(text in a binary)')) continue
-      // Across lines: a match that still spans a line break once the spaces at its ends are trimmed. Lines counted as
-      // the matches go, from the last one.
-      const whole = lines.map(line => asChecked(line).replace(LINE_MARK, '')).join('\n')
-      for (const term of terms) {
-        let at = 0
-        let line = 1
-        for (const match of whole.matchAll(new RegExp(term.pattern.source, `${term.pattern.flags.replace('g', '')}g`))) {
-          const hit = match[0].trim()
-          if (!hit.includes('\n')) continue
-          const start = match.index + match[0].indexOf(hit)
-          for (; at < start; at++) if (whole[at] === '\n') line++
-          found.push(`${file}${where}:${line} "${hit.replace(/\s+/g, ' ')}": across lines`)
-        }
-      }
-    }
+    for (const hit of findTerms(file, terms, [], passed)) found.push(`${file} (its name) "${hit}"`)
+    for (const text of fileTexts(file, root, state)) found.push(...textOffenders(file, text, terms, allowed, passed))
   }
   return found
 }

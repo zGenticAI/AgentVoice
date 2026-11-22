@@ -6,7 +6,11 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { ROOT } from '../src/config.ts'
-import { CLAUDE_DENY, claudeDenies, codexDenies, openCodeDenies } from './client-floors.ts'
+import { PACKAGE_NAME } from '../src/home.ts'
+import { renderClaudeCode } from '../src/setup/claude-code.ts'
+import { HOME_ENV_NAMES, renderCodex } from '../src/setup/codex.ts'
+import { renderOpenCode } from '../src/setup/opencode.ts'
+import { CLAUDE_DENY, claudeDenies, codexDenies, floorsFor, openCodeDenies } from './client-floors.ts'
 import { parseToml } from './toml.ts'
 
 const AGENT = fs.readFileSync(path.join(ROOT, '.claude/agents/meeting-assistant.md'), 'utf8')
@@ -189,4 +193,67 @@ test("OpenCode's floor denies its stored keys, not the output it saves for the s
   // Codex denies the whole folder: its commands never need OpenCode's output, and its profile can't name files there by
   // pattern.
   assert.ok(codexDenies('~/.local/share/opencode/tool-output/tool_0123abc'))
+})
+
+// --- Installed from npm: the floors setup writes into a session folder ---------------------------------------------
+/** The three clients' floors as agentvoice setup writes them for this AgentVoice folder, read at this place. */
+function installedFloors(home: string, project: string, ownerDir: string) {
+  const dataDir = path.join(ownerDir, 'data')
+  const command = { node: '/usr/local/bin/node', bin: `/usr/local/lib/node_modules/${PACKAGE_NAME}/bin/agentvoice.js` }
+  const claude = Object.fromEntries(renderClaudeCode({ packageDir: ROOT, dataDir }).map(file => [file.rel, file.content]))
+  const codex = renderCodex({ packageDir: ROOT, home: ownerDir, dataDir, ...command, homeDir: home })[0].content
+  const opencode = renderOpenCode({ packageDir: ROOT, home: ownerDir, dataDir, ...command })[0].content
+  return floorsFor(
+    { home, project },
+    {
+      claudeDeny: JSON.parse(claude['.claude/settings.json']).permissions.deny,
+      claudeAllow: JSON.parse(claude['.claude/settings.local.json']).permissions.allow,
+      codex: parseToml(codex),
+      opencode: JSON.parse(opencode),
+    },
+  )
+}
+
+test("installed, the floors setup writes keep the AgentVoice folder's keys, token and decks from every client, and let the meeting-assistant read the transcripts and minutes", () => {
+  for (const ownerDir of ['/home/sam/.agentvoice', '/srv/av home']) {
+    const f = installedFloors('/home/sam', '/home/sam/agentvoice-session', ownerDir)
+    const at = (rel: string) => `${ownerDir}/${rel}`
+    // Its .env names (for Codex the fourteen it lists: .env.*.local has no exact form there), the token and the decks.
+    const denied = [...HOME_ENV_NAMES, 'data/local-token', 'data/decks/deck.pdf', 'data/decks/a1b2/deck.script.md'].map(at)
+    for (const p of denied) {
+      assert.ok(f.claudeDenies(p), `Claude Code: ${p}`)
+      assert.ok(f.codexDenies(p), `Codex: ${p}`)
+      assert.ok(f.openCodeDenies(p), `OpenCode: ${p}`)
+      assert.ok(!f.claudeReads(p) && !f.openCodeAgentReads(p), p)
+    }
+    // What the meeting-assistant reads at a meeting's end, in the background where it can't answer a prompt.
+    for (const p of ['data/transcripts/2026-11-20-10-00-acme.md', 'data/minutes/2026-11-20-10-00-acme.md'].map(at)) {
+      assert.ok(f.claudeReads(p), `Claude Code: ${p}`)
+      assert.ok(!f.codexDenies(p), `Codex: ${p}`)
+      assert.ok(f.openCodeAgentReads(p), `OpenCode: ${p}`)
+    }
+    // The rest of the folder stays readable (Claude Code and OpenCode ask, outside the project), never denied.
+    for (const p of ['data/brief.md', 'profile.md', 'briefs/acme.md', '.env.example', 'data/agent-voice.log'].map(at)) {
+      assert.ok(!f.claudeDenies(p), `Claude Code: ${p}`)
+      assert.ok(!f.claudeAllows(p), `Claude Code allows only the transcripts and minutes: ${p}`)
+      assert.ok(!f.codexDenies(p), `Codex: ${p}`)
+      assert.ok(!f.openCodeDenies(p), `OpenCode: ${p}`)
+      assert.ok(!f.openCodeAgentReads(p), `OpenCode's meeting-assistant reaches only the transcripts and minutes: ${p}`)
+    }
+    // A key file in the AgentVoice folder: Claude Code and OpenCode deny it by name; Codex's floor stops at the session
+    // folder for patterns (the gap docs/codex.md names).
+    assert.ok(f.claudeDenies(at('server.key')) && f.openCodeDenies(at('server.key')) && !f.codexDenies(at('server.key')))
+    // Nothing else of the home folder is allowed: a transcripts folder elsewhere is not.
+    assert.ok(!f.claudeReads('/home/sam/other/data/transcripts/x.md') && !f.openCodeAgentReads('/home/sam/other/data/transcripts/x.md'))
+  }
+})
+
+test('installed, in the session folder the three floors are the same as in a clone: what Claude Code denies there, the others deny too', () => {
+  const f = installedFloors('/home/sam', '/home/sam/agentvoice-session', '/home/sam/.agentvoice')
+  const here = CLAUDE_DENY.flatMap(rule => examples(rule).here)
+  for (const p of here) assert.ok(f.claudeDenies(p), p)
+  const all = [...here, ...READABLE]
+  const denied = (denies: (p: string) => boolean) => all.filter(denies)
+  assert.deepEqual(denied(f.codexDenies), denied(f.claudeDenies), 'Codex')
+  assert.deepEqual(denied(f.openCodeDenies), denied(f.claudeDenies), 'OpenCode')
 })

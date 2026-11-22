@@ -1,8 +1,9 @@
 import path from 'node:path'
-import { ROOT, pathSetting } from './env.ts'
+import { INSTALL_MODE, OWNER_DIR, PACKAGE_DIR, ROOT, pathSetting } from './env.ts'
+import { WORDS } from './commands.ts'
 import { type Names, identity } from './identity.ts'
 
-export { ROOT, pathSetting }
+export { INSTALL_MODE, OWNER_DIR, PACKAGE_DIR, ROOT, pathSetting }
 
 function optional(name: string, fallback = ''): string {
   return process.env[name]?.trim() || fallback
@@ -11,7 +12,7 @@ function optional(name: string, fallback = ''): string {
 // Read lazily, when first used, so the tests and npm run check load the modules without every key set.
 export function required(name: string): string {
   const value = process.env[name]?.trim()
-  if (!value) throw new Error(`${name} is not set. Add it to ${path.join(ROOT, '.env')}`)
+  if (!value) throw new Error(`${name} is not set. Add it to ${path.join(OWNER_DIR, '.env')}`)
   return value
 }
 
@@ -131,12 +132,12 @@ export function retiredSettings(env: NodeJS.ProcessEnv): string[] {
   const warnings: string[] = []
   if (env.CONTROL_PORT?.trim()) {
     warnings.push(
-      '[config] CONTROL_PORT does nothing now: npm run join and the zoom-meeting channel reach the service through its ' +
-        'control socket (CONTROL_SOCKET, control.sock in the data folder unless set). Remove CONTROL_PORT from .env.',
+      `[config] CONTROL_PORT does nothing now: ${WORDS.run('join')} and the zoom-meeting channel reach the service through its ` +
+        `control socket (CONTROL_SOCKET, control.sock in the data folder unless set). Remove CONTROL_PORT from ${WORDS.envFile}.`,
     )
   }
   if (env.ALEX_MODEL?.trim() && !env.AGENT_MODEL?.trim()) {
-    warnings.push('[config] ALEX_MODEL is now called AGENT_MODEL. It still works for now: rename it in .env.')
+    warnings.push(`[config] ALEX_MODEL is now called AGENT_MODEL. It still works for now: rename it in ${WORDS.envFile}.`)
   }
   return warnings
 }
@@ -147,7 +148,7 @@ export const RECALL_REGIONS = ['us-east-1', 'us-west-2', 'eu-central-1', 'ap-nor
 /** Why RECALL_REGION can't be used, or '' when it can. */
 export function recallRegionProblem(region: string): string {
   const regions = `${RECALL_REGIONS.slice(0, -1).join(', ')} or ${RECALL_REGIONS.at(-1)}`
-  if (!region) return `RECALL_REGION is not set. Set it in .env to the region of your Recall account (${regions}): its API key works there only.`
+  if (!region) return `RECALL_REGION is not set. Set it in ${WORDS.envFile} to the region of your Recall account (${regions}): its API key works there only.`
   if (!(RECALL_REGIONS as readonly string[]).includes(region)) return `RECALL_REGION is "${region}", which is not a Recall region: use ${regions}.`
   return ''
 }
@@ -167,7 +168,7 @@ const LOCAL_NAMES = /\.(local|internal|lan|home\.arpa)$/i
  */
 export function publicUrlProblem(url: string): string {
   const example = 'such as https://assistant.example.com'
-  if (!url) return `PUBLIC_URL is not set. Set it in .env to your tunnel's https address (${example}).`
+  if (!url) return `PUBLIC_URL is not set. Set it in ${WORDS.envFile} to your tunnel's https address (${example}).`
   let parsed: URL
   try {
     parsed = new URL(url)
@@ -193,8 +194,9 @@ export const DEFAULT_SERVICE_LABEL = 'local.agent-voice'
 
 // AGENT_MODEL, or ALEX_MODEL, its first name, which still works.
 const model = optional('AGENT_MODEL') || optional('ALEX_MODEL', 'claude-sonnet-5-5')
-// ALEX_DATA_DIR: the tests point it at a folder of their own, so they never touch real transcripts.
-const dataDir = optional('ALEX_DATA_DIR') || path.join(ROOT, 'data')
+// ALEX_DATA_DIR: the tests point it at a folder of their own, so they never touch real transcripts. Otherwise data/ in
+// the owner's folder (this folder, in a clone).
+const dataDir = optional('ALEX_DATA_DIR') || path.join(OWNER_DIR, 'data')
 
 export const config = {
   // The public listener: the tunnel points here, and it serves only what the meeting bot needs. It binds to

@@ -12,6 +12,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { CANVAS_MISSING, WORDS } from '../commands.ts'
+import { insidePackage } from '../home.ts'
 import {
   DeckError, DeckStore, MANIFEST, TEMP_PREFIX, UNFINISHED_MAX_AGE_MS, prepareDecksDir, scriptKey, scriptMark, sha256, sweepUnfinished,
 } from './deck.ts'
@@ -31,7 +33,7 @@ export class PrepareError extends Error {
   }
 }
 
-export const CANVAS_MISSING = 'Slide rendering needs @napi-rs/canvas: run npm install (without --omit=optional).'
+export { CANVAS_MISSING }
 export const PASSWORD_REFUSAL = 'This PDF is password-protected: export it again without a password.'
 /** The hard limit on one prepare: the child's whole process group is killed then. */
 export const PREPARE_TIMEOUT_MS = 180_000
@@ -309,6 +311,14 @@ export async function prepareDeck(opts: PrepareOptions): Promise<Prepared> {
   const bytes = readInput(opts.input)
   const label = oneLine(opts.label ?? name.replace(/\.pdf$/i, ''), MAX_LABEL) || 'deck'
   const store = new DeckStore(opts.decksDir)
+  // Installed from npm, never into the package's folder, which npm replaces on every upgrade (prepareDecksDir refuses
+  // it too; this says it without the paths).
+  if (insidePackage(opts.decksDir)) {
+    throw new PrepareError(
+      'The data folder is inside the installed package, which npm replaces on every upgrade: ALEX_DATA_DIR must point ' +
+        'outside it, into your AgentVoice folder for example.',
+    )
+  }
   prepareDecksDir(opts.decksDir)
   // A prepare that was killed (SIGKILL, a crash) left its folder, with a copy of its PDF: gone once it can't be running.
   sweepUnfinished(opts.decksDir, UNFINISHED_MAX_AGE_MS)
@@ -332,9 +342,9 @@ export async function prepareDeck(opts: PrepareOptions): Promise<Prepared> {
     const done = run.messages.find(m => m.type === 'done')
     // A child that could not start, or ended without a word and without a signal, never got to the PDF: the cause is
     // this computer, so the owner is not sent to export the PDF again.
-    if (run.notStarted) throw new PrepareError(`The converter could not be started (${run.notStarted}), so ${name} was not read. Check that npm install finished, then prepare again.`)
+    if (run.notStarted) throw new PrepareError(`The converter could not be started (${run.notStarted}), so ${name} was not read. Check that ${WORDS.reinstall} finished, then prepare again.`)
     if (!run.messages.length && run.signal === null && run.code !== 0) {
-      throw new PrepareError(`The converter stopped before it opened ${name} (exit ${run.code}). Check that npm install finished, then prepare again.`)
+      throw new PrepareError(`The converter stopped before it opened ${name} (exit ${run.code}). Check that ${WORDS.reinstall} finished, then prepare again.`)
     }
     if (run.bad || run.code !== 0 || open?.type !== 'open' || done?.type !== 'done') {
       throw new PrepareError(`The converter stopped unexpectedly (${run.signal ?? `exit ${run.code}`}). Export the PDF again, or save it as a PDF from another viewer.`)

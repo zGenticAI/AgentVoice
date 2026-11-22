@@ -12,6 +12,13 @@ import { OPENCODE_TESTED } from '../src/channel/push-opencode.ts'
 import { EVENT_HEADER, plainEvent } from '../src/channel/sink.ts'
 import { REPORT_END as FLUX_REPORT_END } from '../src/probe/flux-report.ts'
 import { REPORT_END as SHARE_REPORT_END } from '../src/sharetest/report.ts'
+import { CODEX_TESTED } from '../src/setup/codex.ts'
+import { sessionExample } from '../src/setup/folder.ts'
+import { SLIDES_ASK } from '../src/setup/opencode.ts'
+import { type Script, commandWords } from '../src/commands.ts'
+import { PACKAGE_NAME } from '../src/home.ts'
+import os from 'node:os'
+import { slidesNote } from '../src/slides/platforms.ts'
 import { CODEX_CONFIG, OPENCODE_CONFIG, type OpenCodeRule } from './client-floors.ts'
 import type { TomlTable } from './toml.ts'
 
@@ -23,6 +30,8 @@ const README = read('README.md')
 test('the pages name the versions the setup scripts and the channel check', () => {
   const codex = /^TESTED=(\d+\.\d+\.\d+)$/m.exec(read('scripts/install-codex.sh'))?.[1]
   assert.ok(codex)
+  // agentvoice setup codex checks the same version as the clone's script.
+  assert.equal(codex, CODEX_TESTED)
   assert.ok(CODEX.includes(`Tested with Codex CLI ${codex}`))
   assert.ok(CODEX.includes(`Codex CLI ${codex} or later`))
   assert.ok(README.includes(`**Codex CLI** ${codex} or later`))
@@ -78,7 +87,9 @@ test('the pages quote what Alex says and what the reports end with as the code h
   assert.ok(read('docs/share-test.md').includes(`\`${SHARE_REPORT_END}\``))
   assert.ok(read('src/slides/actions.ts').includes("'Next: write the sections (or ask your coding session (Claude Code, Codex or OpenCode) to draft them), then'"))
   assert.ok(read('docs/presenting.md').includes('Next: write the sections (or ask your coding session (Claude Code, Codex or OpenCode) to draft them), then'))
-  assert.ok(read('src/slides/platforms.ts').includes('(npm run slides -- control start, or slides_control in your coding session)'))
+  // What the join says, as a clone words it (src/commands.ts): the page shows the clone's command.
+  const note = slidesNote({ name: 'Q3', narrated: 2, totalMs: 60_000, script: { minutes: null } }, 'zoom', 'Alex')
+  assert.ok(note.includes('(npm run slides -- control start, or slides_control in your coding session)'), note)
   assert.ok(read('docs/presenting.md').includes('(npm run slides -- control start, or slides_control in your coding session)'))
 })
 
@@ -102,4 +113,89 @@ test('the README and the other pages link to the Codex and OpenCode pages, and s
   assert.match(OPENCODE, /## Answering while you are away[\s\S]*`opencode service stop` stops the background service with the processes it started, the channel among them/)
   assert.ok(README.includes('(docs/opencode.md#answering-while-you-are-away)'))
   assert.ok(README.includes('(docs/codex.md#the-meeting-assistant-has-a-shell)'))
+})
+
+// The README and every docs page, the pages a clone and an npm install share.
+const PAGES = ['README.md', ...fs.readdirSync(path.join(ROOT, 'docs')).filter(f => f.endsWith('.md')).map(f => `docs/${f}`)]
+// docs/development.md is for working on the repository: its commands are the clone's.
+const USER_PAGES = PAGES.filter(page => page !== 'docs/development.md')
+// What an installed command says, as the code words it (src/commands.ts), for the default AgentVoice folder.
+const INSTALLED = commandWords('installed', path.join(os.homedir(), '.agentvoice'), '0.3.0')
+const SCRIPTS: readonly Script[] = ['join', 'check', 'slides', 'check-name', 'speaker-report', 'flux-probe']
+/** The command lines of a page's ```bash blocks, comments taken off. */
+const commandLines = (text: string) =>
+  [...text.matchAll(/^[ \t]*```bash\n([\s\S]*?)^[ \t]*```$/gm)].flatMap(m => m[1].split('\n').map(line => line.replace(/\s+#.*$/, '').trim()).filter(Boolean))
+
+test('the README says how to install from npm, and no page names a package that is not this one', () => {
+  assert.ok(README.includes(`npm install -g ${PACKAGE_NAME}\nagentvoice init\n`), 'the Quick start installs from npm, then runs init')
+  assert.equal(PACKAGE_NAME, JSON.parse(read('package.json')).name)
+  // agent-voice on npm is someone else's, and agentvoice is no package at all: only the scoped name is this one.
+  for (const page of [...PAGES, 'CHANGELOG.md', 'CONTRIBUTING.md']) {
+    const text = read(page)
+    assert.doesNotMatch(text, /\bnpx\s+(?:-{1,2}[\w=-]+\s+)*agent-?voice\b/, page)
+    assert.doesNotMatch(text, /\bnpm\s+(?:install|i|add)\s+(?:-{1,2}[\w=-]+\s+)*agent-?voice\b/, page)
+    for (const m of text.matchAll(/\bnpx\s+(?:-{1,2}[\w=-]+\s+)*(\S+)/g)) {
+      if (/agent-?voice/.test(m[1])) assert.ok(m[1].startsWith(PACKAGE_NAME), `${page}: ${m[0]}`)
+    }
+  }
+})
+
+test('every command a page gives in a code block in the clone\'s words, it gives in the installed words too', () => {
+  let pairs = 0
+  for (const page of USER_PAGES) {
+    const lines = commandLines(read(page))
+    for (const line of lines) {
+      const m = /^npm run ([\w-]+)(?: -- (.*))?$/.exec(line)
+      if (!m) continue
+      assert.ok(SCRIPTS.includes(m[1] as Script), `${page}: ${line} is not a command agentvoice has`)
+      // A data/ file in a clone's command is the AgentVoice folder's from npm.
+      const args = m[2]?.replace(/(^|\s)data\//g, (_, space: string) => `${space}${INSTALLED.ownerPath('data/')}`)
+      const installed = INSTALLED.run(m[1] as Script, args)
+      assert.ok(lines.includes(installed), `${page}: ${line} has no ${installed}`)
+      pairs++
+    }
+    if (lines.includes('npm start')) assert.ok(lines.includes(INSTALLED.start), page)
+  }
+  assert.ok(pairs >= 25, `${pairs} commands`)
+  // And every agentvoice command a page gives is one the command has.
+  const dispatcher = read('src/cli/agentvoice.ts')
+  const commands = Object.keys(Object.fromEntries([.../const MODULES = \{([\s\S]*?)\}/.exec(dispatcher)?.[1].matchAll(/'?([\w-]+)'?:/g) ?? []].map(m => [m[1], 1])))
+  assert.ok(commands.includes('setup') && commands.includes('join'), commands.join(', '))
+  for (const page of PAGES) {
+    // (Codex's permission profile is called agentvoice too: codex sandbox -P agentvoice.)
+    for (const m of read(page).matchAll(/(?:^|[\s`(])(?<!-P )agentvoice ((?:--?)?[\w-]+)/gm)) {
+      assert.ok(commands.includes(m[1]) || ['--help', '--version', 'help', '-v', '-h'].includes(m[1]), `${page}: agentvoice ${m[1]}`)
+    }
+  }
+})
+
+test('each page that gives the clone\'s commands says what they are from npm, and where .env and data/ are then', () => {
+  for (const page of USER_PAGES.filter(page => page !== 'README.md')) {
+    const text = read(page)
+    if (!/npm run |npm start|`data\/|`\.env`/.test(text)) continue
+    assert.ok(text.includes('`npm run <command> -- …`') && text.includes('`agentvoice <command> …`'), `${page} says what a clone's command is from npm`)
+    assert.ok(text.includes(`\`${INSTALLED.ownerPath('data/')}\``) && text.includes(`\`${INSTALLED.envFile}\``), `${page} says where data/ and .env are from npm`)
+  }
+})
+
+test('the pages name the setup commands, the session folder, the ask rule and the service\'s section as the code has them', () => {
+  // The example the code itself prints (init's next steps, setup's refusals).
+  for (const page of ['README.md', 'docs/claude-code.md']) assert.ok(read(page).includes(sessionExample('claude-code')), page)
+  assert.ok(read('docs/codex.md').includes(sessionExample('codex')))
+  assert.ok(read('docs/opencode.md').includes(`${sessionExample('opencode')} --source`))
+  // OpenCode's ask for the slides command, as setup writes it into opencode.json.
+  assert.ok(OPENCODE.includes(`\`${SLIDES_ASK}\``))
+  assert.ok(read('docs/claude-code.md').includes('`Bash(agentvoice slides:*)`'))
+  assert.ok(CODEX.includes('codex sandbox -P agentvoice -C . -- cat ~/.agentvoice/.env'))
+  // agentvoice service names this section of docs/setup.md when it won't replace or remove a unit.
+  assert.match(read('src/cli/service.ts'), /"Keeping it running"/)
+  assert.match(read('docs/setup.md'), /^## Keeping it running$/m)
+  for (const words of ['agentvoice service install --replace', 'agentvoice service print', 'agentvoice service uninstall', '~/.agentvoice/data/agent-voice.log', '~/.agentvoice/data/control.sock']) {
+    assert.ok(read('docs/setup.md').includes(words), words)
+  }
+  // The README's Upgrading and Uninstalling, for an npm install.
+  for (const words of ['npm install -g @zgentic/agentvoice@latest', 'agentvoice service uninstall', 'npm uninstall -g @zgentic/agentvoice']) assert.ok(README.includes(words), words)
+  // The pages that link to Releasing find it.
+  for (const page of ['CONTRIBUTING.md', 'docs/security.md']) assert.ok(read(page).includes('development.md#releasing'), page)
+  assert.match(read('docs/development.md'), /^## Releasing$/m)
 })

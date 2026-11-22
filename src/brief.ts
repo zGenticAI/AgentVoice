@@ -5,6 +5,7 @@
 // facts, so it is kept in the service's memory only, for that meeting, until its session is over: never in a file,
 // never in the log.
 import fs from 'node:fs'
+import { WORDS } from './commands.ts'
 
 /**
  * The most a brief may hold, in characters (UTF-16 code units), wherever it comes from. It goes with every spoken
@@ -42,7 +43,7 @@ export function readSharedBrief(file: string): { text: string; tooLong: string }
 /** Why this can't be a meeting's brief, or '' if it can. */
 export function briefProblem(text: unknown): string {
   if (typeof text !== 'string') return 'The brief has to be text.'
-  if (!text.trim()) return 'The brief is empty. Leave it out to use the shared brief (data/brief.md).'
+  if (!text.trim()) return `The brief is empty. Leave it out to use the shared brief (${WORDS.ownerPath('data/brief.md')}).`
   return briefTooLong(text)
 }
 

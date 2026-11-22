@@ -9,8 +9,10 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { ALWAYS_ASK, clientInfoWarnings, isAncestor, loopbackOrigin, openCodeSink, readService, savedLifts, serviceFile } from '../src/channel/push-opencode.ts'
+import { ALWAYS_ASK, alwaysAsk, clientInfoWarnings, isAncestor, loopbackOrigin, openCodeSink, readService, savedLifts, serviceFile } from '../src/channel/push-opencode.ts'
 import { type ChannelEvent, plainEvent } from '../src/channel/sink.ts'
+import { PACKAGE_NAME } from '../src/home.ts'
+import { agentvoiceCommand } from '../src/setup/node-path.ts'
 
 const PASSWORD = 'fake-service-password-0123456789abcdefghijk'
 const QUESTION: ChannelEvent = {
@@ -407,6 +409,39 @@ test('which saved approvals lift what always asks: as OpenCode matches a rule, f
   assert.equal(savedLifts(undefined), null)
   assert.equal(savedLifts({ data: [] }), null)
   assert.deepEqual(named([null, 42, { action: 1 }]), [])
+})
+
+test("a clone's always-asked list is what it was; installed, agentvoice slides however it is run", () => {
+  assert.deepEqual(ALWAYS_ASK, [
+    { action: 'zoom-meeting_join_meeting', resource: '*', named: 'join_meeting' },
+    { action: 'zoom-meeting_set_brief', resource: '*', named: 'set_brief' },
+    { action: 'zoom-meeting_slides_control', resource: '*', named: 'slides_control' },
+    { action: 'shell', resource: 'npm run slides', named: 'npm run slides' },
+    { action: 'shell', resource: 'npm run slides -- start deck.pdf', named: 'npm run slides' },
+  ])
+  assert.equal(alwaysAsk('clone'), ALWAYS_ASK)
+  // This suite runs from a clone, so savedLifts checks the clone's list unless given another.
+  const row = (action: string, resource = '*') => ({ id: 'psv_2', projectID: 'prj_1', action, resource })
+  assert.deepEqual(savedLifts([row('shell', 'agentvoice *')]), { named: [], ids: [] })
+
+  const node = '/opt/homebrew/opt/node/bin/node'
+  const bin = `/opt/homebrew/lib/node_modules/${PACKAGE_NAME}/bin/agentvoice.js`
+  const installed = alwaysAsk('installed', () => [node, bin])
+  assert.deepEqual(installed, [
+    ...ALWAYS_ASK.slice(0, 3),
+    { action: 'shell', resource: 'agentvoice slides', named: 'agentvoice slides' },
+    { action: 'shell', resource: 'agentvoice slides prepare deck.pdf', named: 'agentvoice slides' },
+    { action: 'shell', resource: `${node} ${bin} slides prepare deck.pdf`, named: 'agentvoice slides' },
+  ])
+  const named = (rows: unknown) => savedLifts(rows, installed)?.named
+  // A saved "Allow always" for any way of running it lifts the ask, as npm run slides does in a clone.
+  for (const resource of ['agentvoice slides *', 'agentvoice *', '*agentvoice* slides *', `${node} *`, `${node} ${bin} *`, '*']) {
+    assert.deepEqual(named([row('shell', resource)]), ['agentvoice slides'], resource)
+  }
+  assert.deepEqual(named([row('zoom-meeting_join_meeting')]), ['join_meeting'])
+  for (const resource of ['npm run slides *', 'agentvoice join *', 'git *']) assert.deepEqual(named([row('shell', resource)]), [], resource)
+  // By default it is this process's own command, as setup writes it.
+  assert.equal(alwaysAsk('installed').at(-1)?.resource, `${agentvoiceCommand().join(' ')} slides prepare deck.pdf`)
 })
 
 test("a refused post is reported as not delivered, and the log says only how it failed: no password, URL or meeting text", async t => {

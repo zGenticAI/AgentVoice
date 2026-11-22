@@ -18,6 +18,7 @@
 // Here: the parser, its errors and warnings, the check against the prepared deck, the time estimate, the canonical
 // text, the skeleton prepare writes, and the update merge, which never changes a written paragraph.
 import { SentenceSplitter } from '../brain/text.ts'
+import { WORDS } from '../commands.ts'
 import { MS_PER_CHAR, spokenLength } from '../pipeline/playback.ts'
 import { DECK_ID, MAX_PAGES, type Manifest, type ManifestSlide, WARNINGS } from './manifest.ts'
 
@@ -595,7 +596,7 @@ export function scriptHelp(name: string, scriptPath: string): string {
        on-request: yes   a backup slide: shown only when someone asks for it
        exclude: yes      never shown, and never sent to the meeting
        check: yes        drafted, not yet read by you: delete the line once you have
-     Then run, from where you ran prepare: npm run slides -- check ${inComment(shellArg(scriptPath))} -->`
+     Then run, from where you ran prepare: ${WORDS.run('slides', `check ${inComment(shellArg(scriptPath))}`)} -->`
 }
 
 /**

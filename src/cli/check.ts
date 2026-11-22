@@ -7,7 +7,13 @@ import path from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
 import WebSocket from 'ws'
 import { spokenThinking, systemPrompt } from '../brain/brain.ts'
-import { ROOT, config, publicUrlProblem, recallRegionProblem } from '../config.ts'
+import { WORDS } from '../commands.ts'
+import { INSTALL_MODE, OWNER_DIR, PACKAGE_DIR, config, publicUrlProblem, recallRegionProblem } from '../config.ts'
+import { HOME_SETTING } from '../env.ts'
+import { PACKAGE_VERSION, tildePath } from '../home.ts'
+import { serviceKind } from '../service/units.ts'
+import { agentvoiceCommand } from '../setup/node-path.ts'
+import { cloneHomeNote, folderReport } from './check-folders.ts'
 import { JOIN_LINE, SLIDES_LINES, joinChatMessage } from '../consent.ts'
 import { IDENTITY_WARNINGS, identity } from '../identity.ts'
 import { checkName, checkOwner, describeName } from '../name-check.ts'
@@ -19,7 +25,7 @@ import { PROBE_ON } from '../speakers/probe.ts'
 
 function keyShape(name: string): string {
   const raw = process.env[name]
-  if (!raw?.trim()) return `${name} is empty in .env`
+  if (!raw?.trim()) return `${name} is empty in ${WORDS.envFile}`
   if (/^["']|["']$/.test(raw.trim())) return `${name} has quote marks around it; remove them`
   if (raw !== raw.trim()) return `${name} has spaces around it; remove them`
   return ''
@@ -76,10 +82,33 @@ const checks: [string, string[], () => Promise<string>][] = [
   ['ElevenLabs', ['ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID'], checkElevenLabs],
 ]
 
+// Installed from npm: where everything is, first, and what to fix there (warnings). A clone ignores AGENTVOICE_HOME,
+// which is said only when it is set.
+if (INSTALL_MODE === 'installed') {
+  const [node, bin] = agentvoiceCommand()
+  const report = folderReport({
+    home: OWNER_DIR,
+    fromSetting: Boolean(HOME_SETTING.value?.trim()),
+    dataDir: config.dataDir,
+    packageDir: PACKAGE_DIR,
+    version: PACKAGE_VERSION,
+    profileFile: PROFILE.file,
+    cwd: process.cwd(),
+    node,
+    bin,
+    label: config.serviceLabel,
+    kind: serviceKind(),
+  })
+  console.log(`${report.join('\n')}\n`)
+} else {
+  const note = cloneHomeNote(HOME_SETTING.value)
+  if (note) console.log(note)
+}
+
 let failed = 0
 // The name first: the service won't start with one that has errors.
 const named = checkName(identity)
-const nameNote = 'npm run check-name tries it on about 1,900 meeting lines'
+const nameNote = `${WORDS.run('check-name')} tries it on about 1,900 meeting lines`
 if (named.errors.length) {
   failed++
   console.log(`✗ Name: ${describeName(identity)}\n${named.errors.map(e => `    ${e}`).join('\n')}\n    (${nameNote}.)`)
@@ -104,8 +133,10 @@ if (owned.errors.length) {
 }
 for (const warning of owned.warnings) console.log(`  Warning: ${warning}`)
 
-// The profile: which sections were found, so a misspelt heading is seen before a meeting misses it.
-const relative = path.relative(ROOT, PROFILE.file).startsWith('..') ? PROFILE.file : path.relative(ROOT, PROFILE.file)
+// The profile: which sections were found, so a misspelt heading is seen before a meeting misses it. Named from the
+// owner's folder (this folder, in a clone), or in full when it is outside it.
+const outside = INSTALL_MODE === 'installed' ? tildePath(PROFILE.file) : PROFILE.file
+const relative = path.relative(OWNER_DIR, PROFILE.file).startsWith('..') ? outside : path.relative(OWNER_DIR, PROFILE.file)
 const keys = Object.keys(PROFILE_SECTIONS) as ProfileSection[]
 const found = keys.filter(key => PROFILE.sections[key]).map(key => PROFILE_SECTIONS[key])
 const defaults = keys.filter(key => !PROFILE.sections[key]).map(key => PROFILE_SECTIONS[key])
@@ -113,7 +144,7 @@ if (PROFILE.problem) {
   failed++
   console.log(`✗ Profile: ${PROFILE.problem}`)
 } else if (!PROFILE.found) {
-  console.log(`  Profile: none at ${relative}, so every section has its generic default (copy profile.example.md to start one).`)
+  console.log(`  Profile: none at ${relative}, so every section has its generic default (${WORDS.startProfile}).`)
 } else {
   console.log(
     `✓ Profile: ${relative}: ${found.length ? found.join(', ') : 'no sections'}` +
@@ -144,7 +175,7 @@ if (region) {
 
 // The bot's link: the page token, and the tunnel's https address the bot loads its page from. That the tunnel works is
 // for curl to show once the service runs: this only checks what the settings can show.
-const link = [config.agentPageToken ? '' : 'AGENT_PAGE_TOKEN is not set. Set it in .env to the output of openssl rand -hex 24.', publicUrlProblem(config.publicUrl)].filter(Boolean)
+const link = [config.agentPageToken ? '' : `AGENT_PAGE_TOKEN is not set. Set it in ${WORDS.envFile} to the output of openssl rand -hex 24.`, publicUrlProblem(config.publicUrl)].filter(Boolean)
 if (link.length) {
   failed++
   console.log(`✗ Bot link: ${link.join(' ')}`)
@@ -162,12 +193,12 @@ if (page) {
 }
 
 // The speaker probe: for test meetings only, so it is said whenever it is on.
-console.log(config.speakerProbe ? `  Speaker probe: on. ${PROBE_ON}` : '  Speaker probe: off (SPEAKER_PROBE, for test meetings only: docs/speaker-probe.md)')
+console.log(config.speakerProbe ? `  Speaker probe: on. ${PROBE_ON}` : `  Speaker probe: off (SPEAKER_PROBE, for test meetings only: ${WORDS.doc('speaker-probe')})`)
 // Presenting slides: off on each platform until the screen-share test has passed there and SLIDES_PLATFORMS lists it.
 console.log(
   config.slidesPlatforms.length
     ? `  Slides: presenting is on for ${config.slidesPlatforms.join(', ')} (SLIDES_PLATFORMS)`
-    : '  Slides: presenting is off on every platform (SLIDES_PLATFORMS: add one once the screen-share test passes there, docs/share-test.md)',
+    : `  Slides: presenting is off on every platform (SLIDES_PLATFORMS: add one once the screen-share test passes there, ${WORDS.doc('share-test')})`,
 )
 
 for (const [name, keys, run] of checks) {
@@ -185,6 +216,6 @@ for (const [name, keys, run] of checks) {
   }
 }
 console.log(
-  failed ? `\n${failed} check(s) failed. Fix .env, then run npm run check again.` : '\nThe settings are complete, and Anthropic, Deepgram and ElevenLabs all work.',
+  failed ? `\n${failed} check(s) failed. Fix ${WORDS.envFile}, then run ${WORDS.run('check')} again.` : '\nThe settings are complete, and Anthropic, Deepgram and ElevenLabs all work.',
 )
 process.exit(failed ? 1 : 0)

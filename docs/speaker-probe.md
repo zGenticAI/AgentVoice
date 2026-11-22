@@ -2,6 +2,8 @@
 
 A test mode, for test meetings whose participants have agreed to it. These pages call the assistant Alex, its default name.
 
+Installed from npm, each `npm run <command> -- …` on this page is `agentvoice <command> …` (a file you name in it is found from the folder you run it in), and `.env` and `data/` are in your AgentVoice folder: `~/.agentvoice/.env` and `~/.agentvoice/data/`.
+
 Today everyone but Alex is "Speaker" in the transcript and the minutes. Naming speakers would come from Recall's participant events: who joined, who left, and who started and stopped speaking. How well those events line up with the turns Alex hears isn't documented anywhere, and differs by platform. The speaker probe measures it, in meetings set up for the test, and keeps only numbers. Nothing in the transcript or the minutes changes: speakers are still "Speaker".
 
 ## Two keys

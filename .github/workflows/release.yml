@@ -1,0 +1,167 @@
+name: Release
+
+# Publishes @zgentic/agentvoice to npm when a GitHub release is published, with npm's trusted publishing (OIDC): no npm
+# token is stored anywhere. npmjs.com trusts this file by its name, release.yml, in the environment npm, whose required
+# reviewer is what stops an unwanted publish: the checks below catch mistakes, not people.
+#
+# Three jobs, so that no code from this repository or its dependencies runs where an OIDC token can be had:
+#   pack     checks the release, then packs the tarball (npm and git only: no npm ci, no scripts)
+#   test     installs the dependencies and runs every test, on that tarball (no OIDC token)
+#   publish  publishes that tarball, checked by its hash (no checkout, no npm ci; npm runs no scripts for a tarball)
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    name: Check and pack ${{ github.event.release.tag_name }}
+    if: github.repository == 'zGenticAI/AgentVoice'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
+      integrity: ${{ steps.pack.outputs.integrity }}
+      dist_tag: ${{ steps.release.outputs.dist_tag }}
+      published: ${{ steps.release.outputs.published }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Check the release, its tag and the version
+        id: release
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          URL="$(node -p "require('./package.json').repository.url")"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$NAME" = "@zgentic/agentvoice" ] || fail "package.json is named $NAME, not @zgentic/agentvoice."
+          [ "$TAG" = "v$VERSION" ] || fail "The release's tag is $TAG, but package.json's version is $VERSION: the tag must be v$VERSION."
+          [ "$URL" = "git+https://github.com/$REPOSITORY.git" ] || fail "package.json's repository.url is $URL: npm's provenance check needs git+https://github.com/$REPOSITORY.git."
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || fail "$TAG is not on main: release only from main."
+          case "$VERSION" in *-*) KIND=pre-release ;; *) KIND=release ;; esac
+          if [ "$PRERELEASE" = true ] && [ "$KIND" = release ]; then
+            fail "The GitHub release is marked as a pre-release, but $VERSION has no pre-release part (such as -rc.1). Unmark it, or give the version one."
+          fi
+          if [ "$PRERELEASE" != true ] && [ "$KIND" = pre-release ]; then
+            fail "$VERSION is a pre-release version, but the GitHub release is not marked as a pre-release. Mark it, or use a plain version."
+          fi
+          if [ "$KIND" = pre-release ]; then echo "dist_tag=next" >> "$GITHUB_OUTPUT"; else echo "dist_tag=latest" >> "$GITHUB_OUTPUT"; fi
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "published=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=no" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Pack, running no scripts
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/package"
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP/package" > "$RUNNER_TEMP/pack.json"
+          # npm 11 prints an array, npm 12 an object keyed by the package's name.
+          node -e '
+            const fs = require("fs")
+            const j = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+            const r = Array.isArray(j) ? j[0] : Object.values(j)[0]
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `tarball=${r.filename}\nintegrity=${r.integrity}\n`)
+          ' "$RUNNER_TEMP/pack.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package
+          path: ${{ runner.temp }}/package/${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+      - name: Already on npm
+        if: steps.release.outputs.published == 'yes'
+        run: echo "::notice::This version is already on npm (the first one is published by hand), so the publish job is skipped."
+
+  test:
+    name: Test the tarball
+    needs: pack
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TARBALL_NAME: ${{ needs.pack.outputs.tarball }}
+      INTEGRITY: ${{ needs.pack.outputs.integrity }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package
+          path: ${{ runner.temp }}/package
+      - name: Check it is the tarball the pack job made
+        run: |
+          node -e '
+            const h = "sha512-" + require("crypto").createHash("sha512").update(require("fs").readFileSync(process.argv[1])).digest("base64")
+            if (h !== process.argv[2]) {
+              console.error(`${process.argv[1]} is not the tarball the pack job made.`)
+              process.exit(1)
+            }' "$RUNNER_TEMP/package/$TARBALL_NAME" "$INTEGRITY"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run check-package -- --release --tarball "$RUNNER_TEMP/package/$TARBALL_NAME"
+      - run: AGENTVOICE_TARBALL="$RUNNER_TEMP/package/$TARBALL_NAME" npm run test:package
+
+  publish:
+    name: Publish ${{ github.event.release.tag_name }}
+    needs: [pack, test]
+    if: needs.pack.outputs.published == 'no'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TARBALL_NAME: ${{ needs.pack.outputs.tarball }}
+      INTEGRITY: ${{ needs.pack.outputs.integrity }}
+      DIST_TAG: ${{ needs.pack.outputs.dist_tag }}
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Check npm (trusted publishing needs 11.5.1 or later)
+        run: |
+          node -e '
+            const [a, b, c] = process.argv[1].split(".").map(Number)
+            if (!(a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1))))) {
+              console.error(`npm ${process.argv[1]} is older than 11.5.1, which trusted publishing needs.`)
+              process.exit(1)
+            }' "$(npm --version)"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package
+          path: ${{ runner.temp }}/package
+      - name: Check it is the tarball the pack job made and the test job tested
+        run: |
+          node -e '
+            const h = "sha512-" + require("crypto").createHash("sha512").update(require("fs").readFileSync(process.argv[1])).digest("base64")
+            if (h !== process.argv[2]) {
+              console.error(`${process.argv[1]} is not the tarball the pack job made.`)
+              process.exit(1)
+            }' "$RUNNER_TEMP/package/$TARBALL_NAME" "$INTEGRITY"
+      - name: Publish to npm
+        run: npm publish "$RUNNER_TEMP/package/$TARBALL_NAME" --provenance --access public --tag "$DIST_TAG"

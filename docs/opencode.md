@@ -2,13 +2,15 @@
 
 The deep tier with OpenCode instead of Claude Code: the same `zoom-meeting` channel and the same meeting-assistant agent, set up by files committed in this folder. As in Claude Code, a question the meeting-assistant doesn't take, and each meeting event, is put into your session (push): here through OpenCode's own background service. Tested with OpenCode 2.3.2 (see [Tested versions](#tested-versions)). These pages call the assistant Alex, its default name, and you, its owner, Sam. [Your Claude Code session](claude-code.md) has what works the same way in every client: briefs, `add_to_brief`, `why_not_answered`, presentations and the meeting-assistant's loop.
 
+Installed from npm, "this folder" on this page is your session folder, the one `agentvoice setup opencode` made (see [Installed from npm](#installed-from-npm)); `npm run <command> -- …` is `agentvoice <command> …`; and `.env` and `data/` are in your AgentVoice folder: `~/.agentvoice/.env` and `~/.agentvoice/data/`.
+
 **Two things to know first.** OpenCode can answer questions put into your session while nobody is at the screen: see [Answering while you are away](#answering-while-you-are-away), which also says how to stop it. And it has no sandbox: its floor covers its `read` tool, not `grep`, `glob` or the shell (see [The floor](#the-floor)).
 
 ## What you need
 
 - OpenCode 2.3.2 or later, the V2 line: `npm install -g @opencode/cli`. V1 (the `opencode-ai` package) isn't supported: its tool calls time out after 60 seconds, which cuts the meeting-assistant's wait. `scripts/install-opencode.sh` refuses V1 and anything older than 2.3.2, and the channel logs a warning when OpenCode says it is such a version, or another major version.
 - A model you chose, set in OpenCode: the meeting's text goes to it. With no provider set, OpenCode 2.3.2 used a free hosted model, without asking for a key.
-- `npm install` run in this folder, and the voice service set up and started once (see [Setting it up](setup.md)): the channel links to it with the local token the service makes.
+- `npm install` run in this folder (from npm: AgentVoice installed, and `agentvoice init` run), and the voice service set up and started once (see [Setting it up](setup.md)): the channel links to it with the local token the service makes.
 
 ## Setting it up
 
@@ -24,12 +26,28 @@ The deep tier with OpenCode instead of Claude Code: the same `zoom-meeting` chan
 Keep to these:
 - **One OpenCode session per AgentVoice folder for meetings.** OpenCode runs one channel process per folder, shared by every session there, and it pushes to the session that last used `join_meeting`, `set_brief`, `slides_status`, `slides_control` or `why_not_answered`.
 - **Change `opencode.json` or `.opencode/` only between meetings,** with the script too. OpenCode restarts the channel when its config changes, which cuts the meeting-assistant's waiting call and forgets which session is yours.
-- **Never choose "Allow always"** when OpenCode asks before `join_meeting`, `set_brief`, `slides_control` or `npm run slides`. OpenCode saves that for the whole folder, in every session and subagent, and the ask never comes back. While such an approval is saved, the channel posts nothing into your session (see [Answering while you are away](#answering-while-you-are-away)): it reads the saved approvals before every post.
-- **AgentVoice's settings go in `.env`.** The channel runs in OpenCode's background service, with the service's environment, not your terminal's, and reads `.env` itself. Don't set `AGENTVOICE_CLIENT` there: `opencode.json` sets it, and the channel ignores it in `.env` (with a warning), since every client in this folder shares that file.
+- **Never choose "Allow always"** when OpenCode asks before `join_meeting`, `set_brief`, `slides_control` or `npm run slides` (`agentvoice slides` from npm). OpenCode saves that for the whole folder, in every session and subagent, and the ask never comes back. While such an approval is saved, the channel posts nothing into your session (see [Answering while you are away](#answering-while-you-are-away)): it reads the saved approvals before every post.
+- **AgentVoice's settings go in `.env`** (`~/.agentvoice/.env` from npm). The channel runs in OpenCode's background service, with the service's environment, not your terminal's, and reads `.env` itself. Don't set `AGENTVOICE_CLIENT` there: `opencode.json` sets it, and the channel ignores it in `.env` (with a warning), since every client in this folder shares that file.
 
 What is committed:
 - `opencode.json`: the `zoom-meeting` server (`node_modules/.bin/tsx src/channel/server.ts`, with `AGENTVOICE_CLIENT=opencode`, `codemode: false` so its tools are tools of their own, and no `timeout`, which would cap every call), what asks first, the floor (`policies`), and what the meeting-assistant may do (`agents.meeting-assistant`).
 - `.opencode/agents/meeting-assistant.md`: the meeting-assistant, `mode: subagent`, with the same instructions as Claude Code's (a test checks they are the same), no model of its own (it uses the session's) and no `steps` (OpenCode takes an agent's tools away on its last step). Its rules are in `opencode.json`, not in this file, so that your own `.opencode/opencode.json` can let it read outside this folder: OpenCode applies an agent file's rules after every config file's, and they would win.
+
+### Installed from npm
+
+1. Make a folder for your meeting sessions and set it up for OpenCode, with `--source <folder>` for each folder outside it the meeting-assistant may read (your profile's knowledge sources):
+   ```bash
+   mkdir -p ~/agentvoice-session && cd ~/agentvoice-session && agentvoice setup opencode --source ~/work/acme-docs --source ~/work/acme-website
+   ```
+   It takes a folder that isn't there yet or is empty (or one it set up before for your AgentVoice folder), never your AgentVoice folder, your home folder or a project of yours. It must be a folder of yours, in folders only you can change (never one another user made, or one in a folder other people can write): anyone else who can change it could replace the floor and the configs setup writes there. A folder your own group can write is fine when no one else is in that group, as with the group of your own that Ubuntu and Fedora give each user; for any other, setup names the folder and the `chmod go-w` that makes it yours alone. It checks your OpenCode (V2, 2.3.2 or later), makes the folder a Git repository of its own, and writes `opencode.json` and `.opencode/agents/meeting-assistant.md` from the package's. `--source` and `--no-sources` work as the script's do, in your own `.opencode/opencode.json`, which setup only adds to.
+2. Then as above, in that folder: steps 2 to 4.
+
+The `opencode.json` it writes is the committed one with these changes:
+- The channel is started by absolute paths into the installed package (`command` is the Node you ran setup with, the package's `agentvoice.js` and `channel`), and its `environment` has `AGENTVOICE_HOME`, your AgentVoice folder, beside `AGENTVOICE_CLIENT`: the background service, which runs the channel, doesn't see your terminal's environment, so this is how the channel finds your `.env` and data folder.
+- The shell asks before `*agentvoice* slides *` instead of `npm run slides *`. OpenCode's `*` matches any characters, `/` included, so it asks however the command is run: `agentvoice slides …`, `npx @zgentic/agentvoice slides …`, a full path to `agentvoice`, and the `<node> <…/agentvoice.js> slides …` form this same file starts the channel with. The channel's check for a saved "Allow always" (see [Answering while you are away](#answering-while-you-are-away)) looks for one that would let `agentvoice slides` or that `<node> <…/agentvoice.js> slides` form run unasked.
+- The meeting-assistant may also read the transcripts and minutes in your data folder (`~/.agentvoice/data/transcripts` and `minutes`), which the meeting names and which are outside the session folder; the floor's names stay denied there, as everywhere.
+
+Setup rewrites `opencode.json` when you run it again, after upgrading AgentVoice or Node, say: read it, as you would after a pull, before you start OpenCode, and do it between meetings. It stops, with a diff, if you changed `opencode.json` or the agent file, and replaces them only with `--replace-changed`, keeping yours as backups: put your own settings in `.opencode/opencode.json`.
 
 ## What works, and what doesn't
 
@@ -42,7 +60,7 @@ What is committed:
 | The minutes | in `meeting_ended`, and in the meeting-assistant's report | the same |
 | Joining from Telegram | yes | no: `ZOOM_JOIN_TELEGRAM_CHATS` is ignored, with a warning |
 | The meeting-assistant's tools | its six channel tools, and Read, Grep and Glob | its six channel tools and `read`, by exact path; `grep`, `glob` and the shell are denied |
-| Its reading outside this folder | the folders you allow in `settings.local.json` | the folders you give `install-opencode.sh --source` |
+| Its reading outside this folder | the folders you allow in `settings.local.json` | the folders you give `install-opencode.sh --source` (or `agentvoice setup opencode --source`, which also lets it read the transcripts and minutes) |
 | What asks first | what you allow in `settings.local.json` | the same for everyone, committed: `join_meeting`, `set_brief`, `slides_control` and `npm run slides ...`; everything else runs without asking, as OpenCode does by default |
 | The file floor | deny rules on Claude Code's file tools and the shell commands it recognises | policies on OpenCode's `read` tool, anywhere on disk; not on `grep`, `glob` or the shell; no sandbox |
 | When you close it | the channel goes with it | the channel stays in OpenCode's background service, and your session can still answer |
@@ -90,7 +108,7 @@ Its limits:
 - **`grep`, `glob` and the shell aren't covered.** OpenCode checks `grep` and `glob` on their search pattern, not on the files they read, and the shell runs with your full rights: in your own session, a `grep` given a denied folder returned a line from a file in it. The meeting-assistant has none of the three. Keep secrets out of the folders your session works in.
 - **No sandbox.** OpenCode says so itself.
 - The channel itself reads `.env` and the data folder, as with every client. That is why `join_meeting` takes a brief or a script as text, never a path.
-- **No trust step.** OpenCode loads `opencode.json` and `.opencode/` from a folder without asking. Read changes to them, as you would code, before you start OpenCode after a pull.
+- **No trust step.** OpenCode loads `opencode.json` and `.opencode/` from a folder without asking. Read changes to them, as you would code, before you start OpenCode after a pull (from npm, after `agentvoice setup opencode` or an upgrade).
 
 The meeting-assistant: `agents.meeting-assistant` in `opencode.json` denies it everything, then allows its six channel tools and `read`, and denies `grep`, `glob` and the shell. In the check its tools were exactly `read`, `skill` (listed, but refused when used) and the six. Outside this folder it reads only in the folders you gave `--source` (another folder outside gave "Permission denied: external_directory"), and the floor's names stay denied there too.
 
@@ -114,7 +132,7 @@ Not checked: OpenCode's terminal UI (every run used `opencode run`, which refuse
 
 ## How to check it works
 
-1. `scripts/install-opencode.sh` prints `Wrote <this folder>/.opencode/opencode.json.` and the folders the meeting-assistant may read.
+1. `scripts/install-opencode.sh` prints `Wrote <this folder>/.opencode/opencode.json.` and the folders the meeting-assistant may read. From npm, `agentvoice setup opencode` prints `Done (OpenCode <version>).`, with the folders the meeting-assistant may read.
 2. With the voice service and OpenCode's service running, start OpenCode here. The voice service's log shows `[bridge] Coding session #N can't be sent questions: only its meeting-assistant takes them`. Ask the session "why didn't Alex answer?" (no meeting is needed): the log then shows `[bridge] Coding session #N can be sent questions`, so the channel knows your session and has found the service. If it doesn't, check `opencode service status`.
 3. Ask the session to read `.env`: the read is refused, "Blocked by configuration policy".
 4. In a test meeting you host, send Alex in from the session, allow `join_meeting`, and check that the session starts the meeting-assistant. Ask Alex something the brief doesn't cover: Alex says it is checking, then says the answer.

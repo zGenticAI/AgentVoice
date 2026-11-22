@@ -7,6 +7,7 @@
 // logged: the messages go to the owner, and name the fix.
 import fs from 'node:fs'
 import path from 'node:path'
+import { WORDS } from '../commands.ts'
 import { DeckError, DeckStore } from './deck.ts'
 import { DECK_ID, type Manifest } from './manifest.ts'
 import { type PresenterSlide, presenterSlides } from './presenter.ts'
@@ -50,7 +51,7 @@ export interface DeckPlace {
   touch?: boolean
 }
 
-const CHECK_IT = 'npm run slides -- check <your script> lists everything'
+const CHECK_IT = `${WORDS.run('slides', 'check <your script>')} lists everything`
 
 /**
  * The slides a join brings, checked and read: {script: <canonical text>, from?: <page>}. Throws SlidesRefused with the
@@ -59,7 +60,7 @@ const CHECK_IT = 'npm run slides -- check <your script> lists everything'
  */
 export function meetingDeck(given: unknown, place: DeckPlace): MeetingDeck {
   if (typeof given !== 'object' || given === null || Array.isArray(given)) {
-    throw new SlidesRefused('slides has to be {script, from}: the script as npm run join or the channel sends it.')
+    throw new SlidesRefused(`slides has to be {script, from}: the script as ${WORDS.run('join')} or the channel sends it.`)
   }
   const { script: text, from } = given as Record<string, unknown>
   if (typeof text !== 'string' || !text.trim()) {
@@ -68,7 +69,7 @@ export function meetingDeck(given: unknown, place: DeckPlace): MeetingDeck {
   if (Buffer.byteLength(text) > MAX_SCRIPT_FILE_BYTES) throw new SlidesRefused(`The script is over ${MAX_SCRIPT_FILE_BYTES} bytes.`)
   if (text.includes('<!--')) {
     throw new SlidesRefused(
-      'The script still has comments in it. npm run join and the channel send it without them, so that your notes never reach ' +
+      `The script still has comments in it. ${WORDS.run('join')} and the channel send it without them, so that your notes never reach ` +
         'the voice service: send it one of those ways.',
     )
   }
@@ -93,7 +94,7 @@ export function meetingDeck(given: unknown, place: DeckPlace): MeetingDeck {
     if (err instanceof DeckError && err.code === 'missing') {
       throw new SlidesRefused(
         `The prepared deck ${script.deck} is gone (a deck is deleted ${place.retentionDays} days after it was last used, or by slides delete). ` +
-          'Run npm run slides -- prepare <your PDF> again: your script is kept, and updated for the new deck.',
+          `Run ${WORDS.run('slides', 'prepare <your PDF>')} again: your script is kept, and updated for the new deck.`,
       )
     }
     if (err instanceof DeckError) throw new SlidesRefused(err.message)

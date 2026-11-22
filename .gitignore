@@ -31,3 +31,5 @@ profile.md
 /*.script.md
 # Your own list of private terms, which test/private-terms.test.ts checks the tree for (see test/private-terms.ts).
 private-terms.txt
+# What npm pack leaves here.
+/*.tgz

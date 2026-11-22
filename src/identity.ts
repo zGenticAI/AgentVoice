@@ -35,6 +35,7 @@
 // written into the code. Longer prose about the owner (standing context, sources, rules) is in the owner's profile
 // (src/profile.ts). src/name-check.ts says whether the names work, and why not (npm run check-name).
 import './env.ts'
+import { WORDS } from './commands.ts'
 
 /** The name the assistant has unless .env names another: the only one with field data (ALEX_PROFILE). */
 export const DEFAULT_NAME = 'Alex'
@@ -241,12 +242,12 @@ export function botName(env: Env, name: string, warn: (message: string) => void,
   if (old && hasWord(old, DEFAULT_NAME) && fold(name) !== fold(DEFAULT_NAME)) {
     warn(
       `[identity] ALEX_BOT_NAME is "${old}", which names ${DEFAULT_NAME}, but AGENT_NAME is "${name}": it is ignored, and the ` +
-        `participant list shows "${made}". Take ALEX_BOT_NAME out of .env, or set AGENT_BOT_NAME to one that starts with "${name}".`,
+        `participant list shows "${made}". Take ALEX_BOT_NAME out of ${WORDS.envFile}, or set AGENT_BOT_NAME to one that starts with "${name}".`,
     )
     return made
   }
   if (old) {
-    warn('[identity] ALEX_BOT_NAME is now called AGENT_BOT_NAME. It still works for now: rename it in .env.')
+    warn(`[identity] ALEX_BOT_NAME is now called AGENT_BOT_NAME. It still works for now: rename it in ${WORDS.envFile}.`)
     return old
   }
   return made

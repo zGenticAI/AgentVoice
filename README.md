@@ -23,7 +23,7 @@ bot page ⇄ your tunnel (public HTTPS) ⇄ voice service (this repository, on y
 
 The assistant is called Alex unless you choose another name, and introduces itself as your assistant. This README says Alex, and Sam for you, its owner.
 
-- **Joining.** You send Alex into a meeting with `npm run join -- <link>`, or by asking your coding session. A Recall.ai bot joins as a guest called "Alex (Sam's AI assistant)". Its camera is a web page served by your computer, which streams the meeting's audio to the voice service and plays Alex's voice.
+- **Joining.** You send Alex into a meeting with `npm run join -- <link>` (`agentvoice join <link>` from npm), or by asking your coding session. A Recall.ai bot joins as a guest called "Alex (Sam's AI assistant)". Its camera is a web page served by your computer, which streams the meeting's audio to the voice service and plays Alex's voice.
 - **Telling the meeting.** As it joins, Alex says that it is an AI assistant, that it is transcribing, that it can't agree to anything for you, and how to make it leave. It also posts a notice in the meeting chat: that it is an AI assistant transcribing the meeting, that it sends you a summary, that it keeps no recording of the meeting, how long it keeps its transcripts, and how to make it leave.
 - **Answering.** Alex answers when a line is said to it by name and asks something ("Alex, what's the timeline?"), and, right after it has asked something or someone has said just "Alex?", the next thing said. It doesn't answer talk about it ("I asked Alex yesterday"), thanks or side conversation.
 - **Two tiers.** The fast tier is Claude with the brief and the recent transcript, and answers in a second or two. When a question needs more (current work, documents, decisions), Alex says it is checking and hands the question to your coding session through an MCP channel. The session's meeting-assistant agent, started when the session sends Alex in, looks in the sources you allow and replies, and Alex speaks the answer. When no meeting-assistant is running, Claude Code takes a question in the session itself, and so does OpenCode once it knows which session is yours; Codex takes them only through the meeting-assistant.
@@ -56,11 +56,45 @@ You pay each service directly, on your own account. What uses it:
 | Deepgram | streamed audio | all of the meeting's audio while Alex is in it |
 | Anthropic (Claude API) | tokens | each answer (the rules, the brief and up to about 12,000 characters of transcript, with the rules and brief cached; in a meeting with slides, also the outline, up to 8,000 characters, cached with them, and the slide on screen, up to 6,000), and one call per meeting for the minutes |
 | ElevenLabs | characters spoken | Alex's answers, and every sentence of a script each time Alex presents it (up to 40,000 characters a script). Its fixed lines (the consent line, "let me check" and so on, and the slides' own once presenting is on) are made once per voice and kept. |
-| Your coding session (Claude Code, Codex or OpenCode) | your plan's usage, or API tokens at the provider of the model it uses | writing the brief; for a meeting started with `npm run join`, answering its questions (in Claude Code, every session with the channel loaded gets them until one replies; not in Codex); when the session sends Alex in, the meeting-assistant agent, which runs for the whole meeting (it waits for questions, answers them, and reads the transcript and your sources when it is quiet); and, after the meeting, reading the transcript and the minutes. In OpenCode, each question or event posted into your session starts a turn, also while you are away |
+| Your coding session (Claude Code, Codex or OpenCode) | your plan's usage, or API tokens at the provider of the model it uses | writing the brief; for a meeting started with `npm run join` or `agentvoice join`, answering its questions (in Claude Code, every session with the channel loaded gets them until one replies; not in Codex); when the session sends Alex in, the meeting-assistant agent, which runs for the whole meeting (it waits for questions, answers them, and reads the transcript and your sources when it is quiet); and, after the meeting, reading the transcript and the minutes. In OpenCode, each question or event posted into your session starts a turn, also while you are away |
 
 See each provider's pricing page for the current rates. `MAX_MEETINGS` (3 at once unless set) and `MAX_MEETING_MINUTES` (180 unless set) limit what a stray bot can cost, and the bot leaves by itself when nobody else joins within 5 minutes, when everyone else has left, or after 15 minutes of silence (up to 60 in a meeting with slides, whose script sets it). Set a spending limit at each provider as well (see [Limits on cost](docs/security.md#limits-on-cost)).
 
 ## Quick start
+
+Two ways, the same assistant: install it from npm, or clone the repository. From npm, it is one command, `agentvoice`, and your settings and data are in a folder of your own, `~/.agentvoice`. In a clone, they are in the clone, and you run its npm scripts.
+
+### From npm
+
+You need Node.js 24 or later and npm 11 or 12. Install it as yourself, never with `sudo`: with a system-wide Node, use a version manager (such as nvm, fnm or Volta) or an npm prefix in your home folder.
+
+```bash
+npm install -g @zgentic/agentvoice
+agentvoice init
+```
+
+npm 11 says that esbuild's install script is "not yet covered by allowScripts", and npm 12 doesn't run it: either way is fine, AgentVoice doesn't need it.
+
+`agentvoice init` makes your AgentVoice folder, `~/.agentvoice`, which only you can open: `.env` (readable only by you), `profile.md` and the shared brief `data/brief.md` from the examples, and `briefs/`. It never overwrites a file. To keep that folder somewhere else, set `AGENTVOICE_HOME` to its absolute path (or one starting with `~/`) in your shell's profile before `agentvoice init`: `agentvoice service install` and `agentvoice setup` write it into the service and your coding client's config themselves.
+
+1. **In `~/.agentvoice/.env`, set:**
+   - `OWNER_NAME`: your name, as Alex says it.
+   - The keys: `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY` with `ELEVENLABS_VOICE_ID`, and `RECALL_API_KEY` with `RECALL_REGION`, your Recall account's region.
+   - `AGENT_PAGE_TOKEN`: the output of `openssl rand -hex 24`.
+   - `PUBLIC_URL`: your tunnel's address, such as `https://assistant.example.com`. Point the tunnel at `http://127.0.0.1:8787`.
+2. **Edit `~/.agentvoice/profile.md`:** a sentence or two about you, which questions go to your session, where it may look, and what must never be shared.
+3. **Run `agentvoice check`.** It checks your settings, prints what Alex will say, and tries the Anthropic, Deepgram and ElevenLabs keys. The Recall key is first used when Alex joins a meeting.
+4. **Start the service** with `agentvoice start`, or with `agentvoice service install` to keep it running as a launchd or systemd service. Then, from outside your network (a phone with Wi-Fi off, say), open your `PUBLIC_URL` followed by `/health`: it has to show `{"ok":true}`, or the meeting bot can't reach its page. A test from your own network can pass when the bot can't.
+5. **Write the brief** for the meeting: what Alex may say, and what it must not, in `~/.agentvoice/data/brief.md`, which `agentvoice init` made from the example, readable only by you. Fill it in, or have your coding session write it (see below). That is the shared brief, for every meeting without one of its own.
+6. **Send Alex into a meeting.** If the meeting has a waiting room, admit it from there.
+   ```bash
+   agentvoice join "https://us06web.zoom.us/j/123456789?pwd=..."
+   ```
+   To give the meeting a brief of its own instead, add `--brief` and its file: `agentvoice join "<link>" --brief ~/.agentvoice/briefs/acme.md` (a path from the folder you run it in). That meeting answers from it, and no other meeting sees it.
+
+`agentvoice --help` lists every command, and `agentvoice help <command>` its options.
+
+### From a clone
 
 Clone the repository and set it up:
 
@@ -87,7 +121,15 @@ cp profile.example.md profile.md
    ```
    To give the meeting a brief of its own instead, add `--brief` and its file: `npm run join -- "<link>" --brief briefs/acme.md`. That meeting answers from it, and no other meeting sees it. `briefs/` is gitignored, or keep them outside this folder.
 
-[Setting it up](docs/setup.md) has every step in full, with a tunnel example.
+[Setting it up](docs/setup.md) has every step in full, both ways, with a tunnel example.
+
+### Upgrading
+
+From npm: `npm install -g @zgentic/agentvoice@latest`, then run `agentvoice service install` again (it restarts the service on the new version) and `agentvoice setup <client>` again in your session folder (it refreshes the files it wrote there, and stops, saying why, at a file you changed). With Homebrew's Node, `brew upgrade node` needs neither. After switching to another Node (nvm keeps a prefix per version), install AgentVoice there first, then run both again. An upgrade never touches your AgentVoice folder.
+
+### Uninstalling
+
+From npm: `agentvoice service uninstall` if you installed the service, then `npm uninstall -g @zgentic/agentvoice`. `~/.agentvoice`, with your settings, transcripts and minutes, stays until you delete it, and so does each session folder `agentvoice setup` made.
 
 ## In a meeting
 
@@ -96,7 +138,7 @@ cp profile.example.md profile.md
 | "Alex, what's the timeline?" | It answers, from the brief or after checking with your session. |
 | "Alex, never mind" or "Alex, stop" | It stops talking, and drops the question. |
 | Talking over it while it answers | It pauses at once. It stops for real words, and carries on for "mm-hm", "yeah", "okay" or a cough. It can be talked over until the bot page has played the end of the answer. The transcript keeps only the words the meeting heard, ending in "(cut off)". |
-| "Alex, please leave" | It says goodbye and leaves. It deletes its transcript of the meeting (in `data/`), and writes no minutes. |
+| "Alex, please leave" | It says goodbye and leaves. It deletes its transcript of the meeting (in `data/`, or `~/.agentvoice/data/` from npm), and writes no minutes. |
 | Removing it from the participant list | The same as "Alex, please leave", once Recall confirms the removal. |
 | "Alex, start the presentation" (in a meeting it has slides for) | It shares its slides and presents them. "Alex, next slide", "go back", "go to slide 5", "pause", "carry on" and "stop presenting" steer it ([When Alex presents](docs/in-a-meeting.md#when-alex-presents)). |
 
@@ -104,7 +146,13 @@ When Alex isn't sure a line was said to it, it stays quiet: say its name again. 
 
 ## Linking your coding session
 
-With Claude Code:
+From npm, your coding session starts in a folder of its own, which `agentvoice setup` makes: a new, empty folder (or one it made before), never your AgentVoice folder or one of your projects, since that folder is what the meeting-assistant can reach. With Claude Code:
+```bash
+mkdir -p ~/agentvoice-session && cd ~/agentvoice-session && agentvoice setup claude-code
+```
+It writes the floor and the meeting-assistant agent into that folder, allows the agent its channel tools and reading the meeting's transcript and minutes, and registers the channel for that folder only. Before a meeting, start Claude Code there with the same command as in step 2 below, then go on from step 3. For Codex or OpenCode, run `agentvoice setup codex` or `agentvoice setup opencode` in a folder of its own instead, and read the client's page first: [Codex](docs/codex.md) or [OpenCode](docs/opencode.md).
+
+From a clone, with Claude Code:
 1. Register the channel once with `scripts/install-channel.sh`. It is registered for this folder only, so start Claude Code here.
 2. Before a meeting, start Claude Code in this folder with the channel loaded, or resume a session with it (add `--resume`):
    ```bash
@@ -159,7 +207,7 @@ This is not legal advice. You run the assistant, so it is up to you to use it la
 | Telegram (optional) | Requests to join a meeting, and anything your session sends you there, such as the minutes. | Telegram's terms. Bot chats are not end-to-end encrypted. |
 | The meeting's chat | The chat notice, the longer detail of your session's answers, anything your session posts with `post_chat`, and the notice Alex posts when it reaches `MAX_MEETING_MINUTES`. | The meeting platform keeps it like any chat message. |
 | The meeting itself | The slides Alex presents, shared as its screen: anyone in the meeting can screenshot or record them. Only the slides your script shows: an excluded one never leaves your computer. | As the meeting's own recordings, if any. |
-| Your computer (`data/`) | Transcripts, minutes, the shared brief, the audio of Alex's fixed lines, and the service's log. With the speaker probe, `data/speaker-probe/`: each test meeting's measurements, counts and timings only, with no names or words (see [Measuring who is speaking](docs/speaker-probe.md)). A meeting's own brief is never written there: the service keeps it in memory. The slide decks you prepare, in `data/decks/`: each slide's image and text, and the contact sheet (see [Presenting slides](docs/presenting.md)). In a meeting with slides, the service holds the script without its comments, and the images of the slides it shows, in memory only, until the bot is out of the call. The log never holds what was said, a meeting's link or any of a brief: it holds each bot's id, the meeting's platform and how the meeting ended. | Readable only by you. Transcripts and minutes, and the speaker probe's measurements with them, are deleted after `TRANSCRIPT_RETENTION_DAYS` (30 unless set), or at once when someone asks Alex to leave, or removes it and Recall confirms the removal (see [Minutes and meeting data](docs/minutes-and-data.md#minutes)). A prepared deck is deleted `DECK_RETENTION_DAYS` (30 unless set) after it was last used, or with `npm run slides -- delete`. The shared brief stays until it is replaced, a meeting's own brief until that meeting is over, and the log until you delete it. |
+| Your computer (`data/`, or `~/.agentvoice/data/` from npm) | Transcripts, minutes, the shared brief, the audio of Alex's fixed lines, and the service's log. With the speaker probe, `data/speaker-probe/`: each test meeting's measurements, counts and timings only, with no names or words (see [Measuring who is speaking](docs/speaker-probe.md)). A meeting's own brief is never written there: the service keeps it in memory. The slide decks you prepare, in `data/decks/`: each slide's image and text, and the contact sheet (see [Presenting slides](docs/presenting.md)). In a meeting with slides, the service holds the script without its comments, and the images of the slides it shows, in memory only, until the bot is out of the call. The log never holds what was said, a meeting's link or any of a brief: it holds each bot's id, the meeting's platform and how the meeting ended. | Readable only by you. Transcripts and minutes, and the speaker probe's measurements with them, are deleted after `TRANSCRIPT_RETENTION_DAYS` (30 unless set), or at once when someone asks Alex to leave, or removes it and Recall confirms the removal (see [Minutes and meeting data](docs/minutes-and-data.md#minutes)). A prepared deck is deleted `DECK_RETENTION_DAYS` (30 unless set) after it was last used, or with `npm run slides -- delete`. The shared brief stays until it is replaced, a meeting's own brief until that meeting is over, and the log until you delete it. |
 
 [Minutes and meeting data](docs/minutes-and-data.md) has the details.
 
@@ -192,7 +240,7 @@ See [Ports and security](docs/security.md). To report a vulnerability, see [SECU
 
 ## Documentation
 
-- [Setting it up](docs/setup.md): every step, a tunnel example, and keeping the service running.
+- [Setting it up](docs/setup.md): every step, from npm or a clone, a tunnel example, keeping the service running, and moving a clone's setup to npm.
 - [In a meeting](docs/in-a-meeting.md): joining, the consent line, leaving and stopping, the rules for when Alex answers, what people can say while it presents, what happens when the connection drops, and asking your session why Alex didn't answer.
 - [Your Claude Code session](docs/claude-code.md): the channel and its tools (briefs, `why_not_answered`, presenting), the meeting-assistant agent, permissions and safety. With Codex or OpenCode, read it too, for what works the same in every client.
 - [Codex](docs/codex.md): Codex CLI as your coding session, pull only: setting it up, what differs from Claude Code, the meeting-assistant's shell, and the floor.
@@ -205,7 +253,7 @@ See [Ports and security](docs/security.md). To report a vulnerability, see [SECU
 - [Measuring Deepgram Flux](docs/flux-probe.md): `npm run flux-probe`, which streams test clips to Deepgram as the service does, to tune when talking over Alex stops it.
 - [Testing a screen share](docs/share-test.md): `npm run join -- "<link>" --share-test`, which checks in a test meeting you host whether Alex's voice and hearing keep running while it shares a screen.
 - [Ports and security](docs/security.md): the listeners, tokens and files, and the limits on cost.
-- [Development](docs/development.md): the tests, the name corpus, and what's where.
+- [Development](docs/development.md): the tests, the name corpus, what's where, and how a release is published.
 
 ## Contributing
 

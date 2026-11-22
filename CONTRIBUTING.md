@@ -33,6 +33,8 @@ npm run typecheck
 
 [Development](docs/development.md) has more about the tests and the layout of the code.
 
+Releases are made by the maintainer, as [Releasing](docs/development.md#releasing) in docs/development.md says.
+
 ## Private terms
 
 `test/private-terms.test.ts` checks that no file git would commit holds a macOS home folder path, a link into a claude.ai account or an email address. It can also check for your own private terms (your name, your company, your hostnames) from a list you keep outside the repository, so that they are caught before you commit: see `test/private-terms.ts`.

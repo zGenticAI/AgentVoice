@@ -1,10 +1,11 @@
 // What npm run join takes: the meeting link, and the options for that meeting. Kept apart from the command so it can be
 // tested without a voice service.
+import { WORDS } from '../commands.ts'
 
 export const JOIN_USAGE =
-  'Usage: npm run join -- "<Zoom, Google Meet or Microsoft Teams meeting link>" [--brief <file>] [--speaker-probe]\n' +
-  '       npm run join -- "<meeting link>" --slides <deck.script.md> [--from <slide>] [--brief <file>]\n' +
-  '       npm run join -- "<meeting link>" --share-test [--json <file>] [--keep] [--brief <file>]'
+  `Usage: ${WORDS.run('join', '"<Zoom, Google Meet or Microsoft Teams meeting link>" [--brief <file>] [--speaker-probe]')}\n` +
+  `       ${WORDS.run('join', '"<meeting link>" --slides <deck.script.md> [--from <slide>] [--brief <file>]')}\n` +
+  `       ${WORDS.run('join', '"<meeting link>" --share-test [--json <file>] [--keep] [--brief <file>]')}`
 
 export interface JoinArgs {
   meetingUrl: string

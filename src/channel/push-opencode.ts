@@ -23,6 +23,9 @@ import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { commandWords } from '../commands.ts'
+import { INSTALL_MODE, type InstallMode, OWNER_DIR } from '../home.ts'
+import { agentvoiceCommand } from '../setup/node-path.ts'
 import type { Client } from './client-text.ts'
 import { type ChannelEvent, type PushSink, plainEvent } from './sink.ts'
 
@@ -267,27 +270,56 @@ function wildcard(input: string, pattern: string): boolean {
   return new RegExp('^' + escaped + '$', 's').test(input.replaceAll('\\', '/'))
 }
 
+export interface AlwaysAsk {
+  action: string
+  resource: string
+  named: string
+}
+
+const MCP_ASKS: readonly AlwaysAsk[] = [
+  { action: 'zoom-meeting_join_meeting', resource: '*', named: 'join_meeting' },
+  { action: 'zoom-meeting_set_brief', resource: '*', named: 'set_brief' },
+  { action: 'zoom-meeting_slides_control', resource: '*', named: 'slides_control' },
+]
+const CLONE_SLIDES = commandWords('clone', OWNER_DIR).run('slides')
+
 /**
  * What the committed opencode.json makes ask every time (decision: they always ask), as OpenCode checks a call against
  * a rule: its action, and its resource ("*" for an MCP tool; the command for the shell).
  */
-export const ALWAYS_ASK: readonly { action: string; resource: string; named: string }[] = [
-  { action: 'zoom-meeting_join_meeting', resource: '*', named: 'join_meeting' },
-  { action: 'zoom-meeting_set_brief', resource: '*', named: 'set_brief' },
-  { action: 'zoom-meeting_slides_control', resource: '*', named: 'slides_control' },
-  { action: 'shell', resource: 'npm run slides', named: 'npm run slides' },
-  { action: 'shell', resource: 'npm run slides -- start deck.pdf', named: 'npm run slides' },
+export const ALWAYS_ASK: readonly AlwaysAsk[] = [
+  ...MCP_ASKS,
+  { action: 'shell', resource: CLONE_SLIDES, named: CLONE_SLIDES },
+  { action: 'shell', resource: commandWords('clone', OWNER_DIR).run('slides', 'start deck.pdf'), named: CLONE_SLIDES },
 ]
 
 /**
- * Which of ALWAYS_ASK a project's saved approvals ("Allow always") let run without asking, by name, and those
- * approvals' IDs (only plain ones, for the line that says how to remove them); null if the list can't be read.
+ * The same, in this mode. Installed from npm, the slides command is agentvoice slides, which the opencode.json that
+ * agentvoice setup writes makes ask however it is run: by name, or as the command that same file starts the channel
+ * with (<node> <bin>, command()).
  */
-export function savedLifts(rows: unknown): { named: string[]; ids: string[] } | null {
+export function alwaysAsk(mode: InstallMode, command: () => [string, string] = agentvoiceCommand): readonly AlwaysAsk[] {
+  if (mode === 'clone') return ALWAYS_ASK
+  const slides = commandWords('installed', OWNER_DIR).run('slides')
+  const [node, bin] = command()
+  return [
+    ...MCP_ASKS,
+    { action: 'shell', resource: slides, named: slides },
+    { action: 'shell', resource: `${slides} prepare deck.pdf`, named: slides },
+    { action: 'shell', resource: `${node} ${bin} slides prepare deck.pdf`, named: slides },
+  ]
+}
+
+/**
+ * Which of the always-asked (alwaysAsk, in this mode) a project's saved approvals ("Allow always") let run without
+ * asking, by name, and those approvals' IDs (only plain ones, for the line that says how to remove them); null if the
+ * list can't be read.
+ */
+export function savedLifts(rows: unknown, asks: readonly AlwaysAsk[] = alwaysAsk(INSTALL_MODE)): { named: string[]; ids: string[] } | null {
   if (!Array.isArray(rows)) return null
   const named = new Set<string>()
   const ids = new Set<string>()
-  for (const ask of ALWAYS_ASK) {
+  for (const ask of asks) {
     for (const row of rows) {
       const r = record(row)
       if (typeof r?.action !== 'string' || typeof r.resource !== 'string' || !wildcard(ask.action, r.action) || !wildcard(ask.resource, r.resource)) continue

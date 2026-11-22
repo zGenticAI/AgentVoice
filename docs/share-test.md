@@ -2,6 +2,8 @@
 
 A test you run in a test meeting you host, with your real Recall account. These pages call the assistant Alex, its default name.
 
+Installed from npm, each `npm run <command> -- …` on this page is `agentvoice <command> …` (a file you name in it is found from the folder you run it in), and `.env` and `data/` are in your AgentVoice folder: `~/.agentvoice/.env` and `~/.agentvoice/data/`.
+
 ## What it checks, and why
 
 The slides feature ([Presenting slides](presenting.md)) has Alex present a deck by sharing a page as its screen, while its camera page keeps carrying its voice and its hearing. One thing no Recall document settles: when the bot starts, replaces or stops a screen share mid-call, does Alex's camera page keep running untouched? If it reloads, or its connection drops, Alex goes deaf and silent for a moment, or drops out of the meeting.
@@ -36,6 +38,10 @@ Check these before you start. The test says the one for your meeting's platform,
 npm run join -- "<meeting link>" --share-test
 npm run join -- "<meeting link>" --share-test --json data/share-test-zoom.json   # also the raw step records
 npm run join -- "<meeting link>" --share-test --keep                             # Alex stays in the meeting after
+# installed from npm:
+agentvoice join "<meeting link>" --share-test
+agentvoice join "<meeting link>" --share-test --json ~/.agentvoice/data/share-test-zoom.json
+agentvoice join "<meeting link>" --share-test --keep
 ```
 
 | Option | What it does |

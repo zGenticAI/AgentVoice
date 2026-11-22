@@ -9,6 +9,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ROOT } from '../src/config.ts'
+import { PACKAGE_NAME } from '../src/home.ts'
+import { renderCodex } from '../src/setup/codex.ts'
 import { CODEX_CONFIG, codexProfile } from './client-floors.ts'
 import { parseToml, type TomlTable } from './toml.ts'
 
@@ -304,4 +306,32 @@ test('install-codex.sh refuses a home folder inside a temporary folder on Linux,
   assert.equal(box.run([], { home: besideTmp }).status, 0)
   assert.ok(!fs.existsSync(besideTmp), 'nothing made there')
   assert.deepEqual(box.snapshot(), before, 'nothing written')
+})
+
+// --- Installed from npm: what agentvoice setup codex writes ------------------------------------------------------
+test('installed, the config setup writes starts the installed package by absolute paths, and its home entries name the AgentVoice folder', () => {
+  const node = '/opt/homebrew/opt/node/bin/node'
+  const bin = `/opt/homebrew/lib/node_modules/${PACKAGE_NAME}/bin/agentvoice.js`
+  for (const [home, keyed] of [['/home/sam/.agentvoice', '~/.agentvoice'], ['/srv/work/av home', '/srv/work/av home']] as const) {
+    const config = parseToml(renderCodex({ packageDir: ROOT, home, dataDir: `${home}/data`, node, bin, homeDir: '/home/sam' })[0].content)
+    const server = (config.mcp_servers as TomlTable)['zoom-meeting'] as TomlTable
+    // The channel: this node and the package's bin, absolute, and the AgentVoice folder in its own environment (Codex
+    // gives a server only the variables its config names). Still no cwd.
+    assert.equal(server.command, node)
+    assert.deepEqual(server.args, [bin, 'channel'])
+    assert.deepEqual(server.env, { AGENTVOICE_CLIENT: 'codex', AGENTVOICE_HOME: home })
+    assert.deepEqual(Object.keys(server).sort(), ['args', 'command', 'default_tools_approval_mode', 'env', 'tool_timeout_sec', 'tools'])
+    // The home-folder entries: ~/ (the committed file's only form) or, for an AgentVoice folder elsewhere, absolute.
+    // Every one denies, and none is a pattern.
+    const filesystem = ((config.permissions as TomlTable).agentvoice as TomlTable).filesystem as TomlTable
+    for (const [key, access] of Object.entries(filesystem)) {
+      if (key === 'glob_scan_max_depth' || key === ':workspace_roots') continue
+      assert.match(key, /^(~\/|\/)[^*?[\]]+$/, key)
+      assert.equal(access, 'deny', key)
+    }
+    for (const rel of ['.env', '.env.local', '.env.production.local', 'data/local-token', 'data/decks']) assert.equal(filesystem[`${keyed}/${rel}`], 'deny', `${keyed}/${rel}`)
+    // The approval modes and the patterns are the committed file's.
+    assert.deepEqual(server.tools, SERVER.tools)
+    assert.deepEqual(filesystem[':workspace_roots'], (codexProfile().filesystem as TomlTable)[':workspace_roots'])
+  }
 })

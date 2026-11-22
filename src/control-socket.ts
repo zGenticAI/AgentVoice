@@ -6,7 +6,9 @@
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
+import { WORDS } from './commands.ts'
 import { config } from './config.ts'
+import { refuseInsidePackage } from './home.ts'
 
 // The longest path a Unix socket can have, in bytes with the terminating NUL (sun_path): 108 on Linux, 104 on
 // macOS and the BSDs. A longer one fails to bind, or is cut short.
@@ -29,7 +31,7 @@ export function controlSocketProblem(socketPath: string): string {
   if (bytes >= SUN_PATH_BYTES) {
     return (
       `The control socket ${socketPath} is ${bytes} bytes long, longer than this system allows (${SUN_PATH_BYTES - 1}). ` +
-      'Set CONTROL_SOCKET in .env to a shorter path, in a folder only you can open (for example ~/.agent-voice/control.sock, after mkdir -m 700 ~/.agent-voice).'
+      `Set CONTROL_SOCKET in ${WORDS.envFile} to a shorter path, in a folder only you can open (for example ~/.agent-voice/control.sock, after mkdir -m 700 ~/.agent-voice).`
     )
   }
   const dir = path.dirname(socketPath)
@@ -37,7 +39,7 @@ export function controlSocketProblem(socketPath: string): string {
   try {
     stat = fs.statSync(dir)
   } catch {
-    return `The folder of the control socket, ${dir}, does not exist. Start the voice service once to make the data folder, or set CONTROL_SOCKET in .env.`
+    return `The folder of the control socket, ${dir}, does not exist. Start the voice service once to make the data folder, or set CONTROL_SOCKET in ${WORDS.envFile}.`
   }
   const uid = process.getuid?.()
   const yours = uid === undefined || stat.uid === uid
@@ -45,7 +47,7 @@ export function controlSocketProblem(socketPath: string): string {
     return (
       `The control socket must be in a folder only you can open, and ${dir} is not ` +
       `(${yours ? `mode ${(stat.mode & 0o777).toString(8)}` : "it is another user's"}). ` +
-      `Run chmod 700 ${dir}, or set CONTROL_SOCKET in .env to a path in such a folder.`
+      `Run chmod 700 ${dir}, or set CONTROL_SOCKET in ${WORDS.envFile} to a path in such a folder.`
     )
   }
   return ''
@@ -64,11 +66,13 @@ function answers(socketPath: string): Promise<boolean> {
 }
 
 /**
- * Makes the path ready for the service to listen on, or throws why it can't: the path is unusable (see
- * controlSocketProblem), something other than a socket is there (left as it is), or another voice service is
- * listening on it. A stale socket, left by a service that did not stop cleanly, is removed.
+ * Makes the path ready for the service to listen on, or throws why it can't: the path is inside the installed package
+ * (which npm replaces on every upgrade), the path is unusable (see controlSocketProblem), something other than a socket
+ * is there (left as it is), or another voice service is listening on it. A stale socket, left by a service that did not
+ * stop cleanly, is removed.
  */
 export async function prepareControlSocket(socketPath: string): Promise<void> {
+  refuseInsidePackage(socketPath, 'CONTROL_SOCKET')
   const problem = controlSocketProblem(socketPath)
   if (problem) throw new Error(problem)
   let stat: fs.Stats
@@ -79,7 +83,7 @@ export async function prepareControlSocket(socketPath: string): Promise<void> {
     throw err
   }
   if (!stat.isSocket()) {
-    throw new Error(`${socketPath} exists and is not a socket, so the voice service leaves it alone. Move it away, or set CONTROL_SOCKET in .env to another path.`)
+    throw new Error(`${socketPath} exists and is not a socket, so the voice service leaves it alone. Move it away, or set CONTROL_SOCKET in ${WORDS.envFile} to another path.`)
   }
   if (await answers(socketPath)) {
     throw new Error(`Another voice service is already running on ${socketPath}. Stop it first (${howToStop()}).`)
@@ -88,8 +92,8 @@ export async function prepareControlSocket(socketPath: string): Promise<void> {
 }
 
 /**
- * How to stop the voice service that scripts/install-service.sh installed under this label (SERVICE_LABEL), on this
- * computer's service manager, or the one started by hand.
+ * How to stop the voice service that scripts/install-service.sh (or agentvoice service install) installed under this
+ * label (SERVICE_LABEL), on this computer's service manager, or the one started by hand.
  */
 export function howToStop(label = config.serviceLabel, platform = process.platform): string {
   const manager =
@@ -98,5 +102,5 @@ export function howToStop(label = config.serviceLabel, platform = process.platfo
       : platform === 'linux'
         ? `systemctl --user stop ${label}`
         : ''
-  return `${manager ? `${manager}, or ` : ''}Ctrl-C in the Terminal running npm start`
+  return `${manager ? `${manager}, or ` : ''}Ctrl-C in the Terminal running ${WORDS.start}`
 }

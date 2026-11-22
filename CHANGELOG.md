@@ -2,6 +2,17 @@
 
 The notable changes in each version. The project follows [Semantic Versioning](https://semver.org/): until 1.0, a minor version may change settings or behaviour, and says so here.
 
+## Unreleased
+
+### Added
+
+- Install from npm: `npm install -g @zgentic/agentvoice`, then `agentvoice init`. One command, `agentvoice`, does what the npm scripts do in a clone (`agentvoice start`, `join`, `check`, `slides`, `check-name`, `speaker-report` and `flux-probe`) and sets things up: `agentvoice init` makes your AgentVoice folder, `~/.agentvoice` (or `AGENTVOICE_HOME`), readable only by you, with `.env` (from `.env.example`), `profile.md`, the shared brief and `briefs/` from the examples, and never overwrites a file; `agentvoice service install` keeps the voice service running (launchd or systemd); `agentvoice setup claude-code`, `setup codex` and `setup opencode` make a folder to start your coding session in, with the zoom-meeting channel, the meeting-assistant and the floor, by absolute paths to the installed package. Installed from npm, your settings and everything the service keeps (transcripts, minutes, decks, the local token, the control socket) are in `~/.agentvoice`, never in the package's folder, so an upgrade keeps them. See the README's Quick start.
+- Releases are published to npm from a GitHub release, by `.github/workflows/release.yml` with npm's trusted publishing (no token), with provenance, after the maintainer approves: the job that publishes runs no code from the repository and publishes the very tarball the tests ran on. `npm run check-package` checks that the package holds exactly the expected files, each tracked by git, with npm 11 and npm 12; CI also installs the package and runs it.
+
+### Changed
+
+- A cloned folder works as before: the same files in the same places, the same `npm run` scripts, the same client configs and setup scripts. `package.json` is named `@zgentic/agentvoice` and is no longer private, and its runtime dependencies are pinned to exact versions (the ones a clone already installed). `AGENTVOICE_HOME` is ignored in a clone (`npm run check` says so when it is set).
+
 ## 0.2.0
 
 ### Added

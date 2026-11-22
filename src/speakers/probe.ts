@@ -12,6 +12,7 @@
 import { createHmac, randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { WORDS } from '../commands.ts'
 import type { Platform } from '../recall.ts'
 import { PROBE_DIR } from '../transcript.ts'
 import { type Interval, attributeMerged, mergeIntervals } from './attribute.ts'
@@ -19,15 +20,15 @@ import { EVENT_KINDS, EXTRA_KEYS, type EventKind, type ExtraKey, PLATFORM_KINDS,
 
 /** What the service says at every start while SPEAKER_PROBE is on, and npm run check too. */
 export const PROBE_ON =
-  'SPEAKER_PROBE is on: a meeting joined with npm run join -- "<link>" --speaker-probe subscribes to Recall\'s ' +
+  `SPEAKER_PROBE is on: a meeting joined with ${WORDS.run('join', '"<link>" --speaker-probe')} subscribes to Recall's ` +
   'participant events (names and who is speaking reach this computer through the tunnel) and keeps measurements, numbers ' +
-  'only, in data/speaker-probe/. Use it only in test meetings whose participants have agreed (docs/speaker-probe.md), and ' +
-  'remove it from .env when the tests are done.'
+  `only, in ${WORDS.ownerPath('data/speaker-probe/')}. Use it only in test meetings whose participants have agreed (${WORDS.doc('speaker-probe')}), and ` +
+  `remove it from ${WORDS.envFile} when the tests are done.`
 
 /** Why a join that asks for the speaker probe is refused while SPEAKER_PROBE is off. */
 export const PROBE_OFF =
-  'SPEAKER_PROBE is not set in .env, so this meeting cannot have the speaker probe, which is for test meetings only ' +
-  '(docs/speaker-probe.md). Set SPEAKER_PROBE=1 and restart the service, or join without --speaker-probe.'
+  `SPEAKER_PROBE is not set in ${WORDS.envFile}, so this meeting cannot have the speaker probe, which is for test meetings only ` +
+  `(${WORDS.doc('speaker-probe')}). Set SPEAKER_PROBE=1 and restart the service, or join without --speaker-probe.`
 
 // Memory caps, for a meeting of hours or a connection that sends too much: what is over is counted, not kept.
 export const MAX_EVENTS = 50_000

@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { wordsThatCount } from '../brain/attention.ts'
+import { WORDS } from '../commands.ts'
 import { FINAL_STATUSES, FLUX_CLOSE_WAIT_MS } from '../pipeline/deepgram.ts'
 import { PAUSE_MAX_MS, STOP_WORDS_FINAL, STOP_WORDS_PARTIAL, STT_HOLD_MS, TAIL_MS } from '../pipeline/session.ts'
 import { BYTES_PER_MS, msOf, onsetMs, readWav, silence, syntheticClips } from './flux-audio.ts'
@@ -17,7 +18,7 @@ import { formatReport } from './flux-report.ts'
 import { type Connect, STREAM_TIMING, type StreamRun, type StreamTiming, streamClip } from './flux-stream.ts'
 
 export const USAGE =
-  'Usage: npm run flux-probe [-- --mic] [--files <dir>] [--nonverbal] [--json <path>] [--idle-max <seconds>] [--only <ids>]'
+  `Usage: ${WORDS.run('flux-probe')} ${WORDS.optional('--mic')} [--files <dir>] [--nonverbal] [--json <path>] [--idle-max <seconds>] [--only <ids>]`
 
 /** Backchannels: said over the assistant, none of these should stop it. */
 export const BACKCHANNELS: readonly string[] = [

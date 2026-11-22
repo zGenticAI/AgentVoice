@@ -4,6 +4,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { WORDS } from '../commands.ts'
 import { SHEET, TEMP_PREFIX } from './deck.ts'
 import { type Manifest, WARNINGS } from './manifest.ts'
 
@@ -75,7 +76,7 @@ h1 { font-size: 20px; margin: 0 0 4px; }
 <h1>${escape(heading)}</h1>
 <p class="meta">Prepared deck ${escape(manifest.id)}: ${manifest.slides.length} slide${manifest.slides.length === 1 ? '' : 's'} from ${manifest.pages} page${manifest.pages === 1 ? '' : 's'}.${excluded}
 Each slide is shown here at half the size the meeting gets (1280x720).
-${input.summary ? `<br>${escape(input.scriptName ? `${input.scriptName}: ` : '')}${escape(input.summary)}` : '<br>Run npm run slides -- check on its script to add the narration.'}
+${input.summary ? `<br>${escape(input.scriptName ? `${input.scriptName}: ` : '')}${escape(input.summary)}` : `<br>Run ${escape(WORDS.run('slides', 'check'))} on its script to add the narration.`}
 <br>Updated ${escape(now)} UTC.</p>
 ${cards.join('\n')}
 </body>
