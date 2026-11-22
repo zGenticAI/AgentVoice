@@ -23,7 +23,9 @@ const read = (rel: string) => fs.readFileSync(path.join(ROOT, rel), 'utf8')
 const byRel = (files: SetupFile[]) => Object.fromEntries(files.map(file => [file.rel, file]))
 const NODE = '/usr/local/bin/node'
 const BIN = `/usr/local/lib/node_modules/${PACKAGE_NAME}/bin/agentvoice.js`
-const AV = '/home/sam/.agentvoice'
+// A made-up home folder under a root that exists nowhere, so it is never a link: on macOS /home is one (to
+// /System/Volumes/Data/home), and setup adds a linked path's real form too.
+const AV = '/av-test-home/sam/.agentvoice'
 const DATA = `${AV}/data`
 
 // --- Claude Code ---------------------------------------------------------------------------------------------------
@@ -43,8 +45,8 @@ test("Claude Code: the floor and the meeting-assistant are the package's, byte f
         'mcp__zoom-meeting__post_chat',
         'mcp__zoom-meeting__add_to_brief',
         'mcp__zoom-meeting__get_transcript',
-        'Read(//home/sam/.agentvoice/data/transcripts/**)',
-        'Read(//home/sam/.agentvoice/data/minutes/**)',
+        'Read(//av-test-home/sam/.agentvoice/data/transcripts/**)',
+        'Read(//av-test-home/sam/.agentvoice/data/minutes/**)',
       ],
     },
   })
@@ -57,14 +59,14 @@ test("Claude Code: the floor and the meeting-assistant are the package's, byte f
 test("Claude Code: settings.local.json is yours: what is there stays, only what is missing is added, and again adds nothing", () => {
   const yours = {
     outputStyle: 'Explanatory',
-    permissions: { allow: ['Bash(git status)', 'mcp__zoom-meeting__reply', 'Read(//home/sam/work/acme-docs/**)'], deny: ['Read(//**/secrets/**)'], additionalDirectories: ['/home/sam/work'] },
+    permissions: { allow: ['Bash(git status)', 'mcp__zoom-meeting__reply', 'Read(//av-test-home/sam/work/acme-docs/**)'], deny: ['Read(//**/secrets/**)'], additionalDirectories: ['/av-test-home/sam/work'] },
     env: { A: '1' },
   }
   const merged = JSON.parse(byRel(renderClaudeCode({ packageDir: ROOT, dataDir: DATA, local: JSON.stringify(yours) }))[CLAUDE_LOCAL].content)
   assert.equal(merged.outputStyle, 'Explanatory')
   assert.deepEqual(merged.env, { A: '1' })
   assert.deepEqual(merged.permissions.deny, ['Read(//**/secrets/**)'])
-  assert.deepEqual(merged.permissions.additionalDirectories, ['/home/sam/work'])
+  assert.deepEqual(merged.permissions.additionalDirectories, ['/av-test-home/sam/work'])
   assert.deepEqual(merged.permissions.allow.slice(0, 3), yours.permissions.allow, 'yours first, as they were')
   assert.equal(merged.permissions.allow.filter((rule: string) => rule === 'mcp__zoom-meeting__reply').length, 1, 'no rule twice')
   assert.equal(merged.permissions.allow.length, 3 + 7)
@@ -84,7 +86,7 @@ const lineChanges = (a: string, b: string) => {
 }
 
 test("Codex: the package's config with exactly two changes, the channel by absolute paths and the AgentVoice folder's entries", () => {
-  const files = byRel(renderCodex({ packageDir: ROOT, home: AV, dataDir: DATA, node: NODE, bin: BIN, homeDir: '/home/sam' }))
+  const files = byRel(renderCodex({ packageDir: ROOT, home: AV, dataDir: DATA, node: NODE, bin: BIN, homeDir: '/av-test-home/sam' }))
   assert.deepEqual(Object.keys(files), [CODEX_CONFIG, CODEX_AGENT])
   const template = read('.codex/config.toml')
   const written = files[CODEX_CONFIG].content
@@ -137,15 +139,15 @@ test("Codex: the package's config with exactly two changes, the channel by absol
 
 test('Codex: an AgentVoice folder elsewhere is named in full, the data folder where it is, and any path comes back as it is', () => {
   const custom = '/srv/av home'
-  const files = byRel(renderCodex({ packageDir: ROOT, home: custom, dataDir: '/var/lib/av-data', node: NODE, bin: BIN, homeDir: '/home/sam' }))
+  const files = byRel(renderCodex({ packageDir: ROOT, home: custom, dataDir: '/var/lib/av-data', node: NODE, bin: BIN, homeDir: '/av-test-home/sam' }))
   const fsKeys = Object.keys((((parseToml(files[CODEX_CONFIG].content).permissions as TomlTable).agentvoice as TomlTable).filesystem as TomlTable))
   assert.deepEqual(fsKeys.filter(key => key.startsWith('/')), [...HOME_ENV_NAMES.map(name => `${custom}/${name}`), '/var/lib/av-data/local-token', '/var/lib/av-data/decks'])
   // ~/ only for the default folder: AGENTVOICE_HOME=~/notes/av is named in full, like any other.
-  const other = byRel(renderCodex({ packageDir: ROOT, home: '/home/sam/notes/av', dataDir: '/home/sam/notes/av/data', node: NODE, bin: BIN, homeDir: '/home/sam' }))
-  assert.match(other[CODEX_CONFIG].content, /^"\/home\/sam\/notes\/av\/\.env" = "deny"$/m)
+  const other = byRel(renderCodex({ packageDir: ROOT, home: '/av-test-home/sam/notes/av', dataDir: '/av-test-home/sam/notes/av/data', node: NODE, bin: BIN, homeDir: '/av-test-home/sam' }))
+  assert.match(other[CODEX_CONFIG].content, /^"\/av-test-home\/sam\/notes\/av\/\.env" = "deny"$/m)
   // A quote mark or backslash in a path is escaped as TOML takes it, and read back as it was.
   const odd = '/srv/a "b" \\c'
-  const quoted = parseToml(byRel(renderCodex({ packageDir: ROOT, home: odd, dataDir: `${odd}/data`, node: `${odd}/node`, bin: `${odd}/agentvoice.js`, homeDir: '/home/sam' }))[CODEX_CONFIG].content)
+  const quoted = parseToml(byRel(renderCodex({ packageDir: ROOT, home: odd, dataDir: `${odd}/data`, node: `${odd}/node`, bin: `${odd}/agentvoice.js`, homeDir: '/av-test-home/sam' }))[CODEX_CONFIG].content)
   const server = (quoted.mcp_servers as TomlTable)['zoom-meeting'] as TomlTable
   assert.equal(server.command, `${odd}/node`)
   assert.deepEqual(server.args, [`${odd}/agentvoice.js`, 'channel'])
@@ -157,7 +159,7 @@ test("Codex: a meeting-assistant whose shell you turned off keeps it off, and co
   const template = read('.codex/agents/meeting-assistant.toml')
   assert.ok(template.endsWith('\n# [features]\n# shell_tool = false\n'))
   const off = template.replace(/# \[features\]\n# shell_tool = false\n$/, '[features]\nshell_tool = false\n')
-  const agent = (existing?: string) => byRel(renderCodex({ packageDir: ROOT, home: AV, dataDir: DATA, node: NODE, bin: BIN, homeDir: '/home/sam', agent: existing }))[CODEX_AGENT]
+  const agent = (existing?: string) => byRel(renderCodex({ packageDir: ROOT, home: AV, dataDir: DATA, node: NODE, bin: BIN, homeDir: '/av-test-home/sam', agent: existing }))[CODEX_AGENT]
   assert.equal(agent(off).content, off, 'kept off')
   assert.equal(agent(template).content, template)
   assert.equal(agent(undefined).content, template)
@@ -285,7 +287,7 @@ test("setup refuses a folder holding files it didn't make, a project, or a setup
   const notes = folder('notes', { 'todo.md': 'x' })
   const project = folder('project', { '.claude/settings.json': '{"permissions":{}}', 'src/app.ts': '' })
   spawnSync('git', ['init', '-q', project])
-  const other = folder('other', { [MANIFEST]: JSON.stringify(manifestFor('/home/sam/elsewhere')) })
+  const other = folder('other', { [MANIFEST]: JSON.stringify(manifestFor('/av-test-home/sam/elsewhere')) })
   const broken = folder('broken', { [MANIFEST]: '{"package": "something"}' })
   fs.writeFileSync(path.join(p.tmp, 'a-file'), 'x')
   const before = snapshot(p.tmp)
@@ -295,7 +297,7 @@ test("setup refuses a folder holding files it didn't make, a project, or a setup
   )
   refused(notes, held)
   refused(project, /already holds files that agentvoice setup didn't make/)
-  refused(other, /was set up for another AgentVoice folder, \/home\/sam\/elsewhere \(its \.agentvoice-setup\.json\), not ~\/\.agentvoice/)
+  refused(other, /was set up for another AgentVoice folder, \/av-test-home\/sam\/elsewhere \(its \.agentvoice-setup\.json\), not ~\/\.agentvoice/)
   refused(broken, /\.agentvoice-setup\.json is not a record agentvoice setup wrote: fix or remove it/)
   refused(path.join(p.tmp, 'a-file'), /is a file, not a folder/)
   assert.deepEqual(snapshot(p.tmp), before, 'nothing written')
@@ -462,7 +464,7 @@ test('a folder only your group can write is yours alone when no one else is in t
 test("whether a group is yours alone: your primary group, named as you are, with no one else in it as a member or as their own", () => {
   const sam = { username: 'sam', gid: 1000 }
   const lists = (group: string | null, passwd: string | null, gid = '1000'): Getent => args => (args[0] === 'group' ? (args[1] === gid ? group : null) : passwd)
-  const users = 'root:x:0:0:root:/root:/bin/bash\nsam:x:1000:1000:Sam:/home/sam:/bin/bash\nkim:x:1001:1001:Kim:/home/kim:/bin/bash\n'
+  const users = 'root:x:0:0:root:/root:/bin/bash\nsam:x:1000:1000:Sam:/av-test-home/sam:/bin/bash\nkim:x:1001:1001:Kim:/home/kim:/bin/bash\n'
   assert.equal(groupOfYoursAlone(1000, sam, lists('sam:x:1000:\n', users)), true)
   assert.equal(groupOfYoursAlone(1000, sam, lists('sam:x:1000:sam\n', users)), true, 'you, listed as a member too')
   assert.equal(groupOfYoursAlone(1000, sam, lists('sam:x:1000:sam,kim\n', users)), false, 'someone else a member')
@@ -553,7 +555,7 @@ test('setup writes each file 0600 in folders 0700, makes the folder a repository
   assert.match(manifest.clients['claude-code'].files[CLAUDE_SETTINGS], /^sha256:[0-9a-f]{64}$/)
   assert.deepEqual(fs.readdirSync(folder).filter(name => name.endsWith('.tmp')), [], 'no temporary file left')
   // Another client in the same folder adds its own entry; the first stays.
-  apply(folder, renderCodex({ packageDir: ROOT, home: AV, dataDir: DATA, node: NODE, bin: BIN, homeDir: '/home/sam' }), { client: 'codex' })
+  apply(folder, renderCodex({ packageDir: ROOT, home: AV, dataDir: DATA, node: NODE, bin: BIN, homeDir: '/av-test-home/sam' }), { client: 'codex' })
   assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(folder, MANIFEST), 'utf8')).clients), ['claude-code', 'codex'])
 })
 
@@ -617,7 +619,7 @@ test("a file you changed, or one setup didn't write, at a path setup owns stops 
 test("Codex's meeting-assistant with its shell switched off is setup's own: setup goes on, and keeps it off", t => {
   const tmp = tempDir(t)
   const folder = path.join(tmp, 'session')
-  const codex = (agent?: string) => renderCodex({ packageDir: ROOT, home: AV, dataDir: DATA, node: NODE, bin: BIN, homeDir: '/home/sam', agent })
+  const codex = (agent?: string) => renderCodex({ packageDir: ROOT, home: AV, dataDir: DATA, node: NODE, bin: BIN, homeDir: '/av-test-home/sam', agent })
   apply(folder, codex(), { client: 'codex' })
   const file = path.join(folder, CODEX_AGENT)
   const off = fs.readFileSync(file, 'utf8').replace(/# \[features\]\n# shell_tool = false\n$/, '[features]\nshell_tool = false\n')
@@ -711,7 +713,7 @@ test("a setup's record says when it is out of date: another version, node, bin o
   assert.deepEqual(staleReasons(m, { ...now, node: '/opt/homebrew/opt/node/bin/node' }, () => true), [`its configs start the channel with ${NODE}, not /opt/homebrew/opt/node/bin/node`])
   assert.deepEqual(staleReasons(m, now, () => false), [`the node its configs start the channel with, ${NODE}, is no longer there`])
   assert.deepEqual(staleReasons(m, { ...now, bin: '/other/bin/agentvoice.js' }, () => true), [`its configs start ${BIN}, not this AgentVoice's /other/bin/agentvoice.js`])
-  assert.deepEqual(staleReasons(m, { ...now, home: '/srv/av' }, () => true), ['it is for the AgentVoice folder /home/sam/.agentvoice, and this one is /srv/av'])
+  assert.deepEqual(staleReasons(m, { ...now, home: '/srv/av' }, () => true), ['it is for the AgentVoice folder /av-test-home/sam/.agentvoice, and this one is /srv/av'])
   // A record setup didn't write is none at all.
   assert.equal(parseManifest('{"package":"other"}'), null)
   assert.equal(parseManifest('not json'), null)

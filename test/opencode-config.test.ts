@@ -46,16 +46,16 @@ const DENY: string[] = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude/setti
 function covered(rule: string): string[] {
   const anywhere = /^Read\(\/\/\*\*\/(.+)\)$/.exec(rule)?.[1]
   if (anywhere === 'data/decks/**') {
-    return ['data/decks', 'data/decks/deck.pdf', 'data/decks/a/deck.script.md', 'src/data/decks/x.md', '../data/decks/x.pdf', '/home/sam/av/data/decks/x.pdf']
+    return ['data/decks', 'data/decks/deck.pdf', 'data/decks/a/deck.script.md', 'src/data/decks/x.md', '../data/decks/x.pdf', '/av-test-home/sam/av/data/decks/x.pdf']
   }
   if (anywhere && !anywhere.includes('/')) {
     const name = anywhere.replace(/^\*/, 'server').replace(/\*/g, 'production')
-    return [name, `src/${name}`, `a/b/${name}`, `../${name}`, `/home/sam/other/${name}`]
+    return [name, `src/${name}`, `a/b/${name}`, `../${name}`, `/av-test-home/sam/other/${name}`]
   }
   const homeFolder = /^Read\(~\/(.+)\/\*\*\)$/.exec(rule)?.[1]
-  if (homeFolder) return [`/home/sam/${homeFolder}`, `/home/sam/${homeFolder}/file`, `/home/sam/${homeFolder}/a/b`, `/srv/sam/${homeFolder}/x`]
+  if (homeFolder) return [`/av-test-home/sam/${homeFolder}`, `/av-test-home/sam/${homeFolder}/file`, `/av-test-home/sam/${homeFolder}/a/b`, `/srv/sam/${homeFolder}/x`]
   const homeFile = /^Read\(~\/([^*]+)\)$/.exec(rule)?.[1]
-  if (homeFile) return [`/home/sam/${homeFile}`, `/srv/sam/${homeFile}`]
+  if (homeFile) return [`/av-test-home/sam/${homeFile}`, `/srv/sam/${homeFile}`]
   assert.fail(`a rule this test does not know how to check: ${rule}`)
 }
 
@@ -65,7 +65,7 @@ test('the floor: every file Claude Code may not read here, OpenCode may not eith
     for (const resource of covered(rule)) assert.ok(policyDenies('read', resource), `${rule}: ${resource}`)
   }
   // Not the template the setup says to copy, the shared brief, transcripts and minutes, or anything else.
-  for (const resource of ['.env.example', '.envrc', 'README.md', 'src/env.ts', 'data/brief.md', 'data/minutes/m1.md', 'data/m1.transcript.md', 'decks/deck.script.md', 'profile.md', '/home/sam/work/acme-docs/overview.md']) {
+  for (const resource of ['.env.example', '.envrc', 'README.md', 'src/env.ts', 'data/brief.md', 'data/minutes/m1.md', 'data/m1.transcript.md', 'decks/deck.script.md', 'profile.md', '/av-test-home/sam/work/acme-docs/overview.md']) {
     assert.ok(!policyDenies('read', resource), resource)
   }
   // A pattern like */.env alone misses the root file: each name has its root form too.
@@ -134,7 +134,7 @@ test('the meeting-assistant may use its six tools and read, and nothing else', (
   for (const [action, resource] of [
     ['grep', 'alpha'], ['glob', '**/*'], ['shell', 'cat .env'], ['shell', 'npm run slides -- prepare x.pdf'], ['edit', 'README.md'], ['write', 'x.md'],
     ['webfetch', 'https://example.com'], ['websearch', 'x'], ['subagent', 'general'], ['question', '*'], ['skill', 'x'], ['execute', '*'],
-    ['external_directory', '/home/sam/work/*'], ['experimental_image_generate', 'x/y'],
+    ['external_directory', '/av-test-home/sam/work/*'], ['experimental_image_generate', 'x/y'],
   ]) {
     assert.equal(evaluate(action, resource, rules), 'deny', `${action} ${resource}`)
   }
@@ -146,12 +146,12 @@ test("a user's own .opencode/opencode.json, read after the committed file, lets 
   // OpenCode appends an agent's rules from each config file in order: the committed opencode.json, then
   // .opencode/opencode.json (config.ts: direct files, then project ones), then .opencode/agents/*.md. So the agent's
   // rules live in opencode.json, not in its .md, where they would come last and undo the user's.
-  const mine: Rule[] = [{ action: 'external_directory', resource: '/home/sam/work/acme-docs/*', effect: 'allow' }]
+  const mine: Rule[] = [{ action: 'external_directory', resource: '/av-test-home/sam/work/acme-docs/*', effect: 'allow' }]
   const rules = [...BASE, ...GLOBAL, ...AGENT_RULES, ...mine]
-  assert.equal(evaluate('external_directory', '/home/sam/work/acme-docs/status/*', rules), 'allow')
-  assert.equal(evaluate('external_directory', '/home/sam/work/acme-ops/*', rules), 'deny')
+  assert.equal(evaluate('external_directory', '/av-test-home/sam/work/acme-docs/status/*', rules), 'allow')
+  assert.equal(evaluate('external_directory', '/av-test-home/sam/work/acme-ops/*', rules), 'deny')
   assert.equal(evaluate('zoom-meeting_join_meeting', '*', rules), 'deny')
-  assert.ok(policyDenies('read', '/home/sam/work/acme-docs/.env'), 'the floor still holds there')
+  assert.ok(policyDenies('read', '/av-test-home/sam/work/acme-docs/.env'), 'the floor still holds there')
 })
 
 /** An agent file's frontmatter keys and its body, as OpenCode and Claude Code split it. */
@@ -297,10 +297,10 @@ test('your own .opencode/opencode.json is never committed; the shared config and
 })
 
 // --- Installed from npm: what agentvoice setup opencode writes ---------------------------------------------------
-const INSTALLED_NODE = '/home/sam/.nvm/versions/node/v24.22.1/bin/node'
-const INSTALLED_BIN = `/home/sam/.nvm/versions/node/v24.22.1/lib/node_modules/${PACKAGE_NAME}/bin/agentvoice.js`
-const AV_DATA = '/home/sam/.agentvoice/data'
-const INSTALLED = JSON.parse(renderOpenCode({ packageDir: ROOT, home: '/home/sam/.agentvoice', dataDir: AV_DATA, node: INSTALLED_NODE, bin: INSTALLED_BIN })[0].content)
+const INSTALLED_NODE = '/av-test-home/sam/.nvm/versions/node/v24.22.1/bin/node'
+const INSTALLED_BIN = `/av-test-home/sam/.nvm/versions/node/v24.22.1/lib/node_modules/${PACKAGE_NAME}/bin/agentvoice.js`
+const AV_DATA = '/av-test-home/sam/.agentvoice/data'
+const INSTALLED = JSON.parse(renderOpenCode({ packageDir: ROOT, home: '/av-test-home/sam/.agentvoice', dataDir: AV_DATA, node: INSTALLED_NODE, bin: INSTALLED_BIN })[0].content)
 
 test('installed, agentvoice slides asks however it is run: by name, through npx, by its path, and as the command opencode.json starts the channel with', () => {
   const rules = [...BASE, ...(INSTALLED.permissions as Rule[])]
@@ -310,7 +310,7 @@ test('installed, agentvoice slides asks however it is run: by name, through npx,
     'agentvoice slides prepare deck.pdf',
     'agentvoice slides',
     `npx ${PACKAGE_NAME} slides prepare deck.pdf`,
-    '/home/sam/.nvm/versions/node/v24.22.1/bin/agentvoice slides check deck.script.md',
+    '/av-test-home/sam/.nvm/versions/node/v24.22.1/bin/agentvoice slides check deck.script.md',
     `${node} ${bin} slides prepare deck.pdf`,
   ]) {
     assert.equal(evaluate('shell', command, rules), 'ask', command)
@@ -334,9 +334,9 @@ test('installed, the meeting-assistant may read the transcripts and minutes fold
   ])
   const rules = [...BASE, ...(INSTALLED.permissions as Rule[]), ...agent]
   for (const dir of [`${AV_DATA}/transcripts/*`, `${AV_DATA}/minutes/*`, `${AV_DATA}/transcripts/2026/*`]) assert.equal(evaluate('external_directory', dir, rules), 'allow', dir)
-  for (const dir of [`${AV_DATA}/*`, '/home/sam/.agentvoice/*', `${AV_DATA}/decks/*`, '/home/sam/*', '/home/sam/work/acme-docs/*']) assert.equal(evaluate('external_directory', dir, rules), 'deny', dir)
+  for (const dir of [`${AV_DATA}/*`, '/av-test-home/sam/.agentvoice/*', `${AV_DATA}/decks/*`, '/av-test-home/sam/*', '/av-test-home/sam/work/acme-docs/*']) assert.equal(evaluate('external_directory', dir, rules), 'deny', dir)
   // The floor is the committed one, and still denies the AgentVoice folder's keys there.
   assert.deepEqual(INSTALLED.policies, POLICIES)
-  for (const file of ['/home/sam/.agentvoice/.env', `${AV_DATA}/local-token`, `${AV_DATA}/decks/a1/deck.pdf`]) assert.ok(policyDenies('read', file), file)
-  assert.deepEqual(INSTALLED.mcp.servers['zoom-meeting'].environment, { AGENTVOICE_CLIENT: 'opencode', AGENTVOICE_HOME: '/home/sam/.agentvoice' })
+  for (const file of ['/av-test-home/sam/.agentvoice/.env', `${AV_DATA}/local-token`, `${AV_DATA}/decks/a1/deck.pdf`]) assert.ok(policyDenies('read', file), file)
+  assert.deepEqual(INSTALLED.mcp.servers['zoom-meeting'].environment, { AGENTVOICE_CLIENT: 'opencode', AGENTVOICE_HOME: '/av-test-home/sam/.agentvoice' })
 })
